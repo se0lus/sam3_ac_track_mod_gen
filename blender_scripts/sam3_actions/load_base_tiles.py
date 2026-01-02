@@ -1,0 +1,721 @@
+from __future__ import annotations
+
+import bpy  # type: ignore[import-not-found]
+import os
+
+from . import ActionSpec
+from .c_tiles import CTile
+from .mask_select_utils import build_mask_cache, get_mask_objects, objects_hit_by_mask_cache_xz
+
+BASE_TILES_DIR = "E:\\sam3_track_seg\\test_images_shajing\\b3dm"
+GLB_DIR = "E:\\sam3_track_seg\\test_images_shajing\\glb"
+BASE_LEVEL = 17
+TARGET_FINE_LEVEL = 22
+
+# ----------------------------
+# 通用：非阻塞 modal 执行辅助
+# ----------------------------
+class _SAM3_NonBlockingModalMixin:
+    """
+    用于 Blender Operator 的通用“非阻塞执行”辅助：
+    - event_timer_add / modal_handler_add
+    - progress_begin/update/end
+    - tag_redraw / redraw_timer / view_layer.update
+    - 统一 finish（移除 timer + 结束 progress）
+
+    注意：该 mixin 不规定你的状态机；只提供通用基础设施。
+    """
+
+    _timer = None
+    _nb_interval_sec: float = 0.05
+
+    def _nb_log(self, msg: str) -> None:
+        print(f"[SAM3][non_blocking] {msg}")
+
+    def _nb_request_redraw(self, context: bpy.types.Context) -> None:
+        # 触发 UI 刷新（失败也不应中断）
+        try:
+            if getattr(context, "screen", None) is not None:
+                for area in context.screen.areas:
+                    try:
+                        area.tag_redraw()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        try:
+            bpy.ops.wm.redraw_timer(type="DRAW_WIN_SWAP", iterations=1)
+        except Exception:
+            pass
+        try:
+            context.view_layer.update()
+        except Exception:
+            pass
+
+    def _nb_progress_begin(self, context: bpy.types.Context, total: int) -> None:
+        try:
+            context.window_manager.progress_begin(0, max(1, int(total)))
+        except Exception:
+            pass
+
+    def _nb_progress_update(self, context: bpy.types.Context, value: int) -> None:
+        try:
+            context.window_manager.progress_update(int(value))
+        except Exception:
+            pass
+
+    def _nb_progress_end(self, context: bpy.types.Context) -> None:
+        try:
+            context.window_manager.progress_end()
+        except Exception:
+            pass
+
+    def _nb_start_timer(self, context: bpy.types.Context, interval_sec: float | None = None) -> None:
+        wm = context.window_manager
+        self._nb_interval_sec = float(interval_sec if interval_sec is not None else self._nb_interval_sec)
+        try:
+            self._timer = wm.event_timer_add(self._nb_interval_sec, window=context.window)
+        except Exception:
+            self._timer = None
+            raise
+        wm.modal_handler_add(self)
+
+    def _nb_remove_timer(self, context: bpy.types.Context) -> None:
+        wm = context.window_manager
+        try:
+            if self._timer is not None:
+                wm.event_timer_remove(self._timer)
+        except Exception:
+            pass
+        self._timer = None
+
+    def _nb_finish(self, context: bpy.types.Context, cancelled: bool, msg: str = "", report_type: set[str] | None = None) -> set[str]:
+        """
+        统一收尾：移除 timer + 结束 progress；可选择 report+log。
+        """
+        self._nb_remove_timer(context)
+        self._nb_progress_end(context)
+        if msg:
+            try:
+                # report_type 允许传 {"INFO"} / {"WARNING"}；不传则默认 INFO / WARNING
+                if report_type is None:
+                    report_type = {"WARNING"} if cancelled else {"INFO"}
+                self.report(report_type, msg)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            self._nb_log(msg)
+        return {"CANCELLED"} if cancelled else {"FINISHED"}
+
+#从BASE_TILES_DIR中加载顶层对象
+class SAM3_OT_load_base_tiles(_SAM3_NonBlockingModalMixin, bpy.types.Operator):
+    """ """
+
+    bl_idname = "sam3.load_base_tiles"
+    bl_label = "Load Base Tiles"
+    bl_options = {"REGISTER", "UNDO"}
+
+    _phase: str = "INIT"  # INIT / LOAD / DONE
+    _root_tile: CTile | None = None
+    _queue: list[tuple[int, CTile]] = []
+    _total: int = 0
+    _done: int = 0
+
+    def _log(self, msg: str) -> None:
+        print(f"[SAM3][load_base_tiles] {msg}")
+
+    def _start(self, context: bpy.types.Context) -> set[str]:
+        self._log(f"开始执行（非阻塞）：Load Base Tiles level={BASE_LEVEL}")
+
+        tileset_path = os.path.join(BASE_TILES_DIR, "tileset.json")
+        root_tile = CTile()
+        root_tile.loadFromRootJson(tileset_path)
+        self._root_tile = root_tile
+
+        tiles_need_load = compute_tiles_need_load_for_min_level(root_tile, min_level=BASE_LEVEL)
+        queue: list[tuple[int, CTile]] = []
+        for lv in sorted((tiles_need_load or {}).keys()):
+            arr = list(tiles_need_load.get(lv) or [])
+            # 稳定顺序：按 content 排序
+            arr.sort(key=lambda t: (t.content or ""))
+            for t in arr:
+                queue.append((lv, t))
+
+        self._queue = queue
+        self._total = len(queue)
+        self._done = 0
+        if self._total == 0:
+            return self._nb_finish(context, cancelled=False, msg="没有需要加载的 tiles（队列为空）")
+
+        self._phase = "LOAD"
+        self._nb_progress_begin(context, total=self._total)
+        # interval 可以调大减少开销；0.02~0.1 都可以
+        self._nb_start_timer(context, interval_sec=0.05)
+        self._nb_request_redraw(context)
+        self.report({"INFO"}, f"Load base tiles started (non-blocking). total={self._total}, press ESC to cancel.")
+        return {"RUNNING_MODAL"}
+
+    def invoke(self, context: bpy.types.Context, event: bpy.types.Event):
+        return self._start(context)
+
+    def execute(self, context: bpy.types.Context):
+        # 支持从脚本/搜索直接执行：同样走非阻塞模式
+        return self._start(context)
+
+    def modal(self, context: bpy.types.Context, event: bpy.types.Event):
+        if event.type == "ESC":
+            self._phase = "DONE"
+            return self._nb_finish(context, cancelled=True, msg="用户取消（ESC）")
+
+        if event.type != "TIMER":
+            return {"PASS_THROUGH"}
+
+        if self._phase != "LOAD":
+            return {"PASS_THROUGH"}
+
+        if len(self._queue) == 0:
+            self._phase = "DONE"
+            self._nb_request_redraw(context)
+            return self._nb_finish(context, cancelled=False, msg=f"Load base tiles finished. loaded={self._done}")
+
+        lv, tile = self._queue.pop(0)
+        self._done += 1
+
+        try:
+            self._log(f"[{self._done}/{self._total}] import level={lv}, tile={tile.content}")
+            # 复用现有导入函数：每次只导入 1 个 tile（避免长时间阻塞 UI）
+            load_glb_tiles_by_dic_level_array(GLB_DIR, {lv: [tile]})
+        except Exception as e:
+            self._phase = "DONE"
+            return self._nb_finish(context, cancelled=True, msg=f"导入失败并中止：{e}")
+
+        self._nb_progress_update(context, self._done)
+        self._nb_request_redraw(context)
+        return {"RUNNING_MODAL"}
+
+#base on a json file, load scene at at least min level
+def compute_tiles_need_load_for_min_level(root: CTile, min_level: int = 0, select_file_list_path: str = "") -> dict[int, list[CTile]]:
+    """
+    仅计算“需要加载的 tiles”（按 level 分组），不做任何导入。
+    该逻辑从 import_fullscene_with_ctile 拆出，供同步/非阻塞两种执行方式复用。
+    """
+    if not root:
+        print("root tile = null")
+        return {}
+
+    tiles_need_child = [root]
+    if select_file_list_path:
+        tiles_need_child = []
+        with open(select_file_list_path) as f:
+            lines = f.readlines()
+            for name in lines:
+                if len(name.strip()):
+                    tile = root.find(name.strip())
+                    if tile and tile not in tiles_need_child:
+                        tiles_need_child.append(tile)
+
+    tiles_need_load: dict[int, list[CTile]] = {}
+    print("check {0} root tiles".format(len(tiles_need_child)))
+    while len(tiles_need_child) > 0:
+        next_level_tiles = []
+        for tile in tiles_need_child:
+            if tile.hasMesh:
+                if tile.canRefine == False or tile.meshLevel >= min_level or len(tile.children) == 0:
+                    level = tile.meshLevel
+                    if level not in tiles_need_load:
+                        tiles_need_load[level] = []
+                    tiles_need_load[level].append(tile)
+                    continue
+
+            if tile.canRefine and len(tile.children):
+                next_level_tiles += tile.children
+        tiles_need_child = next_level_tiles
+
+    return tiles_need_load
+
+def import_fullscene_with_ctile(root:CTile, path, min_level = 0, select_file_list_path = ""):
+    #get file list
+    print("start loading glb tiles in:{0}, min_level:{1}".format(path, min_level))
+    
+    if not root:
+        print("root tile = null")
+        return
+
+    tiles_need_load = compute_tiles_need_load_for_min_level(root, min_level=min_level, select_file_list_path=select_file_list_path)
+    
+    for level in tiles_need_load:
+        print("need to load level {0}:{1} tiles".format(level, len(tiles_need_load[level])))
+        
+    load_glb_tiles_by_dic_level_array(path, tiles_need_load)
+
+def load_glb_tiles_by_dic_level_array(path, tiles_need_load):        
+    # make load order stable (e.g. 0 -> 17)
+    for current_level in sorted(tiles_need_load.keys()):
+        
+        #log files from new
+        objects_imported = [] 
+        
+        #get files in the same level
+        for tile in tiles_need_load[current_level]:
+            
+            # Convert tileset content (.b3dm) to glb filename.
+            # NOTE: tile.content may contain subfolders; keep it as relative path.
+            content = tile.content or ""
+            rel = content.replace("/", os.sep).replace("\\", os.sep).lstrip("\\/")
+            name = os.path.splitext(rel)[0] + ".glb"
+            filepath = os.path.join(path, name)
+            #we need map the glb file name to the node name, so do import one by one
+            print("import level {0}, {1}".format(current_level, name))
+
+            if not os.path.exists(filepath):
+                print("WARNING: glb not found, skip:", filepath)
+                continue
+        
+            #test
+            #current_level = 16
+            #file_names = [{"name":"Block_L16_3.glb"},{"name":"Block_L16_4.glb"}]
+        
+            #import gltf
+            orig_objects = bpy.data.objects.keys()
+            bpy.ops.import_scene.gltf(filepath=filepath, filter_glob='*.glb;*.gltf', loglevel=0, import_pack_images=True)
+            #find new objects imported
+            now_objects = bpy.data.objects.keys();
+            add_objects = set(now_objects) - set(orig_objects)
+            
+            #rename the new object to file name
+            for object_key in add_objects:
+                object = bpy.data.objects[object_key]
+                
+                if object_key.find("Node") < 0 or name in objects_imported:
+                    object.name = "{0}.{1}".format(name, object_key)    
+                    objects_imported.append(object.name)
+                    continue
+                
+                object.name = name
+                objects_imported.append(name)
+                #node_name_map[object_key] = name
+
+    
+        if len(objects_imported) == 0:
+            continue
+        print("imported objects in level{0}:{1}".format(current_level, str(objects_imported)))
+        
+        #move node into collections
+        collection_name = "L{0}".format(current_level)
+        collection = bpy.data.collections.get(collection_name)
+        if collection is None:
+            collection = bpy.data.collections.new(collection_name)
+            #link collection to scene
+            bpy.context.scene.collection.children.link(collection)
+    
+        # 先从所有 collection 中移除，再 link 到目标 collection（避免对象残留在任意其他集合里）
+        # 注意：Blender 允许 object 同时属于多个 collection；这里强制只属于目标 L{level}。
+        all_cols = []
+        try:
+            all_cols = list(getattr(bpy.data, "collections", None) or [])
+        except Exception:
+            all_cols = []
+        scene_root_col = None
+        try:
+            scene_root_col = bpy.context.scene.collection
+        except Exception:
+            scene_root_col = None
+
+        for obj_name in objects_imported:
+            obj = bpy.data.objects[obj_name]
+
+            # 1) 遍历所有 collection（含 scene root），若已 link 则 unlink
+            # 1.1) 先处理 obj.users_collection（更快、更准确）
+            try:
+                for col in list(getattr(obj, "users_collection", []) or []):
+                    if col is None:
+                        continue
+                    try:
+                        if col.objects.get(obj.name) is not None:
+                            col.objects.unlink(obj)
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+            # 1.2) 再做一次“全量扫描”兜底（满足：先搜索场景所有 collection）
+            for col in all_cols:
+                if col is None:
+                    continue
+                try:
+                    if col.objects.get(obj.name) is not None:
+                        col.objects.unlink(obj)
+                except Exception:
+                    continue
+            if scene_root_col is not None:
+                try:
+                    if scene_root_col.objects.get(obj.name) is not None:
+                        scene_root_col.objects.unlink(obj)
+                except Exception:
+                    pass
+
+            # 2) link 到目标 collection
+            try:
+                if collection.objects.get(obj.name) is None:
+                    collection.objects.link(obj)
+            except Exception:
+                # 最后兜底：忽略 link 失败（避免脚本中断）
+                pass
+
+            #print("move {0} into {1}".format(obj_name, collection_name))
+    return
+
+def get_selected_ctiles(root:CTile):
+    tiles = []
+    for obj in bpy.context.selected_objects:
+        name = obj.name.split(".glb")[0]
+        tile = root.find(name)
+        if tile:
+            tiles.append(tile)
+    print("select {0} tiles".format(len(tiles)))
+    return tiles;
+
+def clear_scene_by_tile(tile):
+
+    name = tile.content.split("\\")[-1]
+    name = name.split("/")[-1]
+    name = name.split(".b3dm")[0]
+    print("remove:{0}".format(name))
+        
+    #get obj and mesh
+    objects = []
+    mesh = []
+    for ob in bpy.data.objects:
+        if name == ob.name.split(".")[0] and ob not in objects:
+            objects.append(ob)
+            if ob.data and ob.type == 'MESH' and ob.data not in mesh:
+                mesh += [ob.data]
+    
+    #get materials
+    materials = []
+    for ob in objects:
+        material_slots = ob.material_slots
+        for m in material_slots:
+            if m.material not in materials:
+                materials.append(m.material)
+                
+    #get images
+    textures = []
+    for m in materials:
+        for n in m.node_tree.nodes:
+                if n.type == 'TEX_IMAGE' and n.image not in textures:
+                    textures += [n.image]
+    
+    #do remove
+    for ob in objects:
+        bpy.data.objects.remove(ob)
+    for m in materials:
+        try:
+            bpy.data.materials.remove(m)
+        finally:
+            continue
+    for img in textures:
+        bpy.data.images.remove(img)
+    for m in mesh:
+        bpy.data.meshes.remove(m)
+
+def refine_and_selected_tiles(root:CTile, path):
+    tiles = get_selected_ctiles(root)
+    if len(tiles) == 0:
+        return
+    
+    #remove tiles that can not refine
+    can_refine_tiles = []
+    for tile in tiles:
+        if tile.canRefine:
+            can_refine_tiles.append(tile)
+    
+    tiles_need_load = {}
+    for root_tile in can_refine_tiles:
+        tiles_need_child = [root_tile]
+        while len(tiles_need_child) > 0:
+            #find children
+            next_level_tiles = []
+            for tile in tiles_need_child:
+                if tile.hasMesh:
+                    if tile.canRefine == False or tile.meshLevel>root_tile.meshLevel or len(tile.children) == 0:
+                        level = tile.meshLevel
+                        if level not in tiles_need_load:
+                            tiles_need_load[level] = []
+                        if tile not in tiles_need_load[level]:
+                            tiles_need_load[level].append(tile)
+                        continue
+                    
+                if tile.canRefine and len(tile.children):
+                    next_level_tiles += tile.children
+            tiles_need_child = next_level_tiles
+    
+    #load new tiles
+    load_glb_tiles_by_dic_level_array(path, tiles_need_load)
+    
+    #remove old tileser
+    for tile in can_refine_tiles:
+        clear_scene_by_tile(tile)
+
+#根据选择的tile加载更精细的tiles
+class SAM3_OT_refine_selected_tiles(bpy.types.Operator):
+    """ """
+
+    bl_idname = "sam3.refine_selected_tiles"
+    bl_label = "Refine Selected Tiles"
+    bl_options = {"REGISTER", "UNDO"}
+
+
+    def execute(self, context: bpy.types.Context):
+        root_tile = CTile()
+        root_tile.loadFromRootJson(os.path.join(BASE_TILES_DIR, "tileset.json"))
+        refine_and_selected_tiles(root_tile, GLB_DIR)
+        return {"FINISHED"}
+
+#根据选择的mask对象，加载更精细的tile，直到达到目标级别
+class SAM3_OT_refine_by_mask_to_target_level(_SAM3_NonBlockingModalMixin, bpy.types.Operator):
+    """ """
+
+    bl_idname = "sam3.refine_by_mask_to_target_level"
+    bl_label = f"Refine by Mask to Target Level {TARGET_FINE_LEVEL}"
+    bl_options = {"REGISTER", "UNDO"}
+
+
+    # 说明：
+    # - 该操作原实现为同步大循环，会长时间占用主线程导致 UI 假死。
+    # - 这里改为 modal + TIMER 分片执行：每次 TIMER 只 refine 1 个 tile，处理完即触发 redraw 并返回 RUNNING_MODAL。
+
+    _phase: str = "INIT"  # INIT / SELECT / REFINE / DONE
+    _root_tile: CTile | None = None
+    _masks: list[bpy.types.Object] | None = None
+    _mask_cache = None
+    _refined_steps: int = 0
+    _max_steps: int = 5000
+    _need_refine_queue: list[CTile] = []
+    _last_select_stats: str = ""
+    _progress_total: int = 0
+    _progress_done: int = 0
+
+    def _log(self, msg: str) -> None:
+        print(f"[SAM3][refine_by_mask] {msg}")
+
+    def _objname_to_tile_key(self, obj_name: str) -> str:
+        # import 时主对象名为 "<xxx>.glb"，其余重复/子对象会变成 "<xxx>.glb.<something>"
+        return obj_name.split(".glb")[0]
+
+    def _dedupe_tiles(self, tiles: list[CTile]) -> list[CTile]:
+        seen: set[str] = set()
+        out: list[CTile] = []
+        for t in tiles:
+            if t is None:
+                continue
+            key = t.content or str(id(t))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(t)
+        return out
+
+    def _compute_tiles_need_load_for_one(self, root_tile_to_refine: CTile) -> dict[int, list[CTile]]:
+        """
+        单个 tile 做一次“向下 refine 一步”的加载计划（等价于 refine_and_selected_tiles 的单 tile 版本）。
+        """
+        tiles_need_load: dict[int, list[CTile]] = {}
+        tiles_need_child = [root_tile_to_refine]
+        while len(tiles_need_child) > 0:
+            next_level_tiles = []
+            for tile in tiles_need_child:
+                if tile.hasMesh:
+                    # 一旦发现“比根更精细的第一个可加载 mesh tile”，就把它加入加载列表并停止向下探索该分支
+                    if (tile.canRefine is False) or (tile.meshLevel > root_tile_to_refine.meshLevel) or (len(tile.children) == 0):
+                        level = tile.meshLevel
+                        if level not in tiles_need_load:
+                            tiles_need_load[level] = []
+                        if tile not in tiles_need_load[level]:
+                            tiles_need_load[level].append(tile)
+                        continue
+                if tile.canRefine and len(tile.children):
+                    next_level_tiles += tile.children
+            tiles_need_child = next_level_tiles
+        return tiles_need_load
+
+    def _start(self, context: bpy.types.Context) -> set[str]:
+        self._log(f"开始执行（非阻塞）：Refine by Mask to Target Level={TARGET_FINE_LEVEL}")
+
+        # 0) 确保在 Object 模式
+        try:
+            if getattr(context, "mode", "") != "OBJECT":
+                self._log(f"切换模式：{getattr(context, 'mode', '')} -> OBJECT")
+                bpy.ops.object.mode_set(mode="OBJECT")
+        except Exception as e:
+            self._log(f"切换到 OBJECT 模式失败（继续尝试执行）：{e}")
+
+        # 1) 读取 tileset 树
+        tileset_path = os.path.join(BASE_TILES_DIR, "tileset.json")
+        self._log(f"加载 tileset：{tileset_path}")
+        root_tile = CTile()
+        root_tile.loadFromRootJson(tileset_path)
+        self._root_tile = root_tile
+        self._log("tileset 加载完成")
+
+        # 2) 获取 mask 对象（来自当前选择）
+        masks = get_mask_objects(context)
+        if not masks:
+            self._log("没有 mask 对象，取消执行")
+            self._phase = "DONE"
+            return self._nb_finish(context, cancelled=True, msg="未选中 mask 对象（请先选择 mask 对象）")
+        self._masks = masks
+        self._log(f"mask 对象数量={len(masks)}，names={[getattr(m,'name','') for m in masks]}")
+
+        # 3) 预计算 mask 三角形投影缓存（避免每轮重复三角化）
+        mask_cache, mask_stats = build_mask_cache(context, masks)
+        self._mask_cache = mask_cache
+        self._log(f"mask_cache 构建：{mask_stats}")
+        if not mask_cache:
+            self._log("mask_cache 为空，取消执行")
+            self._phase = "DONE"
+            return self._nb_finish(context, cancelled=True, msg="mask 对象没有有效网格面（需要 MESH 且有面）")
+
+        # 4) 初始化状态机
+        self._phase = "SELECT"
+        self._refined_steps = 0
+        self._need_refine_queue = []
+        self._last_select_stats = ""
+        self._progress_total = 0
+        self._progress_done = 0
+
+        # 5) 启动 TIMER（0.01~0.1 秒都可；这里取 0.05 兼顾响应/开销）
+        self._nb_progress_begin(context, total=1)
+        self._nb_start_timer(context, interval_sec=0.05)
+        self._nb_request_redraw(context)
+        self.report({"INFO"}, "Refine by mask started (non-blocking). Press ESC to cancel.")
+        return {"RUNNING_MODAL"}
+
+    def invoke(self, context: bpy.types.Context, event: bpy.types.Event):
+        return self._start(context)
+
+    def execute(self, context: bpy.types.Context):
+        # 支持从脚本/搜索直接执行：也走非阻塞模式
+        return self._start(context)
+
+    def modal(self, context: bpy.types.Context, event: bpy.types.Event):
+        if event.type in {"ESC"}:
+            self._phase = "DONE"
+            return self._nb_finish(context, cancelled=True, msg="用户取消（ESC）")
+
+        # 只在 TIMER 时做一步，避免对交互事件造成干扰
+        if event.type != "TIMER":
+            return {"PASS_THROUGH"}
+
+        # 状态尚未初始化（理论上不应发生）
+        if self._phase in {"INIT", "DONE"}:
+            return {"PASS_THROUGH"}
+
+        # 防止意外死循环
+        self._refined_steps += 1
+        if self._refined_steps > self._max_steps:
+            self._phase = "DONE"
+            return self._nb_finish(context, cancelled=True, msg=f"达到最大步数保护 max_steps={self._max_steps}，中止（可能无法收敛）")
+
+        try:
+            # SELECT：重新框选，并生成本轮待 refine 队列（只生成，不批量 refine）
+            if self._phase == "SELECT":
+                assert self._root_tile is not None
+                assert self._masks is not None
+
+                self._log(f"---- 循环 #{self._refined_steps}：用 mask 重新框选对象 ----")
+                hit_objs, sel_stats = objects_hit_by_mask_cache_xz(
+                    context=context,
+                    masks=self._masks,
+                    mask_cache=self._mask_cache,
+                    select_hit_objects=True,
+                    deselect_first=True,
+                    set_active=True,
+                )
+                self._last_select_stats = str(sel_stats)
+
+                if not hit_objs:
+                    self._phase = "DONE"
+                    return self._nb_finish(context, cancelled=False, msg="当前 mask 未命中任何对象，结束")
+
+                # 映射到 CTile
+                hit_tiles: list[CTile] = []
+                for obj in hit_objs:
+                    key = self._objname_to_tile_key(getattr(obj, "name", "") or "")
+                    tile = self._root_tile.find(key) if key else None
+                    if tile is None:
+                        continue
+                    hit_tiles.append(tile)
+
+                hit_tiles = self._dedupe_tiles(hit_tiles)
+                need_refine = [t for t in hit_tiles if t.canRefine and t.meshLevel < TARGET_FINE_LEVEL]
+                need_refine.sort(key=lambda t: (t.meshLevel, t.content or ""))
+
+                if len(need_refine) == 0:
+                    self._phase = "DONE"
+                    return self._nb_finish(context, cancelled=False, msg=f"所有命中 tiles 都已达到 target_level={TARGET_FINE_LEVEL} 或无法 refine，结束")
+
+                # 设置本轮队列：后续每个 TIMER 只处理 1 个 tile
+                self._need_refine_queue = list(need_refine)
+                self._progress_total = len(self._need_refine_queue)
+                self._progress_done = 0
+                # 重新开始进度条（避免多轮 select/refine 时显示异常）
+                self._nb_progress_end(context)
+                self._nb_progress_begin(context, total=max(1, self._progress_total))
+
+                self._log(f"本轮命中 tiles={len(hit_tiles)}，待 refine tiles={len(self._need_refine_queue)}，进入逐 tile refine")
+                self._phase = "REFINE"
+                self._nb_request_redraw(context)
+                return {"RUNNING_MODAL"}
+
+            # REFINE：每次只 refine/加载/清理 1 个 tile
+            if self._phase == "REFINE":
+                if len(self._need_refine_queue) == 0:
+                    # 本轮处理完，回到 SELECT 做下一轮框选
+                    self._phase = "SELECT"
+                    self._nb_request_redraw(context)
+                    return {"RUNNING_MODAL"}
+
+                tile_to_refine = self._need_refine_queue.pop(0)
+                plan = self._compute_tiles_need_load_for_one(tile_to_refine)
+                if len(plan) == 0:
+                    # 理论上不应发生（canRefine==True），但为了稳健性做保护，避免死循环
+                    self._log(f"WARNING：tile={tile_to_refine.content} 计划为空，标记不可 refine 并跳过")
+                    tile_to_refine.canRefine = False  # type: ignore[assignment]
+                else:
+                    # 1) 加载该 tile 对应的更精细 glb（只处理这一块）
+                    self._log(f"[{self._progress_done+1}/{self._progress_total}] refine tile={tile_to_refine.content} -> load+clear")
+                    load_glb_tiles_by_dic_level_array(GLB_DIR, plan)
+
+                    # 2) 清理旧 tile（只清理这一块）
+                    clear_scene_by_tile(tile_to_refine)
+
+                # 更新进度 + 刷新 UI
+                self._progress_done += 1
+                self._nb_progress_update(context, min(self._progress_done, max(1, self._progress_total)))
+
+                self._nb_request_redraw(context)
+                return {"RUNNING_MODAL"}
+
+        except Exception as e:
+            self._phase = "DONE"
+            return self._nb_finish(context, cancelled=True, msg=f"执行异常中止：{e}")
+
+        return {"RUNNING_MODAL"}
+
+ACTION_SPECS = [
+    ActionSpec(
+        operator_cls=SAM3_OT_load_base_tiles,
+        menu_label=f"Load Base Tiles Level {BASE_LEVEL}",
+        icon="TOOL_SETTINGS",
+    ),
+    ActionSpec(
+        operator_cls=SAM3_OT_refine_selected_tiles,
+        menu_label="Refine Selected Tiles",
+        icon="TOOL_SETTINGS",
+    ),
+    ActionSpec(
+        operator_cls=SAM3_OT_refine_by_mask_to_target_level,
+        menu_label=f"Refine by Mask to Target Level {TARGET_FINE_LEVEL}",
+        icon="TOOL_SETTINGS",
+    ),
+]

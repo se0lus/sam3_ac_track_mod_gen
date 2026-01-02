@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# 模型文件和数据
+model/
+*.pt
+*.safetensors
+*.pth
+*.ckpt
+
+# 输出文件
+output/
+*.png
+*.jpg
+*.jpeg
+*.tif
+*.tiff
+
+# 测试数据
+test_images/
+test_images_shajing/
+test_session_record/
+
+# Blender文件
+*.blend
+*.blend1
+
+# 其他数据文件
+*.b3dm
+*.glb
+*.json
+*.csv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 临时文件
+*.tmp
+*.log
+*.bak
