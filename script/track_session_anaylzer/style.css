@@ -1,0 +1,274 @@
+:root {
+  --bg: #0b0f17;
+  --panel: #0f172a;
+  --muted: #94a3b8;
+  --text: #e5e7eb;
+  --border: rgba(148, 163, 184, 0.18);
+  --btn: #1f2937;
+  --btn2: #0b1220;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica,
+    Arial, "Apple Color Emoji", "Segoe UI Emoji";
+}
+
+code {
+  color: #cbd5e1;
+}
+
+.app {
+  height: 100%;
+  display: grid;
+  grid-template-columns: 360px 1fr;
+}
+
+.panel {
+  height: 100%;
+  overflow: auto;
+  background: linear-gradient(180deg, var(--panel), #0b1220);
+  border-right: 1px solid var(--border);
+  padding: 14px 14px 10px 14px;
+}
+
+.panel__header .title {
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.panel__header .subtitle {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.panel__section {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.section__title {
+  font-size: 13px;
+  font-weight: 650;
+  margin-bottom: 10px;
+}
+
+.row {
+  display: grid;
+  gap: 8px;
+}
+
+.row--gap {
+  grid-template-columns: 1fr 1fr;
+}
+
+.label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.hint {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+input[type="file"] {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border);
+  padding: 8px;
+  border-radius: 10px;
+  color: var(--text);
+}
+
+input[type="range"] {
+  width: 100%;
+}
+
+.btn {
+  background: rgba(148, 163, 184, 0.12);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 9px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.btn:hover {
+  background: rgba(148, 163, 184, 0.18);
+}
+
+.btn--ghost {
+  background: transparent;
+}
+
+.datasets {
+  display: grid;
+  gap: 10px;
+}
+
+.dataset {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px;
+  background: rgba(2, 6, 23, 0.35);
+}
+
+.dataset__top {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+}
+
+.dataset__name {
+  font-size: 12px;
+  line-height: 1.2;
+  word-break: break-all;
+}
+
+.dataset__meta {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.dataset__controls {
+  margin-top: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.controlsRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.offsetGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.btnTiny {
+  font-size: 12px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(148, 163, 184, 0.12);
+  border: 1px solid var(--border);
+  color: var(--text);
+  cursor: pointer;
+}
+.btnTiny:hover {
+  background: rgba(148, 163, 184, 0.18);
+}
+
+.btnTiny--danger {
+  border-color: rgba(248, 113, 113, 0.35);
+}
+.btnTiny--danger:hover {
+  background: rgba(248, 113, 113, 0.12);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mapWrap {
+  position: relative;
+}
+
+.map {
+  height: 100%;
+  width: 100%;
+  background: #0a0f1a;
+}
+
+.status {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(2, 6, 23, 0.7);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+  pointer-events: none;
+  max-width: 60%;
+}
+
+/* Laps table */
+.lapsTableWrap {
+  margin-top: 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.lapsTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.lapsTable thead th {
+  text-align: left;
+  padding: 8px 8px;
+  color: var(--muted);
+  background: rgba(148, 163, 184, 0.08);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.lapsTable tbody td {
+  padding: 7px 8px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+  white-space: nowrap;
+}
+
+.lapsTable tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.tdCheck {
+  width: 26px;
+}
+
+/* Leaflet tweaks */
+.leaflet-container {
+  background: #0a0f1a;
+}
+
+

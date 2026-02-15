@@ -24,6 +24,26 @@ import bpy  # type: ignore[import-not-found]
 if TYPE_CHECKING:
     from sam3_actions import ActionSpec
 
+# ---------------------------------------------------------------------------
+# 从 config.py 导入配置（config.py 与本文件同目录）
+# ---------------------------------------------------------------------------
+try:
+    # 先尝试将本文件所在目录加入 sys.path，以便 import config
+    _this_dir_for_config = os.path.dirname(os.path.realpath(__file__))
+    if _this_dir_for_config not in sys.path:
+        sys.path.insert(0, _this_dir_for_config)
+except Exception:
+    pass
+
+try:
+    from config import SAM3_IMPORT_ROOT_OVERRIDE, SAM3_IMPORT_ROOT_ENVVAR
+    _SAM3_IMPORT_ROOT_OVERRIDE: Optional[str] = SAM3_IMPORT_ROOT_OVERRIDE
+    _SAM3_IMPORT_ROOT_ENVVAR: str = SAM3_IMPORT_ROOT_ENVVAR
+except Exception:
+    # 如果 config.py 不可用（例如 Text Editor 模式下 __file__ 不存在），使用回退默认值
+    _SAM3_IMPORT_ROOT_OVERRIDE = r"E:\sam3_track_seg\blender_scripts"
+    _SAM3_IMPORT_ROOT_ENVVAR = "SAM3_BLENDER_SCRIPTS_DIR"
+
 # Debug info for UI when actions fail to load.
 _LAST_ACTION_LOAD_ERROR: str = ""
 _LAST_ACTION_LOAD_MODULE_ERRORS: List[str] = []
@@ -43,15 +63,6 @@ _DRIVER_NAMESPACE_DRAW_KEY = "sam3_object_context_menu_draw_func"
 _DRIVER_NAMESPACE_OUTLINER_DRAW_KEY = "sam3_outliner_context_menu_draw_func"
 _DRIVER_NAMESPACE_VIEW3D_DRAW_KEY = "sam3_view3d_context_menu_draw_func"
 _DRIVER_NAMESPACE_CLASSNAMES_KEY = "sam3_object_context_menu_registered_classnames"
-
-# Optional import root override (absolute path).
-# If Blender cannot resolve imports when running this script, set this to the directory
-# that CONTAINS the `sam3_actions/` folder, e.g.:
-#   _SAM3_IMPORT_ROOT_OVERRIDE = r"E:\sam3_track_seg\blender_scripts"
-_SAM3_IMPORT_ROOT_OVERRIDE: Optional[str] = r"E:\sam3_track_seg\blender_scripts"
-
-# Optional environment variable override (same meaning as above).
-_SAM3_IMPORT_ROOT_ENVVAR = "SAM3_BLENDER_SCRIPTS_DIR"
 
 # Action modules to load. Add/remove modules here.
 # Each module should provide ACTION_SPECS or get_action_specs().

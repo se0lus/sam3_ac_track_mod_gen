@@ -13,9 +13,12 @@ import bpy  # type: ignore[import-not-found]
 import bmesh  # type: ignore[import-not-found]
 from mathutils import Matrix  # type: ignore[import-not-found]
 
+# 确保本文件所在目录在 sys.path 中，以便导入同目录的 config
+_this_script_dir = os.path.dirname(os.path.realpath(__file__))
+if _this_script_dir not in sys.path:
+    sys.path.insert(0, _this_script_dir)
 
-_ROOT_CURVE_COLLECTION_NAME = "mask_curve2D_collection"
-_ROOT_POLYGON_COLLECTION_NAME = "mask_polygon_collection"
+from config import ROOT_CURVE_COLLECTION_NAME, ROOT_POLYGON_COLLECTION_NAME
 
 
 def _sanitize_name(s: str, *, max_len: int = 63) -> str:
@@ -411,8 +414,8 @@ def generate_polygons_from_blender_clips(blender_input_path: str, output_file: s
         return
 
     # collections
-    root_curve = _get_or_create_root_collection(_ROOT_CURVE_COLLECTION_NAME)
-    root_poly = _get_or_create_root_collection(_ROOT_POLYGON_COLLECTION_NAME)
+    root_curve = _get_or_create_root_collection(ROOT_CURVE_COLLECTION_NAME)
+    root_poly = _get_or_create_root_collection(ROOT_POLYGON_COLLECTION_NAME)
 
     created_curve_objects = 0
     created_mesh_objects = 0

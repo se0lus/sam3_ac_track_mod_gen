@@ -7,10 +7,7 @@ from . import ActionSpec
 from .c_tiles import CTile
 from .mask_select_utils import build_mask_cache, get_mask_objects, objects_hit_by_mask_cache_xz
 
-BASE_TILES_DIR = "E:\\sam3_track_seg\\test_images_shajing\\b3dm"
-GLB_DIR = "E:\\sam3_track_seg\\test_images_shajing\\glb"
-BASE_LEVEL = 17
-TARGET_FINE_LEVEL = 22
+from config import BASE_TILES_DIR, GLB_DIR, BASE_LEVEL, TARGET_FINE_LEVEL
 
 # ----------------------------
 # 通用：非阻塞 modal 执行辅助
