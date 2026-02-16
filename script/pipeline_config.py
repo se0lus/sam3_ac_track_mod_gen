@@ -90,11 +90,14 @@ class PipelineConfig:
         {"tag": "sand", "prompt": "sand surface", "threshold": 0.4},
         {"tag": "kerb", "prompt": "race track curb", "threshold": 0.2},
         {"tag": "trees", "prompt": "forest", "threshold": 0.3},
+        {"tag": "building", "prompt": "building structure", "threshold": 0.4},
+        {"tag": "water", "prompt": "water pond", "threshold": 0.4},
+        {"tag": "concrete", "prompt": "concrete paved ground", "threshold": 0.4},
     ])
 
     # Tags to segment at full-map level (stage 2) for wall generation reference
     sam3_fullmap_tags: List[str] = field(default_factory=lambda: [
-        "road", "trees", "grass",
+        "road", "trees", "grass", "kerb", "sand", "building", "water", "concrete",
     ])
 
     # --- Derived paths (populated by resolve()) ---
@@ -112,6 +115,11 @@ class PipelineConfig:
     mask_image_path: str = ""  # merged road mask
     trees_mask_path: str = ""  # trees mask for wall generation
     grass_mask_path: str = ""  # grass mask for wall generation
+    kerb_mask_path: str = ""  # kerb mask for wall generation
+    sand_mask_path: str = ""  # sand mask for wall generation
+    building_mask_path: str = ""  # building mask for wall generation
+    water_mask_path: str = ""  # water mask for wall generation
+    concrete_mask_path: str = ""  # concrete mask for wall generation
 
     def stage_dir(self, stage_name: str) -> str:
         """Return ``output/NN_stage_name/`` for a given stage."""
@@ -161,6 +169,21 @@ class PipelineConfig:
         )
         self.grass_mask_path = os.path.join(
             self.mask_full_map_dir, "grass_mask.png"
+        )
+        self.kerb_mask_path = os.path.join(
+            self.mask_full_map_dir, "kerb_mask.png"
+        )
+        self.sand_mask_path = os.path.join(
+            self.mask_full_map_dir, "sand_mask.png"
+        )
+        self.building_mask_path = os.path.join(
+            self.mask_full_map_dir, "building_mask.png"
+        )
+        self.water_mask_path = os.path.join(
+            self.mask_full_map_dir, "water_mask.png"
+        )
+        self.concrete_mask_path = os.path.join(
+            self.mask_full_map_dir, "concrete_mask.png"
         )
 
         return self

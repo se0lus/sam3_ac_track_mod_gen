@@ -60,12 +60,15 @@ def visualize_walls(
     ax.imshow(img_array)
 
     _WALL_STYLES = {
-        "outer":        ("lime",   2.5, "Outer wall"),
-        "separation":   ("cyan",   2.0, "Separation wall"),
-        "tire_barrier": ("orange", 2.0, "Tire barrier"),
-        "guardrail":    ("yellow", 2.0, "Guardrail"),
-        "inner":        ("red",    2.0, "Inner wall"),
-        "barrier":      ("orange", 2.0, "Barrier"),
+        "outer":        ("lime",        2.5, "Outer wall"),
+        "tree":         ("darkgreen",   2.0, "Tree"),
+        "building":     ("purple",      2.0, "Building"),
+        "water":        ("deepskyblue", 2.0, "Water"),
+        "separation":   ("cyan",        2.0, "Separation wall"),  # legacy
+        "inner":        ("red",         2.0, "Inner wall"),       # legacy
+        "barrier":      ("orange",      2.0, "Barrier"),          # legacy
+        "tire_barrier": ("orange",      2.0, "Tire barrier"),     # legacy
+        "guardrail":    ("yellow",      2.0, "Guardrail"),        # legacy
     }
 
     walls = walls_json.get("walls") or []
