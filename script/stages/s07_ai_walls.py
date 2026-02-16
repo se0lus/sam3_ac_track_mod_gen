@@ -75,6 +75,43 @@ def run(config: PipelineConfig) -> None:
     except Exception as e:
         logger.warning("Wall preview failed (non-critical): %s", e)
 
+    # Generate geo_metadata.json for wall editor
+    _write_geo_metadata(config, out_dir)
+
+
+def _write_geo_metadata(config: PipelineConfig, out_dir: str) -> None:
+    """Write geo_metadata.json from result_masks.json for the wall editor."""
+    masks_json = os.path.join(config.mask_full_map_dir, "result_masks.json")
+    if not os.path.isfile(masks_json):
+        logger.warning("result_masks.json not found, skipping geo_metadata.json")
+        return
+
+    try:
+        with open(masks_json, "r", encoding="utf-8") as f:
+            masks_data = json.load(f)
+
+        meta = masks_data.get("meta", {})
+        model_scale = meta.get("model_scale_size", {})
+        geo_bounds = meta.get("geo", {}).get("bounds", {})
+
+        geo_metadata = {
+            "image_width": model_scale.get("width", 0),
+            "image_height": model_scale.get("height", 0),
+            "bounds": {
+                "north": geo_bounds.get("top", 0),
+                "south": geo_bounds.get("bottom", 0),
+                "east": geo_bounds.get("right", 0),
+                "west": geo_bounds.get("left", 0),
+            },
+        }
+
+        out_path = os.path.join(out_dir, "geo_metadata.json")
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(geo_metadata, f, indent=2, ensure_ascii=False)
+        logger.info("Geo metadata saved: %s", out_path)
+    except Exception as e:
+        logger.warning("geo_metadata.json generation failed (non-critical): %s", e)
+
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")

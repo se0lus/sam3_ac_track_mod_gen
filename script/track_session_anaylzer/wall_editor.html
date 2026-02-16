@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>赛道围墙编辑器</title>
+
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
+
+    <link rel="stylesheet" href="./style.css" />
+    <link rel="stylesheet" href="./wall_editor.css" />
+  </head>
+  <body>
+    <div class="app">
+      <aside class="panel">
+        <header class="panel__header">
+          <div class="title">赛道围墙编辑器</div>
+          <div class="subtitle">
+            编辑 <code>walls.json</code> — 拖拽顶点、添加/删除多边形
+          </div>
+        </header>
+
+        <!-- Toolbar -->
+        <section class="panel__section we-toolbar">
+          <div class="we-toolbar__row">
+            <button id="btnSave" class="btn btn--primary" type="button">保存</button>
+            <button id="btnUndo" class="btn" type="button">撤销</button>
+            <button id="btnRedo" class="btn" type="button">重做</button>
+            <span id="dirtyFlag" class="we-dirty" hidden>*未保存</span>
+          </div>
+        </section>
+
+        <!-- Mode -->
+        <section class="panel__section">
+          <div class="section__title">模式</div>
+          <div class="we-mode-row">
+            <label class="we-radio">
+              <input type="radio" name="mode" value="select" checked />
+              选择
+            </label>
+            <label class="we-radio">
+              <input type="radio" name="mode" value="draw" />
+              绘制
+            </label>
+            <label class="we-draw-type-label">
+              类型
+              <select id="drawType" class="we-select">
+                <option value="outer">outer</option>
+                <option value="tree" selected>tree</option>
+                <option value="building">building</option>
+                <option value="water">water</option>
+              </select>
+            </label>
+          </div>
+        </section>
+
+        <!-- Wall List -->
+        <section class="panel__section">
+          <div class="section__title">围墙列表</div>
+          <div id="wallList" class="we-wall-list"></div>
+          <button id="btnAddWall" class="btnTiny" type="button" style="margin-top:8px" hidden>
+            + 添加围墙
+          </button>
+        </section>
+
+        <!-- Selected Wall -->
+        <section class="panel__section" id="selWallSection" hidden>
+          <div class="section__title">选中围墙</div>
+          <div class="we-detail-row">
+            <span>类型：</span>
+            <select id="selWallType" class="we-select">
+              <option value="outer">outer</option>
+              <option value="tree">tree</option>
+              <option value="building">building</option>
+              <option value="water">water</option>
+            </select>
+          </div>
+          <div class="we-detail-row">
+            <span>闭合：</span>
+            <input id="selWallClosed" type="checkbox" checked />
+          </div>
+          <div class="we-detail-row">
+            <span id="selWallPtsCount">点数：0</span>
+          </div>
+          <button id="btnDeleteWall" class="btnTiny btnTiny--danger" type="button">
+            删除围墙
+          </button>
+        </section>
+
+        <!-- Selected Vertex -->
+        <section class="panel__section" id="selVertexSection" hidden>
+          <div class="section__title">选中顶点</div>
+          <div class="we-detail-row small" id="selVertexPixel">像素：(0, 0)</div>
+          <div class="we-detail-row small" id="selVertexGeo">经纬：(0, 0)</div>
+          <button id="btnDeleteVertex" class="btnTiny btnTiny--danger" type="button">
+            删除顶点
+          </button>
+        </section>
+
+        <footer class="panel__footer">
+          <div class="small">
+            快捷键：Ctrl+S 保存 / Ctrl+Z 撤销 / Ctrl+Shift+Z 重做 / Delete 删除 / Esc 取消
+          </div>
+        </footer>
+      </aside>
+
+      <main class="mapWrap">
+        <div id="map" class="map"></div>
+        <div class="status" id="status">正在加载围墙数据…</div>
+        <!-- Right-click context menu -->
+        <div id="ctxMenu" class="we-ctx-menu" hidden>
+          <div id="ctxAddVertex" class="we-ctx-menu__item">在此处添加顶点</div>
+        </div>
+      </main>
+    </div>
+
+    <script src="./wall_editor.js"></script>
+  </body>
+</html>
