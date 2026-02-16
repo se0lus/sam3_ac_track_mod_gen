@@ -82,9 +82,7 @@ sam3_track_seg/
 │
 └── test_images_shajing/           # 测试数据集（沙井赛道）
     ├── b3dm/                      # 3D Tiles (b3dm + tileset.json)
-    ├── glb/                       # 转换后的 glb 瓦片
-    ├── clips/{tag}/clip_N_masks.json
-    └── blender_clips/{tag}/clip_N_blender.json
+    ├── result.tif                 # 2D 赛道全图（很巨大，使用之前需要先降采样）
 ```
 
 ---
