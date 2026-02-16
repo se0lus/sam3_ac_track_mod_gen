@@ -136,7 +136,7 @@ Available stages: """ + ", ".join(PIPELINE_STAGES)
         help="Run specific stage(s). Can be repeated. If omitted, runs all.",
     )
     p.add_argument("--gemini-api-key", default="", help="Gemini API key (default: built-in key)")
-    p.add_argument("--gemini-model", default="gemini-2.0-flash", help="Gemini model name")
+    p.add_argument("--gemini-model", default="gemini-2.5-pro", help="Gemini model name")
     p.add_argument(
         "--track-direction", default="clockwise", choices=["clockwise", "counterclockwise"],
         help="Track driving direction (default: clockwise)",

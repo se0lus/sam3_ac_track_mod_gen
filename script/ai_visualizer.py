@@ -59,10 +59,17 @@ def visualize_walls(
     fig, ax = plt.subplots(1, 1, figsize=figsize)
     ax.imshow(img_array)
 
+    _WALL_STYLES = {
+        "outer":        ("lime",   2.5, "Outer wall"),
+        "separation":   ("cyan",   2.0, "Separation wall"),
+        "tire_barrier": ("orange", 2.0, "Tire barrier"),
+        "guardrail":    ("yellow", 2.0, "Guardrail"),
+        "inner":        ("red",    2.0, "Inner wall"),
+        "barrier":      ("orange", 2.0, "Barrier"),
+    }
+
     walls = walls_json.get("walls") or []
-    legend_handles = []
-    outer_drawn = False
-    inner_drawn = False
+    drawn_types: set = set()
 
     for wall in walls:
         pts = wall.get("points") or []
@@ -77,22 +84,14 @@ def visualize_walls(
             xs.append(xs[0])
             ys.append(ys[0])
 
-        if wtype == "outer":
-            color = "lime"
-            lw = 2.5
-            label = "Outer wall" if not outer_drawn else None
-            outer_drawn = True
-        else:
-            color = "red"
-            lw = 2.0
-            label = "Inner wall" if not inner_drawn else None
-            inner_drawn = True
-
-        ax.plot(xs, ys, color=color, linewidth=lw, alpha=0.85, label=label)
+        color, lw, label = _WALL_STYLES.get(wtype, ("red", 2.0, wtype))
+        ax.plot(xs, ys, color=color, linewidth=lw, alpha=0.85,
+                label=label if wtype not in drawn_types else None)
+        drawn_types.add(wtype)
 
     ax.set_title("Virtual Walls")
     ax.axis("off")
-    if outer_drawn or inner_drawn:
+    if drawn_types:
         ax.legend(loc="upper right", fontsize=10)
 
     out = str(Path(output_path).resolve())

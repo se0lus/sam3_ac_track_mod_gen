@@ -145,7 +145,7 @@ def generate_game_objects(
     track_direction: str = "clockwise",
     *,
     api_key: Optional[str] = None,
-    model_name: str = "gemini-2.0-flash",
+    model_name: str = "gemini-2.5-pro",
     temperature: float = 0.2,
 ) -> Dict[str, Any]:
     """Call Gemini to generate game object placements for the given track image.

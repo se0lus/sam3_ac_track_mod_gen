@@ -1,10 +1,17 @@
-"""Stage 2: Run SAM3 segmentation on the full GeoTIFF."""
+"""Stage 2: Run SAM3 segmentation on the full GeoTIFF.
+
+Generates per-tag masks at full-map level for wall generation reference
+(road, trees, grass) in addition to the merged road mask.
+"""
 from __future__ import annotations
 
 import argparse
 import logging
 import os
 import sys
+
+import numpy as np
+from PIL import Image
 
 logger = logging.getLogger("sam3_pipeline.s02")
 
@@ -24,19 +31,29 @@ def run(config: PipelineConfig) -> None:
     - result_masks.json
     - merged_mask.png
     - results_visualization.png
+    - {tag}_mask.png for each tag in sam3_fullmap_tags
     """
     logger.info("=== Stage 2: Full map SAM3 segmentation ===")
 
     if not config.geotiff_path:
         raise ValueError("geotiff_path is required for mask_full_map stage")
 
-    geo_image = _mask_full_map(config.geotiff_path, config.mask_full_map_dir)
+    geo_image = _mask_full_map(config.geotiff_path, config.mask_full_map_dir, config)
     if geo_image is None:
         raise RuntimeError("Failed to generate mask for full map")
+
+    # Generate per-tag masks for wall generation reference
+    _generate_fullmap_tag_masks(
+        geo_image,
+        config.mask_full_map_dir,
+        config.sam3_prompts,
+        config.sam3_fullmap_tags,
+    )
+
     logger.info("Full map segmentation complete. Output: %s", config.mask_full_map_dir)
 
 
-def _mask_full_map(src_img_file: str, output_dir: str):
+def _mask_full_map(src_img_file: str, output_dir: str, config: PipelineConfig | None = None):
     """Run SAM3 segmentation on the full GeoTIFF and return the GeoSam3Image.
 
     All outputs (modelscale image, masks, visualization, merged mask) are
@@ -56,6 +73,41 @@ def _mask_full_map(src_img_file: str, output_dir: str):
     geo_image = GeoSam3Image(src_img_file)
     if not geo_image.has_model_scale_image():
         geo_image.generate_model_scale_image()
+
+    # Detect and inpaint center holes before SAM3 inference
+    if config and config.inpaint_center_holes:
+        from image_inpainter import detect_center_holes, inpaint_holes
+
+        hole_mask = detect_center_holes(
+            geo_image.model_scale_image,
+            min_hole_ratio=config.inpaint_min_hole_ratio,
+        )
+        if hole_mask is not None:
+            hole_pct = np.sum(hole_mask > 0) / hole_mask.size * 100
+            logger.info(
+                "Center holes detected (%.1f%%), inpainting with %s...",
+                hole_pct, config.inpaint_model,
+            )
+            # Save debug artifacts
+            Image.fromarray(hole_mask).save(
+                os.path.join(output_dir, "holes_mask.png")
+            )
+            geo_image.model_scale_image.save(
+                os.path.join(output_dir, "result_modelscale_original.png")
+            )
+            # Inpaint and replace
+            geo_image.model_scale_image = inpaint_holes(
+                geo_image.model_scale_image,
+                hole_mask,
+                api_key=config.gemini_api_key,
+                model_name=config.inpaint_model,
+            )
+            geo_image.model_scale_image.save(
+                os.path.join(output_dir, "result_modelscale_inpainted.png")
+            )
+            logger.info("Inpainting complete")
+        else:
+            logger.info("No center holes detected, skipping inpainting")
 
     need_inference = not geo_image.has_masks()
     inference_state = None
@@ -94,6 +146,105 @@ def _mask_full_map(src_img_file: str, output_dir: str):
     merged_mask.save(os.path.join(output_dir, "merged_mask.png"))
 
     return geo_image
+
+
+def _generate_fullmap_tag_masks(
+    geo_image,
+    output_dir: str,
+    prompts: list,
+    fullmap_tags: list,
+) -> None:
+    """Run SAM3 with additional prompts and save per-tag masks at full-map level.
+
+    For each tag in *fullmap_tags* (except "road" which is already generated),
+    loads the SAM3 model, runs inference, and saves ``{tag}_mask.png``.
+    """
+    # Build prompt lookup
+    prompt_lookup = {p["tag"]: p for p in prompts}
+
+    # Check which tags still need generation
+    tags_to_generate = []
+    for tag in fullmap_tags:
+        if tag == "road":
+            continue  # already generated as merged_mask.png
+        if tag not in prompt_lookup:
+            logger.warning("Tag '%s' in sam3_fullmap_tags but not in sam3_prompts, skipping", tag)
+            continue
+        mask_path = os.path.join(output_dir, f"{tag}_mask.png")
+        if os.path.isfile(mask_path):
+            logger.info("Tag '%s' mask already exists: %s", tag, mask_path)
+            continue
+        tags_to_generate.append(tag)
+
+    if not tags_to_generate:
+        logger.info("All full-map tag masks already exist, skipping")
+        return
+
+    logger.info("Generating full-map masks for tags: %s", tags_to_generate)
+
+    import sam3
+    from sam3 import build_sam3_image_model
+    from sam3.model.sam3_image_processor import Sam3Processor
+
+    sam3_root = os.path.join(os.path.dirname(sam3.__file__), "..")
+    bpe_path = f"{sam3_root}/assets/bpe_simple_vocab_16e6.txt.gz"
+    checkpoint_path = f"{sam3_root}/../model/sam3.pt"
+    model = build_sam3_image_model(bpe_path=bpe_path, checkpoint_path=checkpoint_path, load_from_HF=False)
+
+    image = geo_image.model_scale_image
+
+    for tag in tags_to_generate:
+        cfg = prompt_lookup[tag]
+        threshold = cfg.get("threshold", 0.4)
+        prompt_text = cfg["prompt"]
+
+        logger.info("Running SAM3 for tag '%s' (prompt='%s', threshold=%.2f)", tag, prompt_text, threshold)
+
+        processor = Sam3Processor(model, confidence_threshold=threshold)
+        inference_state = processor.set_image(image)
+        processor.reset_all_prompts(inference_state)
+        inference_state = processor.set_text_prompt(state=inference_state, prompt=prompt_text)
+
+        # Extract masks from inference state and merge into a single tag mask
+        masks = inference_state.get("masks")
+        scores = inference_state.get("scores", [])
+
+        if masks is None or len(masks) == 0:
+            logger.warning("No masks generated for tag '%s'", tag)
+            continue
+
+        # Convert masks to numpy, merge all masks for this tag
+        import torch
+        merged = None
+        for i, mask in enumerate(masks):
+            score = float(scores[i]) if i < len(scores) else 0.0
+            if score < threshold:
+                continue
+            if isinstance(mask, torch.Tensor):
+                mask_np = mask.cpu().numpy()
+            else:
+                mask_np = np.array(mask)
+            if mask_np.ndim > 2:
+                mask_np = mask_np.squeeze()
+            if mask_np.dtype == bool:
+                mask_np = mask_np.astype(np.uint8) * 255
+            elif mask_np.max() > 1.0:
+                mask_np = (mask_np / mask_np.max() * 255).astype(np.uint8)
+            else:
+                mask_np = (mask_np * 255).astype(np.uint8)
+
+            if merged is None:
+                merged = mask_np.astype(np.float32)
+            else:
+                merged = np.maximum(merged, mask_np.astype(np.float32))
+
+        if merged is not None:
+            merged_img = Image.fromarray(merged.astype(np.uint8), mode='L')
+            mask_path = os.path.join(output_dir, f"{tag}_mask.png")
+            merged_img.save(mask_path)
+            logger.info("Saved %s mask: %s (size=%s)", tag, mask_path, merged_img.size)
+        else:
+            logger.warning("No masks above threshold for tag '%s'", tag)
 
 
 if __name__ == "__main__":

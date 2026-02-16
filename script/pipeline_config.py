@@ -52,11 +52,16 @@ class PipelineConfig:
     output_dir: str = _DEFAULT_OUTPUT_DIR
 
     # --- Tools ---
-    blender_exe: str = r"E:\SteamLibrary\steamapps\common\Blender\blender.exe"
+    blender_exe: str = r"C:\Program Files\Blender Foundation\Blender 5.0\blender.exe"
 
     # --- AI ---
     gemini_api_key: str = "***REDACTED_GEMINI_KEY***"
-    gemini_model: str = "gemini-2.0-flash"
+    gemini_model: str = "gemini-2.5-pro"
+
+    # --- Inpainting (center hole repair) ---
+    inpaint_center_holes: bool = True
+    inpaint_model: str = "gemini-3-pro-image-preview"
+    inpaint_min_hole_ratio: float = 0.001  # 0.1% of image area threshold
 
     # --- Track metadata ---
     track_direction: str = "clockwise"
@@ -84,6 +89,12 @@ class PipelineConfig:
         {"tag": "grass", "prompt": "grass", "threshold": 0.4},
         {"tag": "sand", "prompt": "sand surface", "threshold": 0.4},
         {"tag": "kerb", "prompt": "race track curb", "threshold": 0.2},
+        {"tag": "trees", "prompt": "forest", "threshold": 0.3},
+    ])
+
+    # Tags to segment at full-map level (stage 2) for wall generation reference
+    sam3_fullmap_tags: List[str] = field(default_factory=lambda: [
+        "road", "trees", "grass",
     ])
 
     # --- Derived paths (populated by resolve()) ---
@@ -98,7 +109,9 @@ class PipelineConfig:
     game_objects_json: str = ""
     game_objects_preview: str = ""
     final_blend_file: str = ""
-    mask_image_path: str = ""
+    mask_image_path: str = ""  # merged road mask
+    trees_mask_path: str = ""  # trees mask for wall generation
+    grass_mask_path: str = ""  # grass mask for wall generation
 
     def stage_dir(self, stage_name: str) -> str:
         """Return ``output/NN_stage_name/`` for a given stage."""
@@ -142,6 +155,12 @@ class PipelineConfig:
         )
         self.mask_image_path = os.path.join(
             self.mask_full_map_dir, "merged_mask.png"
+        )
+        self.trees_mask_path = os.path.join(
+            self.mask_full_map_dir, "trees_mask.png"
+        )
+        self.grass_mask_path = os.path.join(
+            self.mask_full_map_dir, "grass_mask.png"
         )
 
         return self
