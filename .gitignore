@@ -5,6 +5,9 @@ __pycache__/
 *.so
 .Python
 
+# SAM3 第三方模型源码
+sam3/
+
 # 模型文件和数据
 model/
 *.pt

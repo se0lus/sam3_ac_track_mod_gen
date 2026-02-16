@@ -351,6 +351,42 @@ def _triangulate_mesh_object_inplace(obj: bpy.types.Object) -> None:
         bm.free()
 
 
+def convert_curve_to_mesh(obj: bpy.types.Object) -> bpy.types.Object:
+    """
+    Convert a Curve object to a Mesh object in-place and triangulate.
+
+    After calling ``bpy.ops.object.convert(target='MESH')``, the same
+    ``obj`` reference is still valid but its ``type`` changes from ``'CURVE'``
+    to ``'MESH'``.  The resulting mesh is then triangulated via bmesh.
+
+    If the object is already a MESH, only triangulation is applied.
+
+    Returns the (possibly mutated) object.  Raises ``RuntimeError`` if the
+    conversion produces a non-MESH result.
+    """
+    if obj.type == "MESH":
+        _triangulate_mesh_object_inplace(obj)
+        return obj
+
+    if obj.type != "CURVE":
+        raise RuntimeError(f"Expected CURVE or MESH object, got type={obj.type}")
+
+    # Ensure object is selected and active (required by bpy.ops.object.convert)
+    bpy.ops.object.select_all(action="DESELECT")
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.convert(target="MESH")
+
+    # After convert, verify the object is now a MESH
+    if obj.type != "MESH":
+        raise RuntimeError(
+            f"convert(target='MESH') did not produce MESH: obj={obj.name}, type={obj.type}"
+        )
+
+    _triangulate_mesh_object_inplace(obj)
+    return obj
+
+
 def _create_mesh_object(name: str, polys: List[List[Tuple[float, float, float]]]) -> bpy.types.Object:
     mesh = bpy.data.meshes.new(name=f"{name}_mesh")
     obj = bpy.data.objects.new(name, mesh)
@@ -382,24 +418,136 @@ def _create_mesh_object(name: str, polys: List[List[Tuple[float, float, float]]]
     return obj
 
 
+def _merge_tag_polygon_meshes(root_poly: bpy.types.Collection) -> int:
+    """
+    将 mask_polygon_collection 下每个 tag 子集合中的所有碎片 mesh
+    合并为一个单一的 mesh 对象。
+
+    合并前::
+
+        mask_polygon_collection/
+            mask_polygon_road/
+                clip_0/
+                    mask_polygon_road_clip_0_0
+                    mask_polygon_road_clip_0_1
+                clip_1/
+                    mask_polygon_road_clip_1_0
+
+    合并后::
+
+        mask_polygon_collection/
+            mask_polygon_road/
+                mask_polygon_road   ← 一个完整的大 mesh
+
+    Returns:
+        合并的 tag 数量。
+    """
+    merged_count = 0
+
+    for tag_col in list(root_poly.children):
+        # 递归收集该 tag 下所有 MESH 对象
+        all_meshes: List[bpy.types.Object] = []
+
+        def _collect(col: bpy.types.Collection) -> None:
+            for obj in list(col.objects):
+                if obj.type == "MESH" and obj.data is not None:
+                    all_meshes.append(obj)
+            for child in list(col.children):
+                _collect(child)
+
+        _collect(tag_col)
+
+        if len(all_meshes) <= 1:
+            # 只有 0 或 1 个 mesh，无需合并；但如果在子集合中，移到 tag 级
+            if len(all_meshes) == 1:
+                obj = all_meshes[0]
+                obj.name = tag_col.name
+                if obj.data:
+                    obj.data.name = f"{tag_col.name}_mesh"
+                if obj.name not in tag_col.objects:
+                    tag_col.objects.link(obj)
+                # 从 clip 子集合中移除
+                for child_col in list(tag_col.children):
+                    try:
+                        if obj.name in child_col.objects:
+                            child_col.objects.unlink(obj)
+                    except Exception:
+                        pass
+                _remove_empty_collections(tag_col)
+            continue
+
+        # 用 bmesh 把所有碎片 mesh 合并为一个
+        bm_merged = bmesh.new()
+        for obj in all_meshes:
+            temp_bm = bmesh.new()
+            temp_bm.from_mesh(obj.data)
+            # 变换到世界坐标（各碎片可能有不同的 matrix_world）
+            temp_bm.transform(obj.matrix_world)
+
+            vert_map: Dict[int, Any] = {}
+            for v in temp_bm.verts:
+                vert_map[v.index] = bm_merged.verts.new(v.co)
+            bm_merged.verts.ensure_lookup_table()
+
+            for f in temp_bm.faces:
+                try:
+                    bm_merged.faces.new([vert_map[v.index] for v in f.verts])
+                except Exception:
+                    pass  # 跳过退化/重复面
+            temp_bm.free()
+
+        # 创建合并后的 mesh 对象（世界坐标，identity matrix）
+        tag_name = tag_col.name
+        mesh_data = bpy.data.meshes.new(f"{tag_name}_mesh")
+        bm_merged.to_mesh(mesh_data)
+        bm_merged.free()
+
+        merged_obj = bpy.data.objects.new(tag_name, mesh_data)
+        tag_col.objects.link(merged_obj)
+
+        # 删除旧的碎片 mesh 对象
+        for obj in all_meshes:
+            bpy.data.objects.remove(obj, do_unlink=True)
+
+        # 清理空的 clip 子集合
+        _remove_empty_collections(tag_col)
+
+        merged_count += 1
+        print(f"[generate_polygons] 合并 {tag_name}: {len(all_meshes)} 个碎片 -> 1 个 mesh "
+              f"({len(mesh_data.vertices)} verts, {len(mesh_data.polygons)} faces)")
+
+    return merged_count
+
+
+def _remove_empty_collections(parent: bpy.types.Collection) -> None:
+    """递归删除 parent 下所有空的子集合。"""
+    for child in list(parent.children):
+        _remove_empty_collections(child)
+        if len(child.objects) == 0 and len(child.children) == 0:
+            try:
+                parent.children.unlink(child)
+                bpy.data.collections.remove(child)
+            except Exception:
+                pass
+
+
 def generate_polygons_from_blender_clips(blender_input_path: str, output_file: str) -> None:
     """
     读取 blender_input_path 下的所有 `*_blender.json` 文件(由 `map_mask_to_blender` 生成)，并生成 polygons，保存到 output_file（新的 .blend）。
 
-    输出 .blend 的结构如下（按 tag，再按 clip 分组，避免多 clip 重名）：
+    输出 .blend 的结构如下：
 
-    mask_curve2D_collection\n
-        mask_curve2D_{tag}\n
-            {clip}\n
-                mask_curve2D_{tag}_{clip}_{mask_index}_include\n
-                mask_curve2D_{tag}_{clip}_{mask_index}_exclude\n
-                ...\n
+    mask_curve2D_collection（诊断用，按 clip 分组）::
 
-    mask_polygon_collection\n
-        mask_polygon_{tag}\n
-            {clip}\n
-                mask_polygon_{tag}_{clip}_{mask_index}\n   (include 已扣除 exclude，不再区分 include/exclude)\n
-                ...\n
+        mask_curve2D_{tag}/
+            {clip}/
+                mask_curve2D_{tag}_{clip}_{mask_index}_include
+                mask_curve2D_{tag}_{clip}_{mask_index}_exclude
+
+    mask_polygon_collection（每个 tag 合并为一个 mesh）::
+
+        mask_polygon_{tag}/
+            mask_polygon_{tag}   ← 所有 clip 碎片合并后的单一 mesh
     """
 
     blender_input_path = os.path.abspath(blender_input_path)
@@ -458,19 +606,15 @@ def generate_polygons_from_blender_clips(blender_input_path: str, output_file: s
         filled_curve_obj = _create_filled_curve_object_for_polygons(mesh_obj_name, include_polys, exclude_polys)
         _link_object_to_collection(filled_curve_obj, clip_poly_col)
 
-        # convert 需要对象在 view layer 中且被选中/激活
+        # Convert curve to mesh and triangulate (required by downstream
+        # mask_select_utils intersection tests which need MESH objects).
         try:
-            bpy.ops.object.select_all(action="DESELECT")
-            filled_curve_obj.select_set(True)
-            bpy.context.view_layer.objects.active = filled_curve_obj
-            bpy.ops.object.convert(target="MESH")
+            convert_curve_to_mesh(filled_curve_obj)
         except Exception as e:
             print(
-                f"[generate_polygons] curve->mesh convert 失败: {mesh_obj_name} err={e}，回退为简单 mesh（不扣洞）"
+                f"[generate_polygons] curve->mesh convert failed: {mesh_obj_name} err={e}, fallback to simple mesh"
             )
-            # 回退：至少生成 include 的 mesh（不扣洞）
             try:
-                # 删除失败的 curve 对象，避免留垃圾
                 bpy.data.objects.remove(filled_curve_obj, do_unlink=True)
             except Exception:
                 pass
@@ -479,11 +623,14 @@ def generate_polygons_from_blender_clips(blender_input_path: str, output_file: s
             created_mesh_objects += 1
             continue
 
-        # convert 后对象仍是同一个引用，但类型/数据变了；统一三角化，便于后续使用
-        _triangulate_mesh_object_inplace(filled_curve_obj)
         created_mesh_objects += 1
 
     print(f"[generate_polygons] 创建完成: curves={created_curve_objects}, meshes={created_mesh_objects}")
+
+    # 3) 合并：将每个 tag 下的所有碎片 mesh 合并为一个完整的大 mask
+    merged_tags = _merge_tag_polygon_meshes(root_poly)
+    if merged_tags:
+        print(f"[generate_polygons] 已合并 {merged_tags} 个 tag 的 mask mesh")
 
     # save blend
     bpy.ops.wm.save_as_mainfile(filepath=output_file)

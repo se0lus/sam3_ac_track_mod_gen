@@ -404,7 +404,7 @@ def visualize_polygons_on_mask(mask: Image.Image, polygons: Any,
     # 保存或显示
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
-        print(f"✓ 已保存可视化结果到: {save_path}")
+        print(f"[OK] 已保存可视化结果到: {save_path}")
     else:
         plt.show()
     
@@ -500,7 +500,7 @@ def visualize_polygons_on_image(image: Image.Image, polygons: Any,
     # 保存或显示
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
-        print(f"✓ 已保存可视化结果到: {save_path}")
+        print(f"[OK] 已保存可视化结果到: {save_path}")
     else:
         plt.show()
     
@@ -546,11 +546,11 @@ class GeoSam3Image:
         if os.path.exists(model_scale_path):
             try:
                 self.model_scale_image = Image.open(model_scale_path).convert('RGB')
-                print(f"✓ 已加载模型缩放图像: {model_scale_path}")
+                print(f"[OK] 已加载模型缩放图像: {model_scale_path}")
             except Exception as e:
-                print(f"⚠ 无法加载模型缩放图像 {model_scale_path}: {e}")
+                print(f"[WARN] 无法加载模型缩放图像 {model_scale_path}: {e}")
         else:
-            print(f"ℹ 未找到模型缩放图像: {model_scale_path}")
+            print(f"[INFO] 未找到模型缩放图像: {model_scale_path}")
     
     def _load_mask_images(self):
         """
@@ -568,7 +568,7 @@ class GeoSam3Image:
         
         # 扫描目录中的所有文件
         if not os.path.isdir(self.directory):
-            print(f"⚠ 目录不存在: {self.directory}")
+            print(f"[WARN] 目录不存在: {self.directory}")
             return
         
         for filename in os.listdir(self.directory):
@@ -603,12 +603,12 @@ class GeoSam3Image:
                         'path': mask_path
                     }
                     tag_str = f" (tag: {tag})" if tag is not None else ""
-                    print(f"✓ 已加载 mask {mask_index}: {filename} (概率: {prob_value}{tag_str})")
+                    print(f"[OK] 已加载 mask {mask_index}: {filename} (概率: {prob_value}{tag_str})")
                 except Exception as e:
-                    print(f"⚠ 无法加载 mask 图像 {mask_path}: {e}")
+                    print(f"[WARN] 无法加载 mask 图像 {mask_path}: {e}")
         
         if len(self.masks) == 0:
-            print(f"ℹ 未找到任何 mask 图像（匹配模式: {self.basename}_mask{{数字}}_prob({{数字}}).png 或 {self.basename}_tag_mask{{数字}}_prob({{数字}}).png）")
+            print(f"[INFO] 未找到任何 mask 图像（匹配模式: {self.basename}_mask{{数字}}_prob({{数字}}).png 或 {self.basename}_tag_mask{{数字}}_prob({{数字}}).png）")
     
     def get_mask_by_index(self, index: int) -> Optional[Dict[str, Any]]:
         """
@@ -721,7 +721,7 @@ class GeoSam3Image:
                 'path': mask_path
             }
         
-        print(f"✓ 已设置 {len(self.masks)} 个新的 mask，覆盖了原有的 mask")
+        print(f"[OK] 已设置 {len(self.masks)} 个新的 mask，覆盖了原有的 mask")
     
     def set_masks_from_inference_state(self, inference_state: Dict[str, Any], tag: Optional[str] = None):
         """
@@ -832,12 +832,12 @@ class GeoSam3Image:
             
             # 保存到 model_scale_image 属性
             self.model_scale_image = scaled_image
-            print(f"✓ 已生成模型缩放图像，尺寸: {scaled_image.size} (最大边长: {max_size})")
+            print(f"[OK] 已生成模型缩放图像，尺寸: {scaled_image.size} (最大边长: {max_size})")
             
             return scaled_image
             
         except Exception as e:
-            print(f"⚠ 生成模型缩放图像失败: {e}")
+            print(f"[WARN] 生成模型缩放图像失败: {e}")
             raise
     
     def crop_and_scale_to_gsd(self, normalized_bbox: Tuple[float, float, float, float],
@@ -988,7 +988,7 @@ class GeoSam3Image:
         # 创建新的 GeoSam3Image 实例
         new_geo_sam3_image = GeoSam3Image(dst_image_path)
         
-        print(f"✓ 已裁剪并缩放图像:")
+        print(f"[OK] 已裁剪并缩放图像:")
         print(f"  • 原始窗口: ({left_px}, {top_px}, {right_px}, {bottom_px})")
         print(f"  • 缩放后尺寸: {scaled_width} × {scaled_height} 像素")
         print(f"  • 目标GSD: {target_gsd} cm/pixel")
@@ -1017,7 +1017,7 @@ class GeoSam3Image:
                 merged_mask.save('merged_masks.png')
         """
         if len(self.masks) == 0:
-            print("ℹ 没有 mask 可以合并")
+            print("[INFO] 没有 mask 可以合并")
             return None
         
         # 获取所有 mask 图像
@@ -1072,7 +1072,7 @@ class GeoSam3Image:
         merged_array = (merged_array * 255).astype(np.uint8)
         merged_image = Image.fromarray(merged_array, mode='L')
         
-        print(f"✓ 已合并 {len(mask_images)} 个 mask，模式: {mode}，尺寸: {target_size}")
+        print(f"[OK] 已合并 {len(mask_images)} 个 mask，模式: {mode}，尺寸: {target_size}")
         
         return merged_image
     
@@ -1115,16 +1115,16 @@ class GeoSam3Image:
             if self.model_scale_image is not None:
                 model_scale_path = os.path.join(output_dir, f"{self.basename}_modelscale.png")
                 if os.path.exists(model_scale_path) and not overwrite:
-                    print(f"ℹ 跳过已存在的模型缩放图像: {model_scale_path}")
+                    print(f"[INFO] 跳过已存在的模型缩放图像: {model_scale_path}")
                 else:
                     try:
                         self.model_scale_image.save(model_scale_path)
                         saved_files['model_scale_image'] = model_scale_path
-                        print(f"✓ 已保存模型缩放图像: {model_scale_path}")
+                        print(f"[OK] 已保存模型缩放图像: {model_scale_path}")
                     except Exception as e:
-                        print(f"⚠ 无法保存模型缩放图像 {model_scale_path}: {e}")
+                        print(f"[WARN] 无法保存模型缩放图像 {model_scale_path}: {e}")
             else:
-                print(f"ℹ 没有模型缩放图像需要保存")
+                print(f"[INFO] 没有模型缩放图像需要保存")
         
         # 保存所有 masks
         if save_masks:
@@ -1141,11 +1141,11 @@ class GeoSam3Image:
                             try:
                                 os.remove(old_mask_path)
                                 deleted_count += 1
-                                print(f"🗑 已删除历史 mask 文件: {filename}")
+                                print(f"[DEL] 已删除历史 mask 文件: {filename}")
                             except Exception as e:
-                                print(f"⚠ 无法删除历史 mask 文件 {old_mask_path}: {e}")
+                                print(f"[WARN] 无法删除历史 mask 文件 {old_mask_path}: {e}")
                     if deleted_count > 0:
-                        print(f"✓ 已清除 {deleted_count} 个历史 mask 文件")
+                        print(f"[OK] 已清除 {deleted_count} 个历史 mask 文件")
                 
                 # 按索引排序以确保输出顺序一致
                 sorted_indices = sorted(self.masks.keys())
@@ -1163,17 +1163,17 @@ class GeoSam3Image:
                     mask_path = os.path.join(output_dir, mask_filename)
                     
                     if os.path.exists(mask_path) and not overwrite:
-                        print(f"ℹ 跳过已存在的 mask {mask_index}: {mask_path}")
+                        print(f"[INFO] 跳过已存在的 mask {mask_index}: {mask_path}")
                     else:
                         try:
                             mask_image.save(mask_path)
                             saved_files['masks'].append(mask_path)
                             tag_str = f" (tag: {tag})" if tag is not None else ""
-                            print(f"✓ 已保存 mask {mask_index}{tag_str}: {mask_path}")
+                            print(f"[OK] 已保存 mask {mask_index}{tag_str}: {mask_path}")
                         except Exception as e:
-                            print(f"⚠ 无法保存 mask {mask_index} {mask_path}: {e}")
+                            print(f"[WARN] 无法保存 mask {mask_index} {mask_path}: {e}")
             else:
-                print(f"ℹ 没有 mask 图像需要保存")
+                print(f"[INFO] 没有 mask 图像需要保存")
 
         # 保存 masks 的 json（包含 polygon + 地理坐标信息）
         if save_masks and save_masks_json:
@@ -1181,7 +1181,7 @@ class GeoSam3Image:
                 json_result = self.save_masks_to_json_file(output_dir=output_dir, overwrite=overwrite)
                 saved_files['masks_json'] = json_result.get('json_path')
             except Exception as e:
-                print(f"⚠ 无法保存 masks json: {e}")
+                print(f"[WARN] 无法保存 masks json: {e}")
         
         return saved_files
 
@@ -1242,7 +1242,7 @@ class GeoSam3Image:
         字段说明：
         - `meta.geo.transform`: GeoTIFF 仿射变换 6 参数（等价于 rasterio/Affine 的前 6 项）。
         - `polygons.include/exclude`: 由 `convert_mask_to_polygon()` 从二值 mask 提取出的外轮廓/内洞（若无则为空数组）。
-        - `norm_xy`: **mask 空间归一化坐标**，x/y ∈ [0,1]（点对形式：[[x0,y0],[x1,y1],...]）。
+        - `norm_xy`: **mask 空间归一化坐标**，x/y in [0,1]（点对形式：[[x0,y0],[x1,y1],...]）。
         - `pixel_xy_in_mask`: **mask 图像像素坐标**（由 `norm_xy * mask_size` 得到）。
         - `pixel_xy_in_original`: **原图像素坐标**（由 mask 像素按 `sx/sy` 缩放映射到原图）。
         - `geo_xy`: **源 CRS 下的地理坐标**（由原图像素坐标通过 `geo_image.pixel_to_geo()` 转换）。
@@ -1255,12 +1255,12 @@ class GeoSam3Image:
             os.makedirs(output_dir, exist_ok=True)
 
         if len(self.masks) == 0:
-            print("ℹ 没有 mask 可导出 json")
+            print("[INFO] 没有 mask 可导出 json")
             return {"json_path": None, "mask_count": 0}
 
         json_path = os.path.join(output_dir, f"{self.basename}_masks.json")
         if os.path.exists(json_path) and not overwrite:
-            print(f"ℹ 跳过已存在的 masks json: {json_path}")
+            print(f"[INFO] 跳过已存在的 masks json: {json_path}")
             return {"json_path": json_path, "mask_count": len(self.masks)}
 
         # 图像/地理元信息（基于 GeoTIFF 原图）
@@ -1369,7 +1369,7 @@ class GeoSam3Image:
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
 
-        print(f"✓ 已保存 masks json: {json_path}")
+        print(f"[OK] 已保存 masks json: {json_path}")
         return {"json_path": json_path, "mask_count": len(masks_out)}
 
 if __name__ == "__main__":

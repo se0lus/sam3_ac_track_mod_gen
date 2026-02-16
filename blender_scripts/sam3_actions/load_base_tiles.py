@@ -264,8 +264,21 @@ def load_glb_tiles_by_dic_level_array(path, tiles_need_load):
             print("import level {0}, {1}".format(current_level, name))
 
             if not os.path.exists(filepath):
-                print("WARNING: glb not found, skip:", filepath)
-                continue
+                # b3dm converter preserves subdirectory structure (e.g.,
+                # BlockBAA/BlockBAA_L17_26.glb), but tile.content is just the
+                # filename.  Try the block-prefix subdirectory as fallback.
+                base = os.path.basename(name)
+                found = False
+                for i in range(len(base) - 2):
+                    if base[i:i+2] == "_L" and base[i+2].isdigit():
+                        alt = os.path.join(path, base[:i], base)
+                        if os.path.exists(alt):
+                            filepath = alt
+                            found = True
+                        break
+                if not found:
+                    print("WARNING: glb not found, skip:", filepath)
+                    continue
         
             #test
             #current_level = 16
@@ -415,6 +428,125 @@ def clear_scene_by_tile(tile):
     for m in mesh:
         bpy.data.meshes.remove(m)
 
+def compute_one_tile_refine_plan(root_tile_to_refine: CTile) -> dict[int, list[CTile]]:
+    """
+    Compute a one-step refinement loading plan for a single tile.
+
+    Returns a dict mapping level -> list of CTile objects to load.
+    Extracted from the modal operator for reuse in headless/synchronous contexts.
+    """
+    tiles_need_load: dict[int, list[CTile]] = {}
+    tiles_need_child = [root_tile_to_refine]
+    while len(tiles_need_child) > 0:
+        next_level_tiles = []
+        for tile in tiles_need_child:
+            if tile.hasMesh:
+                if (tile.canRefine is False) or (tile.meshLevel > root_tile_to_refine.meshLevel) or (len(tile.children) == 0):
+                    level = tile.meshLevel
+                    if level not in tiles_need_load:
+                        tiles_need_load[level] = []
+                    if tile not in tiles_need_load[level]:
+                        tiles_need_load[level].append(tile)
+                    continue
+            if tile.canRefine and len(tile.children):
+                next_level_tiles += tile.children
+        tiles_need_child = next_level_tiles
+    return tiles_need_load
+
+
+def refine_by_mask_sync(
+    context: bpy.types.Context,
+    masks: list[bpy.types.Object],
+    root_tile: CTile,
+    glb_dir: str,
+    target_level: int,
+    max_steps: int = 5000,
+) -> None:
+    """
+    Synchronous version of refine-by-mask-to-target-level.
+
+    Performs the same algorithm as SAM3_OT_refine_by_mask_to_target_level but
+    in a blocking loop, suitable for ``--background`` mode where modal operators
+    with TIMER events are not available.
+    """
+
+    def _objname_to_tile_key(obj_name: str) -> str:
+        return obj_name.split(".glb")[0]
+
+    def _dedupe_tiles(tiles: list[CTile]) -> list[CTile]:
+        seen: set[str] = set()
+        out: list[CTile] = []
+        for t in tiles:
+            if t is None:
+                continue
+            key = t.content or str(id(t))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(t)
+        return out
+
+    mask_cache, stats = build_mask_cache(context, masks)
+    if not mask_cache:
+        print("[refine_by_mask_sync] No valid mask mesh data, abort.")
+        return
+    print(f"[refine_by_mask_sync] mask_cache built: {stats}")
+
+    step = 0
+    round_num = 0
+    while step < max_steps:
+        round_num += 1
+        print(f"[refine_by_mask_sync] Round {round_num}: selecting objects by mask...")
+
+        hit_objs, sel_stats = objects_hit_by_mask_cache_xz(
+            context=context,
+            masks=masks,
+            mask_cache=mask_cache,
+            select_hit_objects=True,
+            deselect_first=True,
+            set_active=True,
+        )
+
+        if not hit_objs:
+            print("[refine_by_mask_sync] No objects hit by mask, done.")
+            break
+
+        # Map hit objects to CTiles
+        hit_tiles: list[CTile] = []
+        for obj in hit_objs:
+            key = _objname_to_tile_key(getattr(obj, "name", "") or "")
+            tile = root_tile.find(key) if key else None
+            if tile is not None:
+                hit_tiles.append(tile)
+
+        hit_tiles = _dedupe_tiles(hit_tiles)
+        need_refine = [t for t in hit_tiles if t.canRefine and t.meshLevel < target_level]
+        need_refine.sort(key=lambda t: (t.meshLevel, t.content or ""))
+
+        if not need_refine:
+            print(f"[refine_by_mask_sync] All hit tiles at target_level={target_level} or cannot refine, done.")
+            break
+
+        print(f"[refine_by_mask_sync] Round {round_num}: {len(need_refine)} tiles to refine")
+
+        for i, tile_to_refine in enumerate(need_refine):
+            step += 1
+            if step > max_steps:
+                print(f"[refine_by_mask_sync] Max steps reached ({max_steps}), stopping.")
+                return
+
+            plan = compute_one_tile_refine_plan(tile_to_refine)
+            if not plan:
+                tile_to_refine.canRefine = False
+                continue
+
+            print(f"[refine_by_mask_sync]   [{i+1}/{len(need_refine)}] refine tile={tile_to_refine.content}")
+            load_glb_tiles_by_dic_level_array(glb_dir, plan)
+            clear_scene_by_tile(tile_to_refine)
+
+    print(f"[refine_by_mask_sync] Complete. Total steps: {step}")
+
+
 def refine_and_selected_tiles(root:CTile, path):
     tiles = get_selected_ctiles(root)
     if len(tiles) == 0:
@@ -513,27 +645,8 @@ class SAM3_OT_refine_by_mask_to_target_level(_SAM3_NonBlockingModalMixin, bpy.ty
         return out
 
     def _compute_tiles_need_load_for_one(self, root_tile_to_refine: CTile) -> dict[int, list[CTile]]:
-        """
-        单个 tile 做一次“向下 refine 一步”的加载计划（等价于 refine_and_selected_tiles 的单 tile 版本）。
-        """
-        tiles_need_load: dict[int, list[CTile]] = {}
-        tiles_need_child = [root_tile_to_refine]
-        while len(tiles_need_child) > 0:
-            next_level_tiles = []
-            for tile in tiles_need_child:
-                if tile.hasMesh:
-                    # 一旦发现“比根更精细的第一个可加载 mesh tile”，就把它加入加载列表并停止向下探索该分支
-                    if (tile.canRefine is False) or (tile.meshLevel > root_tile_to_refine.meshLevel) or (len(tile.children) == 0):
-                        level = tile.meshLevel
-                        if level not in tiles_need_load:
-                            tiles_need_load[level] = []
-                        if tile not in tiles_need_load[level]:
-                            tiles_need_load[level].append(tile)
-                        continue
-                if tile.canRefine and len(tile.children):
-                    next_level_tiles += tile.children
-            tiles_need_child = next_level_tiles
-        return tiles_need_load
+        """Delegates to the module-level function ``compute_one_tile_refine_plan``."""
+        return compute_one_tile_refine_plan(root_tile_to_refine)
 
     def _start(self, context: bpy.types.Context) -> set[str]:
         self._log(f"开始执行（非阻塞）：Refine by Mask to Target Level={TARGET_FINE_LEVEL}")

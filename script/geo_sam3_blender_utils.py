@@ -541,6 +541,101 @@ def map_mask_to_blender(
     }
 
 
+def consolidate_clips_by_tag(blender_clips_folder: str, output_folder: Optional[str] = None) -> Dict[str, str]:
+    """
+    Merge all per-clip ``*_blender.json`` files into consolidated per-tag files.
+
+    For every unique tag found across the blender clip files, produces a single
+    consolidated file named ``{tag}_clip.json`` that contains **all** polygons
+    (both include and exclude) for that material type.  The consolidated file
+    uses the same ``*_blender.json`` schema so it can be consumed by
+    ``blender_create_polygons.py`` without changes.
+
+    Args:
+        blender_clips_folder: Root folder containing ``*_blender.json`` files
+            (searched recursively).
+        output_folder: Where to write the consolidated files.  Defaults to
+            *blender_clips_folder* itself when ``None``.
+
+    Returns:
+        A dict mapping ``tag`` -> absolute path of the written consolidated file.
+    """
+    if output_folder is None:
+        output_folder = blender_clips_folder
+    os.makedirs(output_folder, exist_ok=True)
+
+    # Collect all blender json files
+    blender_json_files: List[str] = []
+    for root, _, files in os.walk(blender_clips_folder):
+        for name in files:
+            if name.lower().endswith("_blender.json"):
+                blender_json_files.append(os.path.join(root, name))
+
+    if not blender_json_files:
+        print(f"[consolidate_clips_by_tag] No *_blender.json found in {blender_clips_folder}")
+        return {}
+
+    # tag -> {"include": [...], "exclude": [...]}
+    tag_polygons: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
+    # Keep the first origin/frame seen per tag for metadata
+    tag_meta: Dict[str, Dict[str, Any]] = {}
+
+    for jp in sorted(blender_json_files):
+        try:
+            with open(jp, "r", encoding="utf-8") as f:
+                obj = json.load(f)
+        except Exception as e:
+            print(f"[consolidate_clips_by_tag] Failed to read {jp}: {e}")
+            continue
+
+        if not isinstance(obj, dict):
+            continue
+
+        polygons = obj.get("polygons") or {}
+        if not isinstance(polygons, dict):
+            continue
+
+        for kind in ("include", "exclude"):
+            items = polygons.get(kind) or []
+            if not isinstance(items, list):
+                continue
+            for poly in items:
+                if not isinstance(poly, dict):
+                    continue
+                tag = str(poly.get("tag") or "unknown").strip()
+                if not tag:
+                    tag = "unknown"
+
+                if tag not in tag_polygons:
+                    tag_polygons[tag] = {"include": [], "exclude": []}
+                tag_polygons[tag][kind].append(poly)
+
+                if tag not in tag_meta:
+                    tag_meta[tag] = {
+                        "origin": obj.get("origin"),
+                        "frame": obj.get("frame"),
+                    }
+
+    # Write one consolidated file per tag
+    written: Dict[str, str] = {}
+    for tag in sorted(tag_polygons.keys()):
+        consolidated = {
+            "origin": (tag_meta.get(tag) or {}).get("origin"),
+            "frame": (tag_meta.get(tag) or {}).get("frame"),
+            "source_tag": tag,
+            "polygons": tag_polygons[tag],
+        }
+        out_path = os.path.join(output_folder, f"{tag}_clip.json")
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(consolidated, f, indent=2, ensure_ascii=False)
+        inc_cnt = len(tag_polygons[tag].get("include") or [])
+        exc_cnt = len(tag_polygons[tag].get("exclude") or [])
+        print(f"[consolidate_clips_by_tag] {tag}: include={inc_cnt}, exclude={exc_cnt} -> {out_path}")
+        written[tag] = os.path.abspath(out_path)
+
+    return written
+
+
 if __name__ == "__main__":
     tiles_folder = "E:\\sam3_track_seg\\test_images_shajing\\b3dm"
     mask_json_file = "E:\\sam3_track_seg\\test_images_shajing\\clips\\road\\clip_18_masks.json"
