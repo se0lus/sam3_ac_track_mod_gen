@@ -1,11 +1,9 @@
-请根据以下模块分工和具体目标，完成整个项目
-
 项目总体目标：自动化的通过无人采集，经过重建的赛道2D图像/3D模型，使用blender工具和其他AI等，自动化的生成一个可玩的assetto corsa 赛道mod；
 
-可以将任务分解给多个agent并行执行；需要有合理的分工；
+将任务分解给多个agent并行执行；需要有合理的分工，建议使用agent teams；
 每个模块任务开始执行之前，都需要先完成编码计划，由架构师角色的agent进行review完成之后再动手
 每个模块的功能都需要单独可测；耦合blender的功能要尽可能独立，使得大部分代码可以脱离blender进行测试
-云端大模型可以使用gemini，key为：***REDACTED_GEMINI_KEY***
+云端大模型可以使用gemini, 具体的模型可以使用pro-latest，key为：***REDACTED_GEMINI_KEY***
 
 目前项目已经完成的部分如PROJECT.md所介绍；
 
@@ -74,3 +72,9 @@ unpack_textures()
 convert_jpg_png()
 convert_all_materials_to_bsdf()
 需要注意的是外部引用的PIL库可能在blender环境中不一定能用，需要看看如何处理
+
+9.
+TODO-9: 在以上工作都完成了之后，修改sam3_track_gen.py以及其他的必要文件, 使其具备端到端生成最终blend文件的能力，并且使用存放在 test_images_shajing 处的原始数据进行测试；所有的测试中间文件和结果都输出到output目录下；
+
+现在，在项目内开始创建必要的claude配置和Agent Teams；进行合理的分工，使用delegate模式；
+对每个Agent的要求是各自的部分都需要具备充分的模块测试；在所有模块测试都跑通完成了之后才可以进行集成；
