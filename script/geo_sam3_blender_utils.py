@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import math
 import os
+from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Literal
 
 
@@ -342,6 +343,135 @@ def ecef_to_enu(
     d = (float(x_m) - float(ox), float(y_m) - float(oy), float(z_m) - float(oz))
     e, n, u = _enu_basis(math.radians(origin_lon_deg), math.radians(origin_lat_deg))
     return (_dot(e, d), _dot(n, d), _dot(u, d))
+
+
+@dataclass
+class TilesetTransformInfo:
+    """Coordinate transform context from a 3D Tiles tileset.
+
+    Encapsulates the ECEF origin, geodetic origin, and the inverse
+    tileset transform needed to convert WGS84 coordinates to Blender-local
+    coordinates.  Obtain via ``get_tileset_transform()``.
+    """
+    origin_ecef: Tuple[float, float, float]
+    origin_lon: float
+    origin_lat: float
+    origin_h: float
+    origin_src: str
+    effective_mode: str  # "enu" or "tileset_local"
+    inv_transform: Optional[List[List[float]]]  # 4x4 inverse transform matrix
+    tf_source: Optional[str]  # tileset file relative path
+
+
+def get_tileset_transform(
+    tiles_json_folder: str,
+    sample_geo_xy: Optional[Tuple[float, float]] = None,
+    frame_mode: Literal["auto", "enu", "tileset_local"] = "auto",
+) -> TilesetTransformInfo:
+    """Get tileset coordinate transform info (one-time call).
+
+    Extracts the ECEF origin from the tileset, optionally picks the best
+    tileset transform using a sample geographic point, and returns all
+    information needed to convert WGS84 coordinates to Blender-local coords.
+
+    Args:
+        tiles_json_folder: Directory with tileset.json file(s).
+        sample_geo_xy: Optional ``(lon, lat)`` to help select the correct
+            tileset when there are multiple.
+        frame_mode: ``"auto"`` (prefer tileset_local, fallback enu),
+            ``"enu"`` (force ENU), or ``"tileset_local"`` (force tileset).
+    """
+    origin_ecef, origin_src = _get_tiles_origin_ecef(tiles_json_folder)
+    origin_lon, origin_lat, origin_h = ecef_to_geodetic(*origin_ecef)
+
+    sample_ecef: Optional[Tuple[float, float, float]] = None
+    if sample_geo_xy is not None:
+        sample_ecef = geodetic_to_ecef(sample_geo_xy[0], sample_geo_xy[1], 0.0)
+
+    chosen_inv_tf: Optional[List[List[float]]] = None
+    chosen_tf_src: Optional[str] = None
+    if frame_mode in ("auto", "tileset_local") and sample_ecef is not None:
+        picked = _pick_tileset_transform_for_mask(tiles_json_folder, sample_ecef)
+        if picked is not None:
+            chosen_inv_tf, chosen_tf_src = picked
+
+    effective_mode: str
+    if frame_mode == "enu":
+        effective_mode = "enu"
+    elif frame_mode == "tileset_local":
+        if chosen_inv_tf is None:
+            raise RuntimeError(
+                "frame_mode='tileset_local' but no tileset.json with root.transform found"
+            )
+        effective_mode = "tileset_local"
+    else:
+        effective_mode = "tileset_local" if chosen_inv_tf is not None else "enu"
+
+    return TilesetTransformInfo(
+        origin_ecef=origin_ecef,
+        origin_lon=origin_lon,
+        origin_lat=origin_lat,
+        origin_h=origin_h,
+        origin_src=origin_src,
+        effective_mode=effective_mode,
+        inv_transform=chosen_inv_tf,
+        tf_source=chosen_tf_src,
+    )
+
+
+def geo_points_to_blender_xyz(
+    geo_xy: List[List[float]],
+    tf_info: TilesetTransformInfo,
+    z_mode: Literal["zero", "enu", "const"] = "zero",
+    z_value: Optional[float] = None,
+) -> List[List[float]]:
+    """Convert WGS84 coordinate list to Blender XYZ coordinates.
+
+    Uses the same axis remapping as ``map_mask_to_blender``:
+
+    - tileset_local: ``(blender_X, blender_Y, blender_Z) = (local_x, local_z, local_y)``
+    - enu: ``(blender_X, blender_Y, blender_Z) = (E, U, N)``
+
+    Args:
+        geo_xy: List of ``[lon, lat]`` pairs in WGS84.
+        tf_info: ``TilesetTransformInfo`` from ``get_tileset_transform()``.
+        z_mode: ``"zero"`` (force 0), ``"enu"`` (real height), ``"const"`` (fixed).
+        z_value: Height value when ``z_mode="const"``.
+
+    Returns:
+        List of ``[bx, by, bz]`` in Blender coordinate space.
+    """
+    points_xyz: List[List[float]] = []
+    for pt in geo_xy:
+        if len(pt) < 2:
+            continue
+        lon, lat = float(pt[0]), float(pt[1])
+        x, y, z = geodetic_to_ecef(lon, lat, 0.0)
+
+        if tf_info.effective_mode == "tileset_local" and tf_info.inv_transform is not None:
+            lx, ly, lz = _mat4_mul_point(tf_info.inv_transform, (x, y, z))
+            if z_mode == "zero":
+                lz_out = 0.0
+            elif z_mode == "const":
+                lz_out = float(z_value)  # type: ignore[arg-type]
+            else:
+                lz_out = float(lz)
+            # Axis remap: Blender (X,Y,Z) = (local_x, local_z, local_y)
+            points_xyz.append([float(lx), float(lz_out), float(ly)])
+        else:
+            e, n, u = ecef_to_enu(
+                x, y, z, tf_info.origin_ecef, tf_info.origin_lon, tf_info.origin_lat
+            )
+            if z_mode == "zero":
+                u_out = 0.0
+            elif z_mode == "const":
+                u_out = float(z_value)  # type: ignore[arg-type]
+            else:
+                u_out = float(u)
+            # Axis remap: Blender (X,Y,Z) = (E, U, N)
+            points_xyz.append([float(e), float(u_out), float(n)])
+
+    return points_xyz
 
 
 def map_mask_to_blender(

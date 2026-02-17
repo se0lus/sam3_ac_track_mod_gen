@@ -421,7 +421,8 @@ def _create_mesh_object(name: str, polys: List[List[Tuple[float, float, float]]]
 def _merge_tag_polygon_meshes(root_poly: bpy.types.Collection) -> int:
     """
     将 mask_polygon_collection 下每个 tag 子集合中的所有碎片 mesh
-    合并为一个单一的 mesh 对象。
+    合并为一个单一的 mesh 对象，并通过 remove_doubles + 重复面检测
+    消除 clip 重叠区域的冗余几何。
 
     合并前::
 
@@ -437,7 +438,7 @@ def _merge_tag_polygon_meshes(root_poly: bpy.types.Collection) -> int:
 
         mask_polygon_collection/
             mask_polygon_road/
-                mask_polygon_road   ← 一个完整的大 mesh
+                mask_polygon_road   ← 合并 + 去重后的 mesh
 
     Returns:
         合并的 tag 数量。
@@ -496,6 +497,32 @@ def _merge_tag_polygon_meshes(root_poly: bpy.types.Collection) -> int:
                     pass  # 跳过退化/重复面
             temp_bm.free()
 
+        # 去重：合并重叠区域的近距离顶点，然后删除共享全部顶点的重复面
+        verts_before = len(bm_merged.verts)
+        faces_before = len(bm_merged.faces)
+
+        bmesh.ops.remove_doubles(bm_merged, verts=bm_merged.verts[:], dist=0.05)
+        bm_merged.faces.ensure_lookup_table()
+
+        # 检测并删除重复面（合并顶点后，原本重叠的三角形可能共享全部顶点）
+        seen_face_keys: set = set()
+        dup_faces: list = []
+        for f in bm_merged.faces:
+            key = frozenset(v.index for v in f.verts)
+            if key in seen_face_keys:
+                dup_faces.append(f)
+            else:
+                seen_face_keys.add(key)
+        if dup_faces:
+            bmesh.ops.delete(bm_merged, geom=dup_faces, context='FACES_ONLY')
+
+        verts_after = len(bm_merged.verts)
+        faces_after = len(bm_merged.faces)
+        dedup_info = ""
+        if verts_before != verts_after or faces_before != faces_after:
+            dedup_info = (f", 去重: verts {verts_before}->{verts_after}, "
+                          f"faces {faces_before}->{faces_after}")
+
         # 创建合并后的 mesh 对象（世界坐标，identity matrix）
         tag_name = tag_col.name
         mesh_data = bpy.data.meshes.new(f"{tag_name}_mesh")
@@ -514,7 +541,7 @@ def _merge_tag_polygon_meshes(root_poly: bpy.types.Collection) -> int:
 
         merged_count += 1
         print(f"[generate_polygons] 合并 {tag_name}: {len(all_meshes)} 个碎片 -> 1 个 mesh "
-              f"({len(mesh_data.vertices)} verts, {len(mesh_data.polygons)} faces)")
+              f"({len(mesh_data.vertices)} verts, {len(mesh_data.polygons)} faces){dedup_info}")
 
     return merged_count
 
@@ -531,23 +558,82 @@ def _remove_empty_collections(parent: bpy.types.Collection) -> None:
                 pass
 
 
+def _create_pretriangulated_mesh(
+    name: str,
+    points_xyz: List[List[float]],
+    faces: List[List[int]],
+) -> bpy.types.Object:
+    """Create a mesh object from pre-triangulated vertex + face data.
+
+    This bypasses Blender's 2D curve fill entirely, producing guaranteed-correct
+    triangulated meshes from earcut output.
+
+    Args:
+        name: Object name.
+        points_xyz: Vertex positions as [[x,y,z], ...].
+        faces: Triangle indices as [[i0,i1,i2], ...].
+    """
+    mesh = bpy.data.meshes.new(name=f"{name}_mesh")
+    verts = [(float(p[0]), float(p[1]), float(p[2])) for p in points_xyz if len(p) >= 3]
+    mesh.from_pydata(verts, [], faces)
+    mesh.update()
+    obj = bpy.data.objects.new(name, mesh)
+    return obj
+
+
+def _load_pretriangulated_json_files(root: str) -> Dict[str, List[Dict[str, Any]]]:
+    """Load *_blender.json files that contain ``mesh_groups`` (pre-triangulated).
+
+    Returns a dict mapping ``tag`` -> list of mesh group dicts, each containing
+    ``points_xyz`` and ``faces``.
+    """
+    tag_groups: Dict[str, List[Dict[str, Any]]] = {}
+    for jp in _iter_blender_json_files(root):
+        try:
+            with open(jp, "r", encoding="utf-8") as f:
+                obj = json.load(f)
+        except Exception as e:
+            print(f"[generate_polygons] Failed to read {jp}: {e}")
+            continue
+
+        if not isinstance(obj, dict):
+            continue
+
+        mesh_groups = obj.get("mesh_groups")
+        if not isinstance(mesh_groups, list):
+            continue
+
+        for mg in mesh_groups:
+            if not isinstance(mg, dict):
+                continue
+            tag = str(mg.get("tag", "unknown"))
+            pts = mg.get("points_xyz")
+            faces = mg.get("faces")
+            if not pts or not faces:
+                continue
+            if tag not in tag_groups:
+                tag_groups[tag] = []
+            tag_groups[tag].append(mg)
+
+    return tag_groups
+
+
 def generate_polygons_from_blender_clips(blender_input_path: str, output_file: str) -> None:
     """
-    读取 blender_input_path 下的所有 `*_blender.json` 文件(由 `map_mask_to_blender` 生成)，并生成 polygons，保存到 output_file（新的 .blend）。
+    Read ``*_blender.json`` from *blender_input_path* and generate polygon meshes.
 
-    输出 .blend 的结构如下：
+    Supports two formats:
 
-    mask_curve2D_collection（诊断用，按 clip 分组）::
+    1. **Pre-triangulated** (new): JSON contains ``mesh_groups`` with earcut
+       ``points_xyz`` + ``faces``.  Mesh is created directly — no curve fill.
+    2. **Legacy** (old): JSON contains ``polygons.include / exclude``.
+       Uses 2D curve fill + convert to mesh.
 
-        mask_curve2D_{tag}/
-            {clip}/
-                mask_curve2D_{tag}_{clip}_{mask_index}_include
-                mask_curve2D_{tag}_{clip}_{mask_index}_exclude
+    Output ``.blend`` structure::
 
-    mask_polygon_collection（每个 tag 合并为一个 mesh）::
-
-        mask_polygon_{tag}/
-            mask_polygon_{tag}   ← 所有 clip 碎片合并后的单一 mesh
+        mask_polygon_collection/
+            mask_polygon_{tag}/
+                mask_polygon_{tag}   ← merged mesh per tag
     """
 
     blender_input_path = os.path.abspath(blender_input_path)
@@ -556,31 +642,100 @@ def generate_polygons_from_blender_clips(blender_input_path: str, output_file: s
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
 
-    groups = _load_and_group_polygons(blender_input_path)
-    if not groups:
-        print("[generate_polygons] 没有可用的 polygon 数据，退出。")
+    # Try pre-triangulated path first
+    pretri_groups = _load_pretriangulated_json_files(blender_input_path)
+
+    if pretri_groups:
+        _generate_from_pretriangulated(pretri_groups, output_file)
         return
 
-    # collections
+    # Fallback: legacy path (include/exclude polygons with 2D curve fill)
+    _generate_from_legacy(blender_input_path, output_file)
+
+
+def _generate_from_pretriangulated(
+    tag_groups: Dict[str, List[Dict[str, Any]]],
+    output_file: str,
+) -> None:
+    """Generate meshes from pre-triangulated data (earcut output)."""
+
+    root_poly = _get_or_create_root_collection(ROOT_POLYGON_COLLECTION_NAME)
+    root_curve = _get_or_create_root_collection(ROOT_CURVE_COLLECTION_NAME)
+
+    created = 0
+    for tag in sorted(tag_groups.keys()):
+        groups = tag_groups[tag]
+        tag_poly_col = _get_or_create_child_collection(root_poly, f"mask_polygon_{tag}")
+
+        # Also create diagnostic curve from the contour outlines
+        all_outlines: List[List[Tuple[float, float, float]]] = []
+
+        # Create one mesh per group, then merge
+        for i, mg in enumerate(groups):
+            pts = mg["points_xyz"]
+            faces = mg["faces"]
+            if not pts or not faces:
+                continue
+
+            obj_name = _sanitize_name(f"mask_polygon_{tag}_{i}", max_len=63)
+            obj = _create_pretriangulated_mesh(obj_name, pts, faces)
+            _link_object_to_collection(obj, tag_poly_col)
+            created += 1
+
+            # Collect outline for diagnostic curve
+            outline = [(float(p[0]), float(p[1]), float(p[2])) for p in pts[:50]]
+            if outline:
+                all_outlines.append(outline)
+
+        # Create a diagnostic 3D curve showing the contour outlines
+        if all_outlines:
+            tag_curve_col = _get_or_create_child_collection(root_curve, f"mask_curve2D_{tag}")
+            curve_name = _sanitize_name(f"mask_curve2D_{tag}_outline", max_len=63)
+            curve_obj = _create_curve_object(curve_name, all_outlines)
+            _link_object_to_collection(curve_obj, tag_curve_col)
+
+    print(f"[generate_polygons] Pre-triangulated: {created} mesh objects created")
+
+    # Merge all fragments per tag into one mesh
+    merged_tags = _merge_tag_polygon_meshes(root_poly)
+    if merged_tags:
+        print(f"[generate_polygons] Merged {merged_tags} tags")
+
+    bpy.ops.wm.save_as_mainfile(filepath=output_file)
+    print(f"[generate_polygons] Saved: {output_file}")
+
+
+def _generate_from_legacy(blender_input_path: str, output_file: str) -> None:
+    """Legacy path: generate meshes from include/exclude polygons via 2D curve fill."""
+
+    groups = _load_and_group_polygons(blender_input_path)
+    if not groups:
+        print("[generate_polygons] No polygon data found, exiting.")
+        return
+
     root_curve = _get_or_create_root_collection(ROOT_CURVE_COLLECTION_NAME)
     root_poly = _get_or_create_root_collection(ROOT_POLYGON_COLLECTION_NAME)
 
     created_curve_objects = 0
     created_mesh_objects = 0
 
-    # 1) 仍然按 include/exclude 生成曲线对象（便于排查）
-    for key in sorted(groups.keys(), key=lambda k: (k.tag, k.clip, k.mask_index, k.kind)):
-        gd = groups[key]
-        tag_curve_col = _get_or_create_child_collection(root_curve, f"mask_curve2D_{gd.tag}")
-        clip_curve_col = _get_or_create_child_collection(tag_curve_col, gd.clip)
-        curve_obj_name = _sanitize_name(
-            f"mask_curve2D_{gd.tag}_{gd.clip}_{gd.mask_index}_{gd.kind}", max_len=63
-        )
-        curve_obj = _create_curve_object(curve_obj_name, gd.polys)
-        _link_object_to_collection(curve_obj, clip_curve_col)
+    # 1) Diagnostic curves per (tag, kind)
+    tag_kind_polys: Dict[Tuple[str, str], List[List[Tuple[float, float, float]]]] = {}
+    for key, gd in groups.items():
+        tk = (gd.tag, gd.kind)
+        if tk not in tag_kind_polys:
+            tag_kind_polys[tk] = []
+        tag_kind_polys[tk].extend(gd.polys)
+
+    for (tag, kind) in sorted(tag_kind_polys.keys()):
+        polys = tag_kind_polys[(tag, kind)]
+        tag_curve_col = _get_or_create_child_collection(root_curve, f"mask_curve2D_{tag}")
+        curve_obj_name = _sanitize_name(f"mask_curve2D_{tag}_{kind}", max_len=63)
+        curve_obj = _create_curve_object(curve_obj_name, polys)
+        _link_object_to_collection(curve_obj, tag_curve_col)
         created_curve_objects += 1
 
-    # 2) 在 mask_polygon_collection 中：对每个 (tag, clip, mask_index) 只生成一个 mesh，include 已扣除 exclude
+    # 2) Polygon meshes per (tag, clip, mask_index)
     merged: Dict[Tuple[str, str, int], Dict[str, List[List[Tuple[float, float, float]]]]] = {}
     for key, gd in groups.items():
         base = (key.tag, key.clip, key.mask_index)
@@ -590,24 +745,19 @@ def generate_polygons_from_blender_clips(blender_input_path: str, output_file: s
             merged[base] = ent
         ent[key.kind].extend(gd.polys)
 
-    # deterministic iteration
     for (tag, clip, mask_index) in sorted(merged.keys(), key=lambda t: (t[0], t[1], t[2])):
         include_polys = merged[(tag, clip, mask_index)].get("include") or []
         exclude_polys = merged[(tag, clip, mask_index)].get("exclude") or []
         if not include_polys:
-            # 没有 include 就不生成最终面；exclude 单独存在没有意义
             continue
 
         tag_poly_col = _get_or_create_child_collection(root_poly, f"mask_polygon_{tag}")
         clip_poly_col = _get_or_create_child_collection(tag_poly_col, clip)
 
-        # 先以 2D filled curve 构建 include-with-holes，再 convert 成 mesh
         mesh_obj_name = _sanitize_name(f"mask_polygon_{tag}_{clip}_{mask_index}", max_len=63)
         filled_curve_obj = _create_filled_curve_object_for_polygons(mesh_obj_name, include_polys, exclude_polys)
         _link_object_to_collection(filled_curve_obj, clip_poly_col)
 
-        # Convert curve to mesh and triangulate (required by downstream
-        # mask_select_utils intersection tests which need MESH objects).
         try:
             convert_curve_to_mesh(filled_curve_obj)
         except Exception as e:
@@ -625,16 +775,15 @@ def generate_polygons_from_blender_clips(blender_input_path: str, output_file: s
 
         created_mesh_objects += 1
 
-    print(f"[generate_polygons] 创建完成: curves={created_curve_objects}, meshes={created_mesh_objects}")
+    print(f"[generate_polygons] Legacy: curves={created_curve_objects}, meshes={created_mesh_objects}")
 
-    # 3) 合并：将每个 tag 下的所有碎片 mesh 合并为一个完整的大 mask
+    # 3) Merge per-tag
     merged_tags = _merge_tag_polygon_meshes(root_poly)
     if merged_tags:
-        print(f"[generate_polygons] 已合并 {merged_tags} 个 tag 的 mask mesh")
+        print(f"[generate_polygons] Merged {merged_tags} tags")
 
-    # save blend
     bpy.ops.wm.save_as_mainfile(filepath=output_file)
-    print(f"[generate_polygons] 已保存: {output_file}")
+    print(f"[generate_polygons] Saved: {output_file}")
 
 
 def _enable_debugpy(port: int, wait_client: bool) -> None:
