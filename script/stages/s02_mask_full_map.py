@@ -50,6 +50,9 @@ def run(config: PipelineConfig) -> None:
         config.sam3_fullmap_tags,
     )
 
+    # Generate VLM-scale image (higher resolution for VLM input in stage 8)
+    _generate_vlmscale_image(geo_image, config)
+
     logger.info("Full map segmentation complete. Output: %s", config.mask_full_map_dir)
 
 
@@ -245,6 +248,48 @@ def _generate_fullmap_tag_masks(
             logger.info("Saved %s mask: %s (size=%s)", tag, mask_path, merged_img.size)
         else:
             logger.warning("No masks above threshold for tag '%s'", tag)
+
+
+def _generate_vlmscale_image(geo_image, config: PipelineConfig) -> None:
+    """Generate a higher-resolution image for VLM input (stage 8).
+
+    Uses the same scaling + inpainting pipeline as modelscale but with
+    ``config.vlm_max_size`` (default 3072) to give the VLM more detail.
+    """
+    output_dir = config.mask_full_map_dir
+    basename = os.path.splitext(os.path.basename(config.geotiff_path))[0]
+    vlm_path = os.path.join(output_dir, f"{basename}_vlmscale.png")
+
+    if os.path.isfile(vlm_path):
+        logger.info("VLM-scale image already exists: %s", vlm_path)
+        return
+
+    vlm_img = geo_image.geo_image.scale_to_max_size(max_size=config.vlm_max_size)
+    if vlm_img.mode != "RGB":
+        vlm_img = vlm_img.convert("RGB")
+
+    # Inpaint center holes on vlmscale image (same pipeline as modelscale)
+    if config.inpaint_center_holes:
+        from image_inpainter import detect_center_holes, inpaint_holes
+
+        hole_mask = detect_center_holes(
+            vlm_img, min_hole_ratio=config.inpaint_min_hole_ratio
+        )
+        if hole_mask is not None:
+            hole_pct = np.sum(hole_mask > 0) / hole_mask.size * 100
+            logger.info(
+                "VLM-scale: center holes detected (%.1f%%), inpainting...", hole_pct
+            )
+            vlm_img.save(os.path.join(output_dir, f"{basename}_vlmscale_original.png"))
+            vlm_img = inpaint_holes(
+                vlm_img,
+                hole_mask,
+                api_key=config.gemini_api_key,
+                model_name=config.inpaint_model,
+            )
+
+    vlm_img.save(vlm_path)
+    logger.info("VLM-scale image saved: %s (%s)", vlm_path, vlm_img.size)
 
 
 if __name__ == "__main__":

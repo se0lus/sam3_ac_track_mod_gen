@@ -2,9 +2,9 @@
 
 ## 项目概述
 
-本项目利用 **SAM3（Segment Anything Model 3）** 对赛道航拍/卫星影像（GeoTIFF）进行语义分割，自动识别赛道上的不同地物类型（road、grass、sand、kerb），并将分割结果转换为 **Blender 三维坐标系**中的多边形网格，叠加到倾斜摄影 3D Tiles 模型上，最终自动生成可玩的 **Assetto Corsa 赛道 Mod**。
+本项目利用 **SAM3（Segment Anything Model 3）** 对赛道航拍/卫星影像（GeoTIFF）进行语义分割，自动识别赛道上的不同地物类型（road、grass、sand、kerb、trees、building、water、concrete），并将分割结果转换为 **Blender 三维坐标系**中的多边形网格，叠加到倾斜摄影 3D Tiles 模型上，最终自动生成可玩的 **Assetto Corsa 赛道 Mod**。
 
-此外，项目还包含一个独立的 **赛道 Session 分析器**（Track Session Analyzer），用于在地图上可视化 GPS 遥测数据并分析圈速。
+项目还包含一套完整的 **Web 交互编辑器**（基于 Leaflet.js），可在地图上手动精调 AI 生成的中线、围墙、游戏对象等数据。
 
 ---
 
@@ -19,13 +19,19 @@ GeoTIFF 影像 + 3D Tiles (b3dm)
 │  将无人机原始重建的 3D Tiles (b3dm) 转换为 Blender 可导入的 GLB 格式     │
 ├─────────────────────────────────────────────────────────────────────┤
 │  阶段 2: mask_full_map()                                            │
-│  对全幅 GeoTIFF 地图做初步 SAM3 分割，生成全图 mask                     │
+│  对全幅 GeoTIFF 地图做 SAM3 分割（8 类标签），生成全图 mask              │
+│  同时生成 modelscale (~1008px) 和 vlmscale (~3072px) 两种分辨率影像     │
+│  自动检测并修复航拍影像中心孔洞（Gemini 图像修复）                       │
+├─────────────────────────────────────────────────────────────────────┤
+│  阶段 2a: 赛道布局管理（可选，手动）                                    │
+│  通过 Web 编辑器创建/管理多赛道布局，生成 per-layout 二值 mask           │
 ├─────────────────────────────────────────────────────────────────────┤
 │  阶段 3: clip_full_map()                                            │
 │  根据 mask 区域智能切分为若干 clip 小图（目标 40m x 40m 瓦片）          │
 ├─────────────────────────────────────────────────────────────────────┤
 │  阶段 4: generate_mask_on_clips()                                   │
-│  对每个 clip 逐标签做精细 SAM3 分割 (road/grass/sand/kerb)             │
+│  对每个 clip 逐标签做精细 SAM3 分割                                    │
+│  road 支持回退提示词 (asphalt road / concrete road) 确保 100% 覆盖     │
 ├─────────────────────────────────────────────────────────────────────┤
 │  阶段 5: convert_mask_to_blender_input()                            │
 │  读取 3D Tiles tileset.json 坐标原点，将地理坐标多边形转为 Blender 坐标  │
@@ -35,11 +41,17 @@ GeoTIFF 影像 + 3D Tiles (b3dm)
 │  在 Blender 中批量读取 *_blender.json，生成 2D Curve + Mesh            │
 │  注意：生成的对象已自动转换为 Mesh（非 Curve），以确保后续操作可执行      │
 ├─────────────────────────────────────────────────────────────────────┤
-│  阶段 7: AI 围墙生成                                                │
-│  利用 Gemini 大模型分析赛道全图，自动生成虚拟围墙边界 JSON               │
+│  阶段 7: 程序化围墙生成                                               │
+│  SAM3 洪水填充算法：从 road → 穿越 driveable 区域 → 到达障碍物边界       │
+│  无 LLM 依赖，纯 mask 几何运算                                        │
 ├─────────────────────────────────────────────────────────────────────┤
-│  阶段 8: AI 游戏对象生成                                             │
-│  利用 Gemini 大模型生成起点/计时点/维修区等游戏功能对象                  │
+│  阶段 8: 混合游戏对象生成                                              │
+│  VLM (Gemini 2.5 Pro) 生成布局对象 (hotlap/pit/start)                 │
+│  程序化中线分析生成计时点 (timing)                                      │
+│  snap-to-road 后处理确保 100% 验证通过                                 │
+├─────────────────────────────────────────────────────────────────────┤
+│  阶段 8a: 手动游戏对象编辑（可选）                                      │
+│  通过 Web 编辑器精调 AI 生成的游戏对象位置和朝向                        │
 ├─────────────────────────────────────────────────────────────────────┤
 │  阶段 9: Blender 无头自动化集成                                       │
 │  加载瓦片 → 按 mask 精炼到高级别 → 提取赛道表面 → 导入围墙/对象 → 保存   │
@@ -60,9 +72,13 @@ GeoTIFF 影像 + 3D Tiles (b3dm)
 | `geotiff_path` | `""` | GeoTIFF 影像路径 |
 | `tiles_dir` | `""` | 3D Tiles (b3dm) 目录 |
 | `output_dir` | `sam3_track_seg/output` | 输出根目录 |
-| `blender_exe` | `E:\SteamLibrary\...\blender.exe` | Blender 可执行文件路径 |
+| `blender_exe` | `C:\Program Files\...\blender.exe` | Blender 可执行文件路径 |
 | `gemini_api_key` | 内置 key | Gemini API 密钥 |
-| `gemini_model` | `gemini-2.0-flash` | Gemini 模型名称 |
+| `gemini_model` | `gemini-2.5-pro` | Gemini VLM 模型名称 |
+| `inpaint_center_holes` | `True` | 是否修复航拍影像中心孔洞 |
+| `inpaint_model` | `gemini-3-pro-image-preview` | 图像修复模型 |
+| `inpaint_min_hole_ratio` | `0.001` | 孔洞面积最小阈值（0.1%） |
+| `vlm_max_size` | `3072` | VLM 输入图像最大维度（Gemini 支持 3072） |
 | `track_direction` | `clockwise` | 赛道行驶方向（clockwise/counterclockwise） |
 | `track_description` | `""` | 可选的赛道描述（用于 AI 提示词） |
 | `base_level` | `17` | 瓦片初始加载级别 |
@@ -74,17 +90,30 @@ GeoTIFF 影像 + 3D Tiles (b3dm)
 | `surface_density_grass` | `2.0` | 草地采样密度（米） |
 | `surface_density_kerb` | `0.5` | 路缘采样密度（米） |
 | `surface_density_sand` | `2.0` | 砂石采样密度（米） |
+| `surface_density_default` | `1.0` | 默认采样密度（米） |
 
 ### SAM3 分割提示词配置
 
+8 类语义标签，road 支持回退提示词机制确保 100% 覆盖率：
+
 ```python
 sam3_prompts = [
-    {"tag": "road",  "prompt": "race track surface",  "threshold": 0.4},
-    {"tag": "grass", "prompt": "grass",                "threshold": 0.4},
-    {"tag": "sand",  "prompt": "sand surface",         "threshold": 0.4},
-    {"tag": "kerb",  "prompt": "race track curb",      "threshold": 0.2},
+    {"tag": "road",     "prompt": "race track surface",     "threshold": 0.25,
+     "fallback_prompts": ["asphalt road", "concrete road"]},
+    {"tag": "grass",    "prompt": "grass",                   "threshold": 0.4},
+    {"tag": "sand",     "prompt": "sand surface",            "threshold": 0.4},
+    {"tag": "kerb",     "prompt": "race track curb",         "threshold": 0.2},
+    {"tag": "trees",    "prompt": "forest",                  "threshold": 0.3},
+    {"tag": "building", "prompt": "building structure",      "threshold": 0.4},
+    {"tag": "water",    "prompt": "water pond",              "threshold": 0.4},
+    {"tag": "concrete", "prompt": "concrete paved ground",   "threshold": 0.4},
 ]
+
+# 全图分割使用的标签（阶段 2）
+sam3_fullmap_tags = ["road", "trees", "grass", "kerb", "sand", "building", "water", "concrete"]
 ```
+
+**回退机制**：当主提示词在某个 clip 上完全无法检测到任何有效 mask 时，系统按顺序尝试 `fallback_prompts` 列表中的替代提示词。实测 road 标签在沙井赛道 43 个 clip 中，主提示词覆盖 36 个，回退提示词 "asphalt road" 恢复剩余 7 个（置信度 0.85-0.93），达到 100% 覆盖。
 
 ### 输出目录结构
 
@@ -93,13 +122,17 @@ sam3_prompts = [
 ```
 output/
 ├── 01_b3dm_convert/       → glb/ (转换后的 GLB 文件)
-├── 02_mask_full_map/      → result_modelscale.png, merged_mask.png, result_masks.json, ...
+├── 02_mask_full_map/      → result_modelscale.png, result_vlmscale.png,
+│                            merged_mask.png, {tag}_mask.png, result_masks.json, ...
+├── 02a_track_layouts/     → layouts.json, per-layout 二值 mask（可选）
 ├── 03_clip_full_map/      → clip_0.tif, clip_1.tif, ..., clip_boxes_visualization.png
-├── 04_mask_on_clips/      → road/, grass/, kerb/, sand/ (各标签子目录)
+├── 04_mask_on_clips/      → road/, grass/, kerb/, sand/, trees/, building/, water/, concrete/
 ├── 05_convert_to_blender/ → blender JSON 文件 + 按标签合并的 {tag}_clip.json
 ├── 06_blender_polygons/   → polygons.blend
 ├── 07_ai_walls/           → walls.json, walls_preview.png
-├── 08_ai_game_objects/    → game_objects.json, game_objects_preview.png
+├── 08_ai_game_objects/    → geo_metadata.json, {LayoutName}/game_objects.json,
+│                            {LayoutName}/centerline.json, {LayoutName}/game_objects_preview.png
+├── 08a_manual_game_objects/ → game_objects.json（手动精调，可选）
 └── 09_blender_automate/   → final_track.blend
 ```
 
@@ -145,15 +178,27 @@ if __name__ == "__main__":
 
 ##### 阶段 2: 全图 SAM3 分割 (`s02_mask_full_map.py`)
 
-对 GeoTIFF 全图执行 SAM3 分割，使用文本提示词 "race track surface" 识别赛道区域。
+对 GeoTIFF 全图执行 SAM3 分割，使用 8 类文本提示词识别不同地物类型。同时生成两种分辨率的影像用于后续阶段：
+
+- **modelscale** (~1008px): 用于 mask 坐标系和下游处理
+- **vlmscale** (~3072px): 高分辨率图像供 Gemini VLM 分析使用
+
+两种图像均经过中心孔洞检测和 Gemini 图像修复。
 
 - 输入: GeoTIFF 影像
 - 输出: `output/02_mask_full_map/`
-  - `result_modelscale.png` — 模型缩放后的影像
-  - `result_mask0_prob(...).png` — 分割 mask 概率图
+  - `result_modelscale.png` — 模型缩放后的影像 (~1008px)
+  - `result_vlmscale.png` — VLM 高分辨率影像 (~3072px)
+  - `merged_mask.png` — 合并后的 road 二值 mask
+  - `{tag}_mask.png` — 每类标签的二值 mask（trees_mask.png, grass_mask.png 等）
   - `result_masks.json` — mask 多边形数据
-  - `merged_mask.png` — 合并后的二值 mask
   - `results_visualization.png` — 分割可视化
+
+##### 阶段 2a: 赛道布局管理 (`s02a_track_layouts.py`) — 可选
+
+手动阶段，通过 Web 编辑器（Layout Editor）创建和管理多赛道布局。每个布局对应一套独立的游戏对象配置。不参与自动流水线。
+
+- 输出: `output/02a_track_layouts/layouts.json`
 
 ##### 阶段 3: 全图裁剪 (`s03_clip_full_map.py`)
 
@@ -166,11 +211,13 @@ if __name__ == "__main__":
 
 ##### 阶段 4: 逐瓦片精细分割 (`s04_mask_on_clips.py`)
 
-对每个 clip 按 4 种标签（road/grass/sand/kerb）分别执行精细 SAM3 分割。
+对每个 clip 按 8 种标签分别执行精细 SAM3 分割。
+
+**回退提示词机制**：当主提示词在某个 clip 上未产生任何有效 mask 时，按顺序尝试 `fallback_prompts` 列表中的替代提示词，直到检测成功。例如 road 标签的 "race track surface" 无法检测时，自动回退到 "asphalt road" 重试。
 
 - 输入: `output/03_clip_full_map/clip_*.tif`
 - 输出: `output/04_mask_on_clips/`
-  - `road/`, `grass/`, `sand/`, `kerb/` 子目录
+  - `road/`, `grass/`, `sand/`, `kerb/`, `trees/`, `building/`, `water/`, `concrete/` 子目录
   - 每个子目录含 `clip_N_masks.json`（包含归一化/像素/地理坐标三套多边形）
 
 ##### 阶段 5: Blender 坐标转换 (`s05_convert_to_blender.py`)
@@ -199,42 +246,54 @@ WGS84 (lon, lat, alt) → ECEF (X, Y, Z) → ENU (East, North, Up) → Blender (
 - 输入: `output/05_convert_to_blender/`
 - 输出: `output/06_blender_polygons/polygons.blend`
 
-##### 阶段 7: AI 围墙生成 (`s07_ai_walls.py`)
+##### 阶段 7: 程序化围墙生成 (`s07_ai_walls.py`)
 
-利用 Gemini 大模型分析赛道全图（模型缩放版），自动生成虚拟围墙边界。围墙设计原则：
-- **外围墙**: 围绕整个赛道可行驶区域形成闭合多边形，贴着缓冲区外围（树木/现实围墙处）
-- **内围墙**: 避免赛车开进不必要区域
-- **地面网格**: 外边缘与外层围墙对齐，内边缘与 road/grass/kerb/sand 碰撞表面对齐，形成托底大表面
+**纯程序化实现，无 LLM 依赖。** 使用 SAM3 mask 进行洪水填充算法：
 
-围墙在 Blender 中表现为高且无厚度的面，仅用于碰撞检测。
+1. 从 road mask 出发，穿越可行驶区域（grass = 缓冲区，包含在外墙内）
+2. 遇到障碍物（trees、building、water）停止扩展
+3. 生成外围墙轮廓 + 障碍物围墙
 
-- 输入: `output/02_mask_full_map/result_modelscale.png` + GeoTIFF
+设计原则：
+- **草地可行驶**：外墙包含草地缓冲区
+- **树木不可行驶**：外墙在树木边缘停止
+- **赛道邻近约束**（80px）：防止围墙包含远离赛道的建筑物
+
+- 输入: `output/02_mask_full_map/` (各标签 mask) + GeoTIFF
 - 输出: `output/07_ai_walls/`
   - `walls.json` — 围墙线段数据
   - `walls_preview.png` — 2D 预览图
 
-##### 阶段 8: AI 游戏对象生成 (`s08_ai_game_objects.py`)
+##### 阶段 8: 混合游戏对象生成 (`s08_ai_game_objects.py`)
 
-利用 Gemini 大模型生成 Assetto Corsa 所需的虚拟游戏功能对象（不可见，无网格）。
+采用 **VLM + 程序化** 混合策略生成 Assetto Corsa 游戏功能对象：
 
-对象规范：
-- Z 轴为行驶方向，Y 轴朝上
-- 高度为赛道表面之上 2 单位
-- 支持顺时针/逆时针行驶方向配置
+**VLM 部分**（Gemini 2.5 Pro）：
+- 输入 vlmscale 高分辨率图像 (~3072px) 供 VLM 分析，但在提示词中使用 modelscale 坐标尺寸，使 VLM 直接返回 modelscale 坐标
+- 分类型调用 VLM：先 hotlap_start → pit → start → timing
+- 包含 mask 验证 + 重试机制
 
-所需对象：
+**程序化部分**：
+- `road_centerline.py` 提取赛道中线 → 弯道检测 → 生成计时点对 (AC_TIME_N_L/R)
 
-| 对象名 | 数量 | 放置规则 |
-|--------|------|----------|
-| `AC_HOTLAP_START_0` | 1 | 起点线前一个弯道的出弯处 |
-| `AC_PIT_0` ~ `AC_PIT_N` | 8+ | 维修区，沿维修区通道等间距排列 |
-| `AC_START_0` ~ `AC_START_N` | 与 PIT 匹配 | 静止起步发车格，在起点线后排列 |
-| `AC_TIME_N_L` / `AC_TIME_N_R` | 成对 | 每个组合弯一个计时路段的左右边界 |
+**后处理**：
+- `snap-to-road`：将验证未通过的对象吸附到最近的合法位置（路面/维修区）
+- 最终验证通过率目标 100%
 
-- 输入: `output/02_mask_full_map/result_modelscale.png` + GeoTIFF
+支持多布局（每个布局独立的游戏对象 JSON）。
+
+- 输入: `output/02_mask_full_map/result_vlmscale.png` + road mask + GeoTIFF
 - 输出: `output/08_ai_game_objects/`
-  - `game_objects.json` — 游戏对象数据
-  - `game_objects_preview.png` — 2D 预览图
+  - `geo_metadata.json` — 图像-地理坐标映射
+  - `{LayoutName}/game_objects.json` — 游戏对象数据
+  - `{LayoutName}/centerline.json` — 赛道中线数据
+  - `{LayoutName}/game_objects_preview.png` — 2D 预览图
+
+##### 阶段 8a: 手动游戏对象编辑 (`s08a_manual_game_objects.py`) — 可选
+
+初始化手动编辑目录，从阶段 8 AI 结果复制初始数据。通过 Web 编辑器（Objects Editor / Game Objects Editor）精调后保存。保留已有手动编辑结果，仅覆盖不存在的布局。
+
+- 输出: `output/08a_manual_game_objects/game_objects.json`
 
 ##### 阶段 9: Blender 无头自动化 (`s09_blender_automate.py`)
 
@@ -243,7 +302,7 @@ WGS84 (lon, lat, alt) → ECEF (X, Y, Z) → ENU (East, North, Up) → Blender (
 2. 按 road mask 自动精炼到 target_fine_level
 3. 提取赛道表面（按 road/grass/sand/kerb 分别设定采样密度）
 4. 导入围墙对象（从阶段 7 的 JSON）
-5. 导入游戏对象（从阶段 8 的 JSON）
+5. 导入游戏对象（从阶段 8/8a 的 JSON）
 6. 纹理处理（解包、转换为 PNG、材质转 BSDF）
 7. 保存最终 .blend 文件
 
@@ -287,15 +346,41 @@ WGS84 (lon, lat, alt) → ECEF (X, Y, Z) → ENU (East, North, Up) → Blender (
 
 #### `gemini_client.py` — Gemini API 客户端
 
-封装 Google Gemini API 调用，支持图像 + 文本多模态输入，JSON 格式化输出。
+封装 Google Gemini API 调用（使用 `google-genai` 新版 SDK），支持图像 + 文本多模态输入，JSON 格式化输出。
 
-#### `ai_wall_generator.py` — AI 围墙生成逻辑
+#### `ai_wall_generator.py` — 程序化围墙生成
 
-基于赛道全图缩放版 + mask 信息，构建提示词让 Gemini 生成围墙边界线段。
+**无 LLM 依赖。** 基于 SAM3 mask 的洪水填充算法生成虚拟围墙：
+- 从 road mask 出发扩展到所有可行驶区域（grass 是缓冲区）
+- 遇到障碍物（trees/building/water）停止
+- 输出外围墙轮廓 + 障碍物独立围墙
 
-#### `ai_game_objects.py` — AI 游戏对象生成逻辑
+#### `ai_game_objects.py` — 混合游戏对象生成
 
-基于赛道全图 + mask + 行驶方向，构建提示词让 Gemini 生成游戏功能对象的位置和朝向。
+采用 VLM + 程序化混合策略：
+- **VLM**（Gemini 2.5 Pro）分类型生成布局依赖对象（hotlap/pit/start）
+- **程序化**（road_centerline.py）生成中线计时点
+- **后处理**：snap-to-road 吸附 + mask 验证确保 100% 通过率
+- 支持 vlmscale 高分辨率输入 + modelscale 坐标系输出
+
+#### `road_centerline.py` — 赛道中线提取
+
+从 road mask 提取赛道中线的纯程序化模块：
+- 骨架化（scikit-image skeletonize）
+- 中线点排序与平滑
+- 弯道曲率分析与弯道检测
+- 生成 AC_TIME_N_L / AC_TIME_N_R 计时点对
+
+#### `image_inpainter.py` — 航拍影像修复
+
+检测并修复航拍影像中的黑色缺失区域：
+- 洪水填充算法区分内部孔洞和影像边界
+- 使用 Gemini 图像修复模型（gemini-3-pro-image-preview）填补孔洞
+- 面积阈值过滤小孔洞，避免过度修复
+
+#### `ai_visualizer.py` — AI 结果可视化
+
+Matplotlib 无头后端可视化：围墙预览、游戏对象预览等 2D 标注图。
 
 #### `surface_extraction.py` — 赛道表面提取
 
@@ -344,6 +429,58 @@ WGS84 (lon, lat, alt) → ECEF (X, Y, Z) → ENU (East, North, Up) → Blender (
 ##### `mask_select_utils.py` — Mask 相交测试
 
 XZ 平面高效相交测试：三角化 + AABB 预筛选 + 精确几何测试的三级加速策略。
+
+---
+
+### Web 编辑器套件 (`script/track_session_anaylzer/`)
+
+基于 Leaflet.js 的交互式 Web 编辑器套件，通过本地 HTTP 服务器提供。启动方式：
+
+```bash
+python script/track_session_anaylzer/run_analyzer.py
+```
+
+#### Session Analyzer (`index.html` / `app.js`)
+
+GPS 遥测数据可视化分析器：
+- 支持 RaceChrono CSV 文件拖入
+- 本地瓦片地图显示
+- 多数据集叠加对比
+- 独立偏移控制
+- 自动圈速检测
+
+#### Centerline Editor (`centerline_editor.html/js/css`)
+
+赛道中线交互编辑器：
+- 在 Leaflet 地图上绘制/调整赛道中线
+- 读取和保存 centerline.json
+
+#### Layout Editor (`layout_editor.html/js/css`)
+
+赛道布局编辑器：
+- 创建/管理多赛道布局
+- 生成 per-layout 二值 mask
+- 验证布局合理性
+
+#### Wall Editor (`wall_editor.html/js/css`)
+
+围墙交互编辑器：
+- 加载 walls.json 在地图上显示
+- 拖拽编辑围墙控制点
+- 保存修改后的围墙数据
+
+#### Objects Editor (`objects_editor.html/js/css`)
+
+游戏对象编辑器：
+- 在地图上显示/编辑游戏对象位置
+- 调整朝向（orientation_z）
+- 支持各类对象类型
+
+#### Game Objects Editor (`gameobjects_editor.html/js`)
+
+游戏对象高级编辑器：
+- 功能更丰富的游戏对象编辑界面
+- 支持完整的对象管理操作
 
 ---
 
@@ -399,13 +536,37 @@ XZ 平面高效相交测试：三角化 + AABB 预筛选 + 精确几何测试的
 
 ```json
 {
+  "layout_name": "LayoutCW",
+  "track_direction": "clockwise",
   "objects": [
     {
       "name": "AC_HOTLAP_START_0",
-      "position": [x, y, z],
-      "rotation": [rx, ry, rz]
+      "position": [x, y],
+      "orientation_z": [dx, dy],
+      "type": "hotlap_start"
     }
-  ]
+  ],
+  "_validation": {
+    "hotlap": {"total": 1, "passed": 1, "rule": "on_road"},
+    "pit": {"total": 8, "passed": 8, "rule": "near_road+not_on_road+not_invalid"},
+    "start": {"total": 8, "passed": 8, "rule": "on_road"},
+    "timing_0": {"total": 1, "passed": 1, "rule": "near_road"}
+  }
+}
+```
+
+### 地理元数据 (`geo_metadata.json`)
+
+```json
+{
+  "image_width": 1008,
+  "image_height": 998,
+  "bounds": {
+    "north": 22.713015,
+    "south": 22.710245,
+    "east": 113.866563,
+    "west": 113.863549
+  }
 }
 ```
 
@@ -420,10 +581,10 @@ XZ 平面高效相交测试：三角化 + AABB 预筛选 + 精确几何测试的
 | 领域 | 技术 |
 |------|------|
 | AI 分割模型 | SAM3 (Segment Anything Model 3, Meta) |
-| AI 大模型 | Google Gemini (gemini-2.0-flash) |
-| 影像处理 | rasterio, PIL/Pillow, OpenCV, numpy |
+| AI 大模型 | Google Gemini (VLM: gemini-2.5-pro, 图像修复: gemini-3-pro-image-preview) |
+| 影像处理 | rasterio, PIL/Pillow, OpenCV, numpy, scikit-image |
 | 地理坐标 | pyproj / 手动 WGS84 ↔ ECEF ↔ ENU 转换 |
-| 三维可视化 | Blender 3.0+ (bpy API) |
+| 三维可视化 | Blender 5.0+ (bpy API) |
 | 三维数据 | 3D Tiles (b3dm/glb), tileset.json |
 | Web 可视化 | Leaflet.js, HTML/CSS/JS |
 | 运行环境 | Windows, Python 3.10+, Blender Python |
@@ -438,8 +599,7 @@ XZ 平面高效相交测试：三角化 + AABB 预筛选 + 精确几何测试的
 python script/sam3_track_gen.py \
     --geotiff test_images_shajing/result.tif \
     --tiles-dir test_images_shajing/b3dm \
-    --output-dir output \
-    --blender-exe "E:\SteamLibrary\steamapps\common\Blender\blender.exe"
+    --output-dir output
 ```
 
 ### 2. 单独运行各阶段
@@ -449,7 +609,7 @@ python script/sam3_track_gen.py \
 python script/stages/s01_b3dm_convert.py \
     --tiles-dir test_images_shajing/b3dm --output-dir output
 
-# 阶段2: 全图 SAM3 分割
+# 阶段2: 全图 SAM3 分割 + VLM 图像生成
 python script/stages/s02_mask_full_map.py \
     --geotiff test_images_shajing/result.tif --output-dir output
 
@@ -457,7 +617,7 @@ python script/stages/s02_mask_full_map.py \
 python script/stages/s03_clip_full_map.py \
     --geotiff test_images_shajing/result.tif --output-dir output
 
-# 阶段4: 逐瓦片精细分割
+# 阶段4: 逐瓦片精细分割（含回退提示词）
 python script/stages/s04_mask_on_clips.py \
     --geotiff test_images_shajing/result.tif --output-dir output
 
@@ -469,7 +629,7 @@ python script/stages/s05_convert_to_blender.py \
 # 阶段6: Blender 多边形生成
 python script/stages/s06_blender_polygons.py --output-dir output
 
-# 阶段7: AI 围墙生成
+# 阶段7: 程序化围墙生成
 python script/stages/s07_ai_walls.py \
     --geotiff test_images_shajing/result.tif --output-dir output
 
@@ -492,14 +652,17 @@ python script/stages/s09_blender_automate.py \
 6. 使用 "Import Walls" / "Import Game Objects" 导入 AI 生成的数据
 7. 使用 "Unpack & Convert Textures" 处理纹理
 
-### 4. 赛道 Session 分析器
+### 4. Web 编辑器套件
 
 ```bash
 python script/track_session_anaylzer/run_analyzer.py
-# 自动打开浏览器，拖入 RaceChrono CSV 文件即可可视化
+# 自动打开浏览器，访问各编辑器：
+# - Session Analyzer: GPS 遥测可视化
+# - Centerline Editor: 赛道中线编辑
+# - Layout Editor: 赛道布局管理
+# - Wall Editor: 围墙交互编辑
+# - Objects Editor / Game Objects Editor: 游戏对象编辑
 ```
-
-功能特点：支持本地瓦片地图、多数据集叠加对比、独立偏移控制、自动圈速检测。
 
 ---
 
@@ -510,3 +673,6 @@ python script/track_session_anaylzer/run_analyzer.py
 3. **输出隔离**: 每个阶段有独立的输出子目录（`output/NN_stage_name/`），不污染源数据
 4. **阶段间通信**: 下游阶段从上游阶段的输出目录读取文件，不依赖内存状态
 5. **可测试性**: Blender 耦合代码与纯 Python 逻辑分离，支持脱离 Blender 测试
+6. **物理空间优先**: 算法参数用物理单位（米、度）定义，运行时按 GeoTIFF 分辨率转换为像素值
+7. **AI + 程序化混合**: VLM 处理高层语义决策（布局、位置），程序化算法处理几何精确任务（围墙、计时点），后处理确保质量
+8. **手动可介入**: 关键阶段提供 Web 编辑器用于 AI 输出的手动精调（布局、围墙、游戏对象）

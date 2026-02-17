@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>赛道中心线编辑器</title>
+
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
+
+    <link rel="stylesheet" href="./style.css" />
+    <link rel="stylesheet" href="./centerline_editor.css" />
+  </head>
+  <body>
+    <div class="app">
+      <aside class="panel">
+        <header class="panel__header">
+          <div class="title">赛道中心线编辑器</div>
+          <div class="subtitle">
+            Edit centerline vertices, regenerate bends & timing points
+          </div>
+        </header>
+
+        <!-- Toolbar -->
+        <section class="panel__section ce-toolbar">
+          <div class="ce-toolbar__row">
+            <button id="btnSave" class="btn btn--primary" type="button">Save</button>
+            <button id="btnUndo" class="btn" type="button">Undo</button>
+            <button id="btnRedo" class="btn" type="button">Redo</button>
+            <span id="dirtyFlag" class="ce-dirty" hidden>*</span>
+          </div>
+        </section>
+
+        <!-- Layout selector -->
+        <section class="panel__section">
+          <div class="section__title">Layout</div>
+          <select id="layoutSelect" class="ce-select"></select>
+        </section>
+
+        <!-- Actions -->
+        <section class="panel__section">
+          <div class="section__title">Actions</div>
+          <button id="btnRegenerate" class="btnTiny" type="button">
+            Regenerate Game Objects
+          </button>
+          <span id="regenStatus" class="small" style="margin-left:8px"></span>
+        </section>
+
+        <!-- Centerline info -->
+        <section class="panel__section">
+          <div class="section__title">Centerline</div>
+          <div id="clInfo" class="ce-info">
+            Points: 0 | Edited: No
+          </div>
+        </section>
+
+        <!-- Bend list -->
+        <section class="panel__section">
+          <div class="section__title">Bends</div>
+          <div id="bendList" class="ce-bend-list"></div>
+        </section>
+
+        <!-- Game objects summary -->
+        <section class="panel__section">
+          <div class="section__title">Game Objects</div>
+          <div id="goSummary" class="ce-info">
+            timing: 0 | pit: 0 | start: 0 | hotlap: 0
+          </div>
+        </section>
+
+        <footer class="panel__footer">
+          <div class="small">
+            Ctrl+S save / Ctrl+Z undo / Ctrl+Shift+Z redo / Drag vertices to edit
+          </div>
+        </footer>
+      </aside>
+
+      <main class="mapWrap">
+        <div id="map" class="map"></div>
+        <div class="status" id="status">Loading...</div>
+      </main>
+    </div>
+
+    <script src="./centerline_editor.js"></script>
+  </body>
+</html>

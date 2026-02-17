@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Game Objects Editor</title>
+
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
+
+    <link rel="stylesheet" href="./style.css" />
+    <link rel="stylesheet" href="./layout_editor.css" />
+    <link rel="stylesheet" href="./centerline_editor.css" />
+    <link rel="stylesheet" href="./objects_editor.css" />
+    <style>
+      /* Unified editor overrides */
+      .ge-count-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 6px;
+        font-size: 12px;
+      }
+      .ge-count-row label { color: var(--muted); white-space: nowrap; }
+      .ge-count-input {
+        width: 60px;
+        background: var(--btn);
+        border: 1px solid var(--border);
+        color: var(--text);
+        padding: 4px 6px;
+        border-radius: 6px;
+        font-size: 12px;
+        text-align: center;
+      }
+      .ge-regen-status {
+        font-size: 11px;
+        color: var(--muted);
+        margin-top: 4px;
+      }
+      .ge-auto-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 12px;
+        color: var(--muted);
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .ge-auto-label input[type="checkbox"] {
+        accent-color: #60a5fa;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <aside class="panel">
+        <header class="panel__header">
+          <div class="title">Game Objects Editor</div>
+          <div class="subtitle">
+            Edit centerline, regenerate bends & timing, place pit/start objects
+          </div>
+        </header>
+
+        <!-- Toolbar -->
+        <section class="panel__section ce-toolbar">
+          <div class="ce-toolbar__row">
+            <button id="btnSave" class="btn btn--primary" type="button">Save All</button>
+            <button id="btnUndo" class="btn" type="button">Undo</button>
+            <button id="btnRedo" class="btn" type="button">Redo</button>
+            <span id="dirtyFlag" class="ce-dirty" hidden>*</span>
+          </div>
+        </section>
+
+        <!-- Layout selector -->
+        <section class="panel__section">
+          <div class="section__title">Layout</div>
+          <select id="layoutSelect" class="ce-select"></select>
+        </section>
+
+        <!-- Mode selector -->
+        <section class="panel__section">
+          <div class="section__title">Mode</div>
+          <div class="le-seg" id="modeSeg">
+            <button class="le-seg__btn le-seg__btn--active" data-mode="centerline">Centerline</button>
+            <button class="le-seg__btn" data-mode="objects">Objects</button>
+            <button class="le-seg__btn" data-mode="create">Create</button>
+          </div>
+          <div id="createTypeRow" style="margin-top:8px;display:none">
+            <label class="oe-create-type-label">
+              Type
+              <select id="createType" class="oe-select">
+                <option value="hotlap_start">hotlap_start</option>
+                <option value="pit" selected>pit</option>
+                <option value="start">start</option>
+                <option value="timing">timing (L+R pair)</option>
+              </select>
+            </label>
+          </div>
+        </section>
+
+        <!-- Actions: Centerline -->
+        <section class="panel__section">
+          <div class="section__title">Centerline Actions</div>
+          <button id="btnRegenCenterline" class="btnTiny" type="button">
+            Regenerate Bends & Timing
+          </button>
+          <div id="regenCLStatus" class="ge-regen-status"></div>
+        </section>
+
+        <!-- Actions: VLM Generation (per-type) -->
+        <section class="panel__section">
+          <div class="section__title">VLM Generation</div>
+
+          <div style="margin-bottom:6px">
+            <button id="btnRegenHotlap" class="btnTiny" type="button">Regenerate Hotlap</button>
+            <span id="regenHotlapStatus" class="ge-regen-status" style="display:inline;margin-left:6px"></span>
+          </div>
+
+          <div class="ge-count-row">
+            <label>Pit count:</label>
+            <label class="ge-auto-label"><input id="pitAuto" type="checkbox" checked /> Auto</label>
+            <input id="pitCount" type="number" class="ge-count-input" min="1" max="50" value="8" disabled />
+          </div>
+          <div style="margin-bottom:6px">
+            <button id="btnRegenPits" class="btnTiny" type="button">Regenerate Pits</button>
+            <span id="regenPitsStatus" class="ge-regen-status" style="display:inline;margin-left:6px"></span>
+          </div>
+
+          <div class="ge-count-row">
+            <label>Start count:</label>
+            <label class="ge-auto-label"><input id="startAuto" type="checkbox" checked /> Auto</label>
+            <input id="startCount" type="number" class="ge-count-input" min="1" max="50" value="8" disabled />
+          </div>
+          <div style="margin-bottom:6px">
+            <button id="btnRegenStarts" class="btnTiny" type="button">Regenerate Starts</button>
+            <span id="regenStartsStatus" class="ge-regen-status" style="display:inline;margin-left:6px"></span>
+          </div>
+
+          <div style="margin-bottom:6px">
+            <button id="btnRegenTiming0" class="btnTiny" type="button">Regenerate Start/Finish Line</button>
+            <span id="regenTiming0Status" class="ge-regen-status" style="display:inline;margin-left:6px"></span>
+          </div>
+
+          <div style="margin-top:8px">
+            <button id="btnRegenAll" class="btnTiny btn--primary" type="button">Regenerate All VLM</button>
+            <span id="regenAllStatus" class="ge-regen-status" style="display:inline;margin-left:6px"></span>
+          </div>
+        </section>
+
+        <!-- Centerline info -->
+        <section class="panel__section">
+          <div class="section__title">Centerline Info</div>
+          <div id="clInfo" class="ce-info">Points: 0 | Edited: No</div>
+          <div id="bendList" class="ce-bend-list" style="margin-top:6px"></div>
+        </section>
+
+        <!-- Game Objects list -->
+        <section class="panel__section">
+          <div class="section__title">Game Objects</div>
+          <div id="objectList" class="oe-object-list"></div>
+        </section>
+
+        <!-- Selected Object -->
+        <section class="panel__section" id="selObjectSection" hidden>
+          <div class="section__title">Selected Object</div>
+          <div class="oe-detail-row">
+            <span>Name:</span>
+            <span id="selObjName" class="oe-detail-value"></span>
+          </div>
+          <div class="oe-detail-row">
+            <span>Type:</span>
+            <select id="selObjType" class="oe-select">
+              <option value="hotlap_start">hotlap_start</option>
+              <option value="pit">pit</option>
+              <option value="start">start</option>
+              <option value="timing_left">timing_left</option>
+              <option value="timing_right">timing_right</option>
+            </select>
+          </div>
+          <div class="oe-detail-row small" id="selObjPixel">Position: (0, 0)</div>
+          <div class="oe-detail-row small" id="selObjBearing">Bearing: 0.0&deg;</div>
+          <button id="btnDeleteObj" class="btnTiny btnTiny--danger" type="button">
+            Delete
+          </button>
+        </section>
+
+        <!-- Layers -->
+        <section class="panel__section">
+          <div class="section__title">Layers</div>
+          <div class="le-chip-group" id="layerChips">
+            <div class="le-chip le-chip--on" data-layer="basemap"
+                 style="--chip-color:rgba(200,200,200,0.4);--chip-bg:rgba(200,200,200,0.12);--chip-glow:rgba(200,200,200,0.08);--chip-dot:#cbd5e1">
+              <span class="le-chip__dot"></span>Base Map
+            </div>
+            <div class="le-chip le-chip--on" data-layer="mask"
+                 style="--chip-color:rgba(96,165,250,0.4);--chip-bg:rgba(96,165,250,0.12);--chip-glow:rgba(96,165,250,0.08);--chip-dot:#60a5fa">
+              <span class="le-chip__dot"></span>Layout Mask
+            </div>
+            <div class="le-chip le-chip--on" data-layer="centerline"
+                 style="--chip-color:rgba(255,255,255,0.4);--chip-bg:rgba(255,255,255,0.12);--chip-glow:rgba(255,255,255,0.08);--chip-dot:#ffffff">
+              <span class="le-chip__dot"></span>Centerline
+            </div>
+            <div class="le-chip le-chip--on" data-layer="bends"
+                 style="--chip-color:rgba(255,68,68,0.4);--chip-bg:rgba(255,68,68,0.12);--chip-glow:rgba(255,68,68,0.08);--chip-dot:#ff4444">
+              <span class="le-chip__dot"></span>Bends
+            </div>
+            <div class="le-chip le-chip--on" data-layer="timing"
+                 style="--chip-color:rgba(255,140,0,0.4);--chip-bg:rgba(255,140,0,0.12);--chip-glow:rgba(255,140,0,0.08);--chip-dot:#ff8c00">
+              <span class="le-chip__dot"></span>Timing Lines
+            </div>
+            <div class="le-chip le-chip--on" data-layer="objects"
+                 style="--chip-color:rgba(0,255,255,0.4);--chip-bg:rgba(0,255,255,0.12);--chip-glow:rgba(0,255,255,0.08);--chip-dot:#00ffff">
+              <span class="le-chip__dot"></span>Objects
+            </div>
+          </div>
+        </section>
+
+        <footer class="panel__footer">
+          <div class="small">
+            Ctrl+S save / Ctrl+Z undo / Ctrl+Shift+Z redo / Drag to edit / Del to delete
+          </div>
+        </footer>
+      </aside>
+
+      <main class="mapWrap">
+        <div id="map" class="map"></div>
+        <div class="status" id="status">Loading...</div>
+      </main>
+    </div>
+
+    <script src="./gameobjects_editor.js"></script>
+  </body>
+</html>

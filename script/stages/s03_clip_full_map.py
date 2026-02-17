@@ -30,6 +30,47 @@ def run(config: PipelineConfig) -> None:
     logger.info("Clipping complete. Clips saved to %s", config.clips_dir)
 
 
+def _union_layout_masks(layouts_json_path: str, layouts_dir: str):
+    """Load all layout masks and merge them with pixel-wise OR.
+
+    Returns a PIL Image (mode 'L') representing the union of all layout masks.
+    """
+    import json
+    from PIL import Image
+    import numpy as np
+
+    with open(layouts_json_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    layouts = data.get("layouts", [])
+    union_arr = None
+
+    for layout in layouts:
+        mask_file = layout.get("mask_file", "")
+        if not mask_file:
+            continue
+        mask_path = os.path.join(layouts_dir, mask_file)
+        if not os.path.isfile(mask_path):
+            logger.warning("Layout mask not found: %s", mask_path)
+            continue
+
+        mask_img = Image.open(mask_path).convert("L")
+        mask_arr = np.array(mask_img)
+
+        if union_arr is None:
+            union_arr = mask_arr.copy()
+        else:
+            if union_arr.shape == mask_arr.shape:
+                union_arr = np.maximum(union_arr, mask_arr)
+            else:
+                logger.warning("Layout mask size mismatch: %s vs %s, skipping",
+                               union_arr.shape, mask_arr.shape)
+
+    if union_arr is None:
+        return None
+    return Image.fromarray(union_arr, mode="L")
+
+
 def _clip_full_map(src_img_file: str, clips_output_dir: str, mask_full_map_dir: str) -> None:
     """Clip the full GeoTIFF into smaller tiles based on the mask.
 
@@ -46,19 +87,32 @@ def _clip_full_map(src_img_file: str, clips_output_dir: str, mask_full_map_dir: 
     if not geo_image.has_model_scale_image():
         geo_image.generate_model_scale_image()
 
-    # Load merged mask from stage 2's output directory.
-    # The in-memory merge_all_masks() may return None if GeoSam3Image was
-    # freshly created and masks only exist in the stage 2 output dir.
-    merged_mask_path = os.path.join(mask_full_map_dir, "merged_mask.png")
-    if os.path.isfile(merged_mask_path):
-        merged_mask = Image.open(merged_mask_path)
-        logger.info("Loaded merged mask from %s", merged_mask_path)
-    else:
-        merged_mask = geo_image.merge_all_masks(mode='union')
+    # Check for track layout masks (stage 2a) — if present, use their union
+    layouts_dir = os.path.join(os.path.dirname(mask_full_map_dir), "02a_track_layouts")
+    layouts_json = os.path.join(layouts_dir, "layouts.json")
+    merged_mask = None
+
+    if os.path.isfile(layouts_json):
+        merged_mask = _union_layout_masks(layouts_json, layouts_dir)
+        if merged_mask is not None:
+            import json
+            with open(layouts_json, "r", encoding="utf-8") as f:
+                n_layouts = len(json.load(f).get("layouts", []))
+            logger.info("Using merged mask from %d track layouts", n_layouts)
+
+    # Fall back to stage 2 merged mask
+    if merged_mask is None:
+        merged_mask_path = os.path.join(mask_full_map_dir, "merged_mask.png")
+        if os.path.isfile(merged_mask_path):
+            merged_mask = Image.open(merged_mask_path)
+            logger.info("Loaded merged mask from %s", merged_mask_path)
+        else:
+            merged_mask = geo_image.merge_all_masks(mode='union')
+
     if merged_mask is None:
         raise RuntimeError(
             f"No merged mask available for clipping.  "
-            f"Expected at {merged_mask_path}.  Run stage 2 first."
+            f"Expected at {os.path.join(mask_full_map_dir, 'merged_mask.png')}.  Run stage 2 first."
         )
 
     target_clip_size_in_meters = 40

@@ -1,0 +1,109 @@
+/* Centerline Editor styles (extends style.css base) */
+
+/* Toolbar */
+.ce-toolbar__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.btn--primary {
+  background: rgba(96, 165, 250, 0.25);
+  border-color: rgba(96, 165, 250, 0.5);
+}
+.btn--primary:hover {
+  background: rgba(96, 165, 250, 0.35);
+}
+
+.ce-dirty {
+  color: #fbbf24;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+/* Layout selector */
+.ce-select {
+  width: 100%;
+  background: var(--btn);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+/* Info */
+.ce-info {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+/* Bend list */
+.ce-bend-list {
+  display: grid;
+  gap: 4px;
+}
+
+.ce-bend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.ce-bend-item:hover {
+  background: rgba(148, 163, 184, 0.08);
+}
+.ce-bend-item--active {
+  border-color: rgba(96, 165, 250, 0.4);
+  background: rgba(96, 165, 250, 0.1);
+}
+
+.ce-bend-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+/* Leaflet vertex markers */
+.ce-vertex {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  cursor: grab;
+}
+.ce-vertex:hover {
+  background: #60a5fa;
+  transform: scale(1.5);
+}
+
+.ce-vertex--drag {
+  background: #fbbf24;
+  border-color: #f59e0b;
+  cursor: grabbing;
+}
+
+/* Timing line markers */
+.ce-timing-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: orange;
+  border: 1px solid #fff;
+}
+
+/* Game object markers */
+.ce-obj-marker {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+}

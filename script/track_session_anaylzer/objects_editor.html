@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>游戏对象编辑器</title>
+
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
+
+    <link rel="stylesheet" href="./style.css" />
+    <link rel="stylesheet" href="./objects_editor.css" />
+  </head>
+  <body>
+    <div class="app">
+      <aside class="panel">
+        <header class="panel__header">
+          <div class="title">游戏对象编辑器</div>
+          <div class="subtitle">
+            编辑 <code>game_objects.json</code> — 拖拽位置、旋转方向、添加/删除对象
+          </div>
+        </header>
+
+        <!-- Toolbar -->
+        <section class="panel__section oe-toolbar">
+          <div class="oe-toolbar__row">
+            <button id="btnSave" class="btn btn--primary" type="button">保存</button>
+            <button id="btnUndo" class="btn" type="button">撤销</button>
+            <button id="btnRedo" class="btn" type="button">重做</button>
+            <span id="dirtyFlag" class="oe-dirty" hidden>*未保存</span>
+          </div>
+        </section>
+
+        <!-- Mode -->
+        <section class="panel__section">
+          <div class="section__title">模式</div>
+          <div class="oe-mode-row">
+            <label class="oe-radio">
+              <input type="radio" name="mode" value="select" checked />
+              选择
+            </label>
+            <label class="oe-radio">
+              <input type="radio" name="mode" value="create" />
+              创建
+            </label>
+            <label class="oe-create-type-label">
+              类型
+              <select id="createType" class="oe-select">
+                <option value="hotlap_start">hotlap_start</option>
+                <option value="pit" selected>pit</option>
+                <option value="start">start</option>
+                <option value="timing_left">timing_left</option>
+                <option value="timing_right">timing_right</option>
+              </select>
+            </label>
+          </div>
+        </section>
+
+        <!-- Object List -->
+        <section class="panel__section">
+          <div class="section__title">对象列表</div>
+          <div id="objectList" class="oe-object-list"></div>
+        </section>
+
+        <!-- Selected Object -->
+        <section class="panel__section" id="selObjectSection" hidden>
+          <div class="section__title">选中对象</div>
+          <div class="oe-detail-row">
+            <span>名称：</span>
+            <span id="selObjName" class="oe-detail-value">—</span>
+          </div>
+          <div class="oe-detail-row">
+            <span>类型：</span>
+            <select id="selObjType" class="oe-select">
+              <option value="hotlap_start">hotlap_start</option>
+              <option value="pit">pit</option>
+              <option value="start">start</option>
+              <option value="timing_left">timing_left</option>
+              <option value="timing_right">timing_right</option>
+            </select>
+          </div>
+          <div class="oe-detail-row small" id="selObjPixel">像素：(0, 0)</div>
+          <div class="oe-detail-row small" id="selObjGeo">经纬：(0, 0)</div>
+          <div class="oe-detail-row small" id="selObjBearing">方向：0.0°</div>
+          <button id="btnDeleteObj" class="btnTiny btnTiny--danger" type="button">
+            删除对象
+          </button>
+        </section>
+
+        <footer class="panel__footer">
+          <div class="small">
+            快捷键：Ctrl+S 保存 / Ctrl+Z 撤销 / Ctrl+Shift+Z 重做 / Delete 删除 / Esc 取消
+          </div>
+        </footer>
+      </aside>
+
+      <main class="mapWrap">
+        <div id="map" class="map"></div>
+        <div class="status" id="status">正在加载游戏对象数据…</div>
+      </main>
+    </div>
+
+    <script src="./objects_editor.js"></script>
+  </body>
+</html>

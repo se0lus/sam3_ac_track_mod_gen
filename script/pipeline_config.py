@@ -63,6 +63,9 @@ class PipelineConfig:
     inpaint_model: str = "gemini-3-pro-image-preview"
     inpaint_min_hole_ratio: float = 0.001  # 0.1% of image area threshold
 
+    # --- VLM input ---
+    vlm_max_size: int = 3072  # VLM input image max dimension (Gemini 2.5 Pro supports up to 3072)
+
     # --- Track metadata ---
     track_direction: str = "clockwise"
     track_description: str = ""
@@ -85,7 +88,8 @@ class PipelineConfig:
 
     # --- SAM3 segmentation prompts ---
     sam3_prompts: List[Dict[str, Any]] = field(default_factory=lambda: [
-        {"tag": "road", "prompt": "race track surface", "threshold": 0.4},
+        {"tag": "road", "prompt": "race track surface", "threshold": 0.25,
+         "fallback_prompts": ["asphalt road", "concrete road"]},
         {"tag": "grass", "prompt": "grass", "threshold": 0.4},
         {"tag": "sand", "prompt": "sand surface", "threshold": 0.4},
         {"tag": "kerb", "prompt": "race track curb", "threshold": 0.2},
@@ -120,9 +124,15 @@ class PipelineConfig:
     building_mask_path: str = ""  # building mask for wall generation
     water_mask_path: str = ""  # water mask for wall generation
     concrete_mask_path: str = ""  # concrete mask for wall generation
+    track_layouts_json: str = ""  # track layouts metadata
+    manual_game_objects_json: str = ""  # manual-edited game objects (stage 8a)
 
     def stage_dir(self, stage_name: str) -> str:
         """Return ``output/NN_stage_name/`` for a given stage."""
+        if stage_name == "track_layouts":
+            return os.path.join(self.output_dir, "02a_track_layouts")
+        if stage_name == "manual_game_objects":
+            return os.path.join(self.output_dir, "08a_manual_game_objects")
         idx = STAGE_ORDER.get(stage_name, 0)
         return os.path.join(self.output_dir, f"{idx:02d}_{stage_name}")
 
@@ -184,6 +194,12 @@ class PipelineConfig:
         )
         self.concrete_mask_path = os.path.join(
             self.mask_full_map_dir, "concrete_mask.png"
+        )
+        self.track_layouts_json = os.path.join(
+            self.stage_dir("track_layouts"), "layouts.json"
+        )
+        self.manual_game_objects_json = os.path.join(
+            self.stage_dir("manual_game_objects"), "game_objects.json"
         )
 
         return self

@@ -57,11 +57,16 @@ def run(config: PipelineConfig) -> None:
         "--target-level", str(config.target_fine_level),
     ]
 
-    # Optional stages: walls and game objects
+    # Optional stages: walls and game objects (8a manual > 8 auto)
     if os.path.isfile(config.walls_json):
         cmd.extend(["--walls-json", config.walls_json])
-    if os.path.isfile(config.game_objects_json):
-        cmd.extend(["--game-objects-json", config.game_objects_json])
+
+    go_json = config.manual_game_objects_json
+    if not os.path.isfile(go_json):
+        go_json = config.game_objects_json
+    if os.path.isfile(go_json):
+        cmd.extend(["--game-objects-json", go_json])
+        logger.info("Using game objects: %s", go_json)
 
     logger.info("Running Blender automation: %s", " ".join(cmd))
     subprocess.run(cmd, check=True)

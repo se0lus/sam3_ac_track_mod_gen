@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>赛道布局编辑器</title>
+
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
+
+    <link rel="stylesheet" href="./style.css" />
+    <link rel="stylesheet" href="./layout_editor.css" />
+  </head>
+  <body>
+    <div class="app">
+      <aside class="panel">
+        <header class="panel__header">
+          <div class="title">赛道布局编辑器</div>
+          <div class="subtitle">
+            在航拍底图上用画笔涂画每条赛道布局的 mask
+          </div>
+        </header>
+
+        <!-- Toolbar -->
+        <section class="panel__section le-toolbar">
+          <div class="le-toolbar__row">
+            <button id="btnSaveAll" class="btn btn--primary" type="button">Save All</button>
+            <button id="btnUndo" class="btn" type="button">Undo</button>
+            <button id="btnRedo" class="btn" type="button">Redo</button>
+            <span id="dirtyFlag" class="le-dirty" hidden>*</span>
+          </div>
+        </section>
+
+        <!-- Tool — segmented control -->
+        <section class="panel__section">
+          <div class="section__title">Tool</div>
+          <div class="le-seg" id="toolSeg">
+            <button class="le-seg__btn le-seg__btn--active" data-tool="brush">Brush</button>
+            <button class="le-seg__btn" data-tool="eraser">Eraser</button>
+          </div>
+          <div class="le-brush-row">
+            <span class="le-brush-label">Size:</span>
+            <input id="brushSize" type="range" min="3" max="100" value="20" />
+            <span id="brushSizeVal">20px</span>
+          </div>
+          <div class="small" style="margin-top:4px">Ctrl+scroll to adjust &middot; B brush &middot; E eraser</div>
+        </section>
+
+        <!-- Layers — chip toggles -->
+        <section class="panel__section">
+          <div class="section__title">Layers</div>
+          <div class="le-chip-group" id="layerChips">
+            <div class="le-chip le-chip--on" data-layer="basemap"
+                 style="--chip-color:rgba(200,200,200,0.4);--chip-bg:rgba(200,200,200,0.12);--chip-glow:rgba(200,200,200,0.08);--chip-dot:#cbd5e1">
+              <span class="le-chip__dot"></span>Base Map
+            </div>
+            <div class="le-chip" data-layer="merged"
+                 style="--chip-color:rgba(255,255,255,0.4);--chip-bg:rgba(255,255,255,0.12);--chip-glow:rgba(255,255,255,0.08);--chip-dot:#ffffff">
+              <span class="le-chip__dot"></span>merged
+            </div>
+            <div class="le-chip" data-layer="concrete"
+                 style="--chip-color:rgba(100,150,255,0.5);--chip-bg:rgba(100,150,255,0.15);--chip-glow:rgba(100,150,255,0.1);--chip-dot:#6496ff">
+              <span class="le-chip__dot"></span>concrete
+            </div>
+            <div class="le-chip" data-layer="grass"
+                 style="--chip-color:rgba(80,200,80,0.5);--chip-bg:rgba(80,200,80,0.15);--chip-glow:rgba(80,200,80,0.1);--chip-dot:#50c850">
+              <span class="le-chip__dot"></span>grass
+            </div>
+            <div class="le-chip" data-layer="trees"
+                 style="--chip-color:rgba(30,160,30,0.5);--chip-bg:rgba(30,160,30,0.15);--chip-glow:rgba(30,160,30,0.1);--chip-dot:#1ea01e">
+              <span class="le-chip__dot"></span>trees
+            </div>
+            <div class="le-chip" data-layer="kerb"
+                 style="--chip-color:rgba(255,180,50,0.5);--chip-bg:rgba(255,180,50,0.15);--chip-glow:rgba(255,180,50,0.1);--chip-dot:#ffb432">
+              <span class="le-chip__dot"></span>kerb
+            </div>
+            <div class="le-chip" data-layer="building"
+                 style="--chip-color:rgba(180,130,90,0.5);--chip-bg:rgba(180,130,90,0.15);--chip-glow:rgba(180,130,90,0.1);--chip-dot:#b4825a">
+              <span class="le-chip__dot"></span>building
+            </div>
+          </div>
+        </section>
+
+        <!-- Layout List -->
+        <section class="panel__section">
+          <div class="section__title">Layouts</div>
+          <div class="le-layout-actions">
+            <button id="btnNewLayout" class="btnTiny" type="button">+ New</button>
+            <button id="btnCloneMerged" class="btnTiny" type="button">Clone from merged</button>
+          </div>
+          <div id="layoutList" class="le-layout-list"></div>
+        </section>
+
+        <!-- Selected Layout -->
+        <section class="panel__section" id="selLayoutSection" hidden>
+          <div class="section__title">Selected Layout</div>
+          <div class="le-detail-row">
+            <span>Name:</span>
+            <input id="selLayoutName" type="text" class="le-input" placeholder="Layout name" />
+          </div>
+          <div class="le-detail-row">
+            <span>Color:</span>
+            <div class="le-color-wrap">
+              <input id="selLayoutColor" type="color" value="#ff4444" />
+            </div>
+          </div>
+          <div class="le-detail-row">
+            <span>Direction:</span>
+            <select id="selLayoutDir" class="le-select">
+              <option value="clockwise">clockwise</option>
+              <option value="counterclockwise">counterclockwise</option>
+            </select>
+          </div>
+          <div class="le-detail-row" id="selLayoutStats">
+            Mask pixels: 0 (0.0%)
+          </div>
+          <button id="btnClearMask" class="btnTiny btnTiny--danger" type="button">Clear Mask</button>
+          <button id="btnDeleteLayout" class="btnTiny btnTiny--danger" type="button" style="margin-left:6px">Delete Layout</button>
+        </section>
+
+        <footer class="panel__footer">
+          <div class="small">
+            Ctrl+S save / Ctrl+Z undo / Ctrl+Shift+Z redo
+          </div>
+        </footer>
+      </aside>
+
+      <main class="mapWrap">
+        <div id="map" class="map"></div>
+        <div class="status" id="status">Loading...</div>
+        <!-- Brush cursor preview -->
+        <div id="brushCursor" class="le-brush-cursor"></div>
+      </main>
+    </div>
+
+    <script src="./layout_editor.js"></script>
+  </body>
+</html>
