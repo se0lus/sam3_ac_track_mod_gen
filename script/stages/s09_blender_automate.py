@@ -57,9 +57,13 @@ def run(config: PipelineConfig) -> None:
         "--target-level", str(config.target_fine_level),
     ]
 
-    # Optional stages: walls and game objects (8a manual > 8 auto)
-    if os.path.isfile(config.walls_json):
-        cmd.extend(["--walls-json", config.walls_json])
+    # Optional stages: walls (7a manual > 7 auto) and game objects (8a manual > 8 auto)
+    walls_json = config.manual_walls_json
+    if not os.path.isfile(walls_json):
+        walls_json = config.walls_json
+    if os.path.isfile(walls_json):
+        cmd.extend(["--walls-json", walls_json])
+        logger.info("Using walls: %s", walls_json)
 
     go_json = config.manual_game_objects_json
     if not os.path.isfile(go_json):

@@ -18,6 +18,7 @@
     ></script>
 
     <link rel="stylesheet" href="./style.css" />
+    <link rel="stylesheet" href="./layout_editor.css" />
     <link rel="stylesheet" href="./wall_editor.css" />
   </head>
   <body>
@@ -43,34 +44,32 @@
         <!-- Mode -->
         <section class="panel__section">
           <div class="section__title">模式</div>
-          <div class="we-mode-row">
-            <label class="we-radio">
-              <input type="radio" name="mode" value="select" checked />
-              选择
-            </label>
-            <label class="we-radio">
-              <input type="radio" name="mode" value="draw" />
-              绘制
-            </label>
-            <label class="we-draw-type-label">
-              类型
-              <select id="drawType" class="we-select">
-                <option value="outer">outer</option>
-                <option value="tree" selected>tree</option>
-                <option value="building">building</option>
-                <option value="water">water</option>
-              </select>
-            </label>
+          <div class="le-seg" id="modeSeg">
+            <button class="le-seg__btn le-seg__btn--active" data-mode="select">选择</button>
+            <button class="le-seg__btn" data-mode="draw">绘制</button>
           </div>
+          <div id="drawTypeRow" class="we-draw-type-row">
+            <span class="we-draw-type-label">类型</span>
+            <select id="drawType" class="we-select">
+              <option value="outer">outer</option>
+              <option value="inner">inner</option>
+              <option value="tree" selected>tree</option>
+              <option value="building">building</option>
+              <option value="water">water</option>
+            </select>
+          </div>
+        </section>
+
+        <!-- Visibility -->
+        <section class="panel__section">
+          <div class="section__title">显示</div>
+          <div class="le-chip-group" id="visibilityChips"></div>
         </section>
 
         <!-- Wall List -->
         <section class="panel__section">
           <div class="section__title">围墙列表</div>
           <div id="wallList" class="we-wall-list"></div>
-          <button id="btnAddWall" class="btnTiny" type="button" style="margin-top:8px" hidden>
-            + 添加围墙
-          </button>
         </section>
 
         <!-- Selected Wall -->
@@ -80,6 +79,7 @@
             <span>类型：</span>
             <select id="selWallType" class="we-select">
               <option value="outer">outer</option>
+              <option value="inner">inner</option>
               <option value="tree">tree</option>
               <option value="building">building</option>
               <option value="water">water</option>
@@ -87,7 +87,9 @@
           </div>
           <div class="we-detail-row">
             <span>闭合：</span>
-            <input id="selWallClosed" type="checkbox" checked />
+            <div class="le-chip we-closed-chip le-chip--on" id="selWallClosedChip">
+              <span class="le-chip__dot"></span> 闭合
+            </div>
           </div>
           <div class="we-detail-row">
             <span id="selWallPtsCount">点数：0</span>
@@ -120,10 +122,12 @@
         <!-- Right-click context menu -->
         <div id="ctxMenu" class="we-ctx-menu" hidden>
           <div id="ctxAddVertex" class="we-ctx-menu__item">在此处添加顶点</div>
+          <div id="ctxDeleteVertex" class="we-ctx-menu__item we-ctx-menu__item--danger">删除顶点</div>
         </div>
       </main>
     </div>
 
+    <script src="./map_rightdrag.js"></script>
     <script src="./wall_editor.js"></script>
   </body>
 </html>

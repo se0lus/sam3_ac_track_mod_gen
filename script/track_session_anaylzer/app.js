@@ -174,6 +174,7 @@ const map = L.map("map", {
   zoomControl: true,
   renderer: canvasRenderer,
 });
+setupRightDrag(map, $("map"));
 
 const tileLayer = L.tileLayer(TILE_URL, {
   minZoom: 12,

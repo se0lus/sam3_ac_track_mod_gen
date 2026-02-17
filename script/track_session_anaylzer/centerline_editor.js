@@ -514,6 +514,7 @@ async function init() {
     minZoom: -2,
     maxZoom: 6,
   });
+  setupRightDrag(map, $("map"));
 
   // Load geo metadata
   try {

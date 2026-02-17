@@ -1413,6 +1413,7 @@ async function init() {
     minZoom: -2,
     maxZoom: 6,
   });
+  setupRightDrag(map, $("map"));
 
   // Load geo metadata
   try {
@@ -1460,8 +1461,6 @@ async function init() {
   map.on("mousemove", (e) => {
     handleCreateMouseMove(e);
   });
-
-  $("map").addEventListener("contextmenu", (e) => e.preventDefault());
 
   // Load layout list
   const select = $("layoutSelect");

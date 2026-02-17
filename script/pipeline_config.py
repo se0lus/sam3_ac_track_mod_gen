@@ -84,6 +84,7 @@ class PipelineConfig:
     surface_density_grass: float = 2.0
     surface_density_kerb: float = 0.5
     surface_density_sand: float = 2.0
+    surface_density_road2: float = 1.0
     surface_density_default: float = 1.0
 
     # --- SAM3 segmentation prompts ---
@@ -125,12 +126,18 @@ class PipelineConfig:
     water_mask_path: str = ""  # water mask for wall generation
     concrete_mask_path: str = ""  # concrete mask for wall generation
     track_layouts_json: str = ""  # track layouts metadata
+    manual_surface_masks_dir: str = ""  # manual-edited surface masks (stage 5a)
+    manual_walls_json: str = ""  # manual-edited walls (stage 7a)
     manual_game_objects_json: str = ""  # manual-edited game objects (stage 8a)
 
     def stage_dir(self, stage_name: str) -> str:
         """Return ``output/NN_stage_name/`` for a given stage."""
         if stage_name == "track_layouts":
             return os.path.join(self.output_dir, "02a_track_layouts")
+        if stage_name == "manual_surface_masks":
+            return os.path.join(self.output_dir, "05a_manual_surface_masks")
+        if stage_name == "manual_walls":
+            return os.path.join(self.output_dir, "07a_manual_walls")
         if stage_name == "manual_game_objects":
             return os.path.join(self.output_dir, "08a_manual_game_objects")
         idx = STAGE_ORDER.get(stage_name, 0)
@@ -195,8 +202,12 @@ class PipelineConfig:
         self.concrete_mask_path = os.path.join(
             self.mask_full_map_dir, "concrete_mask.png"
         )
+        self.manual_surface_masks_dir = self.stage_dir("manual_surface_masks")
         self.track_layouts_json = os.path.join(
             self.stage_dir("track_layouts"), "layouts.json"
+        )
+        self.manual_walls_json = os.path.join(
+            self.stage_dir("manual_walls"), "walls.json"
         )
         self.manual_game_objects_json = os.path.join(
             self.stage_dir("manual_game_objects"), "game_objects.json"

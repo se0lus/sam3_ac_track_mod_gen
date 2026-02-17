@@ -33,6 +33,10 @@ def run(config: PipelineConfig) -> None:
     merges overlapping clip masks via rasterization, then converts merged
     polygons to Blender coordinates and writes per-tag JSON files to
     ``config.blender_clips_dir``.
+
+    Surface tags (sand, grass, road2, road, kerb) use priority compositing
+    to eliminate inter-tag gaps. Non-surface tags (trees, building, water)
+    use independent per-tag merging.
     """
     logger.info("=== Stage 5: Convert masks to Blender input (image-based merge) ===")
 
@@ -55,15 +59,39 @@ def run(config: PipelineConfig) -> None:
         shutil.rmtree(output_dir)
     os.makedirs(output_dir, exist_ok=True)
 
-    # Get active tags from config
-    tags = [p["tag"] for p in config.sam3_prompts]
+    # Surface tags: priority compositing (low→high priority order)
+    composite_priority = [
+        {"tag": "sand",  "clip": True,  "stage2_mask": "sand_mask.png"},
+        {"tag": "grass", "clip": True,  "stage2_mask": "grass_mask.png"},
+        {"tag": "road2", "clip": False, "stage2_masks": ["merged_mask.png", "concrete_mask.png"]},
+        {"tag": "road",  "clip": True,  "stage2a": True},
+        {"tag": "kerb",  "clip": True},
+    ]
+
+    # Independent tags = all sam3_prompts tags minus composite tags minus concrete
+    # (concrete is absorbed into road2)
+    composite_tags = {c["tag"] for c in composite_priority}
+    all_tags = [p["tag"] for p in config.sam3_prompts]
+    independent_tags = [t for t in all_tags if t not in composite_tags and t != "concrete"]
+
+    logger.info("Composite surface tags: %s", [c["tag"] for c in composite_priority])
+    logger.info("Independent tags: %s", independent_tags)
+
+    # Stage 2, 2a, and 5a directories
+    fullmap_mask_dir = config.mask_full_map_dir
+    layout_mask_dir = config.stage_dir("track_layouts")
+    manual_surface_dir = config.manual_surface_masks_dir
 
     _merge_and_convert(
         geotiff_path=config.geotiff_path,
         mask_dir=mask_dir,
         tiles_dir=config.tiles_dir,
         output_dir=output_dir,
-        tags=tags,
+        tags=independent_tags,
+        fullmap_mask_dir=fullmap_mask_dir,
+        layout_mask_dir=layout_mask_dir,
+        manual_surface_mask_dir=manual_surface_dir,
+        composite_priority=composite_priority,
     )
     logger.info("Blender input files written to %s", output_dir)
 
@@ -74,17 +102,25 @@ def _merge_and_convert(
     tiles_dir: str,
     output_dir: str,
     tags: List[str],
+    fullmap_mask_dir: str = None,
+    layout_mask_dir: str = None,
+    manual_surface_mask_dir: str = None,
+    composite_priority: List[dict] = None,
 ) -> None:
     """Merge clip masks via rasterization, then convert to Blender coordinates."""
     from mask_merger import merge_clip_masks
     from geo_sam3_blender_utils import get_tileset_transform, geo_points_to_blender_xyz
 
-    # Step 1: Merge clip masks per tag
+    # Step 1: Merge clip masks per tag (with optional priority compositing)
     preview_dir = os.path.join(output_dir, "merge_preview")
     merged = merge_clip_masks(
         geotiff_path=geotiff_path,
         mask_dir=mask_dir,
         tags=tags,
+        fullmap_mask_dir=fullmap_mask_dir,
+        layout_mask_dir=layout_mask_dir,
+        manual_surface_mask_dir=manual_surface_mask_dir,
+        composite_priority=composite_priority,
         preview_dir=preview_dir,
     )
 

@@ -31,9 +31,7 @@ let dirty = false;
 let painting = false;      // left-mouse is down and painting
 let lastPaintPt = null;    // last paint pixel [x, y] for line interpolation
 
-// Right-click drag state
-let rightDragging = false;
-let rightDragStart = null;
+// Right-click drag — handled by shared map_rightdrag.js
 
 // Undo/redo per layout: map name -> [ImageData]
 let undoStacks = {};
@@ -596,6 +594,7 @@ async function init() {
     maxZoom: 6,
     dragging: false,
   });
+  setupRightDrag(map, $("map"));
 
   // Load geo metadata
   try {
@@ -693,29 +692,7 @@ function wireMapEvents() {
   });
   document.addEventListener("mouseup", (e) => {
     if (e.button === 0) handlePaintEnd();
-    if (e.button === 2) { rightDragging = false; rightDragStart = null; }
   });
-
-  // --- Right click: drag map ---
-  mapEl.addEventListener("mousedown", (e) => {
-    if (e.button === 2) {
-      rightDragging = true;
-      rightDragStart = { x: e.clientX, y: e.clientY };
-      e.preventDefault();
-    }
-  });
-
-  document.addEventListener("mousemove", (e) => {
-    if (rightDragging && rightDragStart) {
-      const dx = e.clientX - rightDragStart.x;
-      const dy = e.clientY - rightDragStart.y;
-      map.panBy([-dx, -dy], { animate: false });
-      rightDragStart = { x: e.clientX, y: e.clientY };
-    }
-  });
-
-  // Prevent context menu on map
-  mapEl.addEventListener("contextmenu", (e) => e.preventDefault());
 
   // Ctrl+scroll for brush size, normal scroll for zoom
   mapEl.addEventListener("wheel", (e) => {

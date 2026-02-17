@@ -7,12 +7,16 @@
 const TILE_URL = "./map/{z}/{x}/{y}.png";
 const WALL_COLORS = {
   outer: "#00ff00",
+  inner: "#ff6600",
   tree: "#228b22",
   building: "#9333ea",
   water: "#00bfff",
 };
 const DEFAULT_COLOR = "#888888";
 const UNDO_LIMIT = 50;
+
+// Wall type display order
+const WALL_TYPE_ORDER = ["outer", "inner", "tree", "building", "water"];
 
 const $ = (id) => document.getElementById(id);
 
@@ -34,6 +38,16 @@ let undoStack = [];
 let redoStack = [];
 let dirty = false;
 
+// Visibility state per category + basemap
+let visibility = {
+  basemap: true,
+  outer: true,
+  inner: true,
+  tree: true,
+  building: true,
+  water: true,
+};
+
 // Leaflet objects
 let map;
 let tileLayer;
@@ -43,6 +57,7 @@ let midpointGroup; // L.layerGroup of midpoint ghost markers
 let drawLayer = null; // L.polyline preview during draw mode
 let drawMarkers = null; // L.layerGroup for draw points
 let rubberBand = null; // L.polyline rubber-band
+let rightDrag = null; // setupRightDrag() return value
 
 // ---------------------------------------------------------------------------
 // Coordinate conversion
@@ -66,7 +81,7 @@ function latLngToPixel(lat, lng) {
 // ---------------------------------------------------------------------------
 // Context menu state
 // ---------------------------------------------------------------------------
-let ctxPending = null; // { wallIdx, insertIdx, px, py } — pending insertion
+let ctxPending = null; // { wallIdx, insertIdx, px, py, vertexIdx }
 
 // ---------------------------------------------------------------------------
 // Geometry helpers
@@ -112,15 +127,39 @@ function findNearestEdge(wallIdx, clickPx, clickPy) {
   return { edgeIdx: bestEdge, projPx: bestPt.x, projPy: bestPt.y, dist: Math.sqrt(bestDist) };
 }
 
+function findNearestVertex(wallIdx, clickPx, clickPy) {
+  const pts = walls[wallIdx].points;
+  let bestDist = Infinity;
+  let bestIdx = -1;
+  for (let i = 0; i < pts.length; i++) {
+    const dx = pts[i][0] - clickPx;
+    const dy = pts[i][1] - clickPy;
+    const dist = dx * dx + dy * dy;
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestIdx = i;
+    }
+  }
+  return { vertexIdx: bestIdx, dist: Math.sqrt(bestDist) };
+}
+
 // ---------------------------------------------------------------------------
 // Context menu
 // ---------------------------------------------------------------------------
-function showContextMenu(screenX, screenY, wallIdx, insertIdx, px, py) {
-  ctxPending = { wallIdx, insertIdx, px: Math.round(px), py: Math.round(py) };
+function showContextMenu(screenX, screenY, wallIdx, insertIdx, px, py, vertexIdx) {
+  ctxPending = { wallIdx, insertIdx, px: Math.round(px), py: Math.round(py), vertexIdx: vertexIdx ?? -1 };
   const menu = $("ctxMenu");
   menu.hidden = false;
   menu.style.left = screenX + "px";
   menu.style.top = screenY + "px";
+
+  // Show/hide delete vertex option
+  const delItem = $("ctxDeleteVertex");
+  if (vertexIdx >= 0) {
+    delItem.classList.remove("we-ctx-menu__item--hidden");
+  } else {
+    delItem.classList.add("we-ctx-menu__item--hidden");
+  }
 
   // Keep menu within viewport
   requestAnimationFrame(() => {
@@ -153,6 +192,22 @@ function handleCtxAddVertex() {
   selectVertex(insertIdx);
   renderAll();
   setStatus(`已在边上插入顶点 (${px}, ${py})`);
+}
+
+function handleCtxDeleteVertex() {
+  if (!ctxPending) return;
+  const { wallIdx, vertexIdx } = ctxPending;
+  hideContextMenu();
+
+  if (wallIdx < 0 || wallIdx >= walls.length || vertexIdx < 0) return;
+
+  // Select wall if not already
+  if (selectedWallIdx !== wallIdx) {
+    selectedWallIdx = wallIdx;
+  }
+
+  deleteVertex(wallIdx, vertexIdx);
+  setStatus(`已删除顶点 #${vertexIdx}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -190,6 +245,56 @@ function markClean() {
 }
 
 // ---------------------------------------------------------------------------
+// Visibility
+// ---------------------------------------------------------------------------
+function buildVisibilityChips() {
+  const container = $("visibilityChips");
+  container.innerHTML = "";
+
+  // Basemap chip
+  const basemapChip = document.createElement("div");
+  basemapChip.className = `le-chip ${visibility.basemap ? "le-chip--on" : ""}`;
+  basemapChip.style.setProperty("--chip-color", "rgba(148,163,184,0.5)");
+  basemapChip.style.setProperty("--chip-bg", "rgba(148,163,184,0.15)");
+  basemapChip.style.setProperty("--chip-dot", "#94a3b8");
+  basemapChip.innerHTML = '<span class="le-chip__dot"></span> 底图';
+  basemapChip.addEventListener("click", () => {
+    visibility.basemap = !visibility.basemap;
+    basemapChip.classList.toggle("le-chip--on", visibility.basemap);
+    if (tileLayer) {
+      if (visibility.basemap) tileLayer.addTo(map);
+      else tileLayer.remove();
+    }
+  });
+  container.appendChild(basemapChip);
+
+  // Per-type chips
+  for (const type of WALL_TYPE_ORDER) {
+    const color = WALL_COLORS[type] || DEFAULT_COLOR;
+    const chip = document.createElement("div");
+    chip.className = `le-chip ${visibility[type] ? "le-chip--on" : ""}`;
+    chip.style.setProperty("--chip-color", color);
+    chip.style.setProperty("--chip-bg", hexToRgba(color, 0.2));
+    chip.style.setProperty("--chip-dot", color);
+    chip.innerHTML = `<span class="le-chip__dot"></span> ${type}`;
+    chip.addEventListener("click", () => {
+      visibility[type] = !visibility[type];
+      chip.classList.toggle("le-chip--on", visibility[type]);
+      renderWallPolygons();
+      renderVertexMarkers();
+    });
+    container.appendChild(chip);
+  }
+}
+
+function hexToRgba(hex, alpha) {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+// ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
 function wallColor(type) {
@@ -197,7 +302,6 @@ function wallColor(type) {
 }
 
 function brightenColor(hex) {
-  // Make selected wall color brighter
   const r = parseInt(hex.slice(1, 3), 16);
   const g = parseInt(hex.slice(3, 5), 16);
   const b = parseInt(hex.slice(5, 7), 16);
@@ -207,10 +311,16 @@ function brightenColor(hex) {
 
 function renderWallPolygons() {
   // Remove old layers
-  wallLayers.forEach((l) => l.remove());
+  wallLayers.forEach((l) => { if (l) l.remove(); });
   wallLayers = [];
 
   walls.forEach((w, idx) => {
+    // Respect visibility
+    if (!visibility[w.type]) {
+      wallLayers.push(null);
+      return;
+    }
+
     const latlngs = w.points.map(([px, py]) => pixelToLatLng(px, py));
     const isSelected = idx === selectedWallIdx;
     const color = wallColor(w.type);
@@ -228,8 +338,8 @@ function renderWallPolygons() {
       w.closed !== false ? L.polygon(latlngs, opts) : L.polyline(latlngs, opts);
 
     layer.on("click", (e) => {
+      if (mode === "draw") return; // Let click propagate to map for drawing
       L.DomEvent.stopPropagation(e);
-      if (mode === "draw") return;
       selectWall(idx);
     });
 
@@ -237,25 +347,31 @@ function renderWallPolygons() {
       L.DomEvent.stopPropagation(e);
       L.DomEvent.preventDefault(e);
       if (mode === "draw") return;
+      if (rightDrag && rightDrag.wasDragging()) return;
 
-      // Find nearest edge and project click point onto it
+      // Find nearest edge and nearest vertex
       const [clickPx, clickPy] = latLngToPixel(e.latlng.lat, e.latlng.lng);
       const hit = findNearestEdge(idx, clickPx, clickPy);
       if (hit.edgeIdx < 0) return;
 
-      // insertIdx = after edgeIdx vertex
-      const insertIdx = (hit.edgeIdx + 1) % walls[idx].points.length;
-      // For open polylines, clamp: if projecting after last edge, append at end
-      const isClosed = walls[idx].closed !== false;
-      const finalIdx = isClosed ? insertIdx : hit.edgeIdx + 1;
+      // Check if close to an existing vertex (within ~15px at current zoom)
+      const vHit = findNearestVertex(idx, clickPx, clickPy);
+      const vertexThreshold = 15;
+      const nearVertex = vHit.dist < vertexThreshold ? vHit.vertexIdx : -1;
+
+      const isClosed = w.closed !== false;
+      const insertIdx = isClosed
+        ? (hit.edgeIdx + 1) % w.points.length
+        : hit.edgeIdx + 1;
 
       showContextMenu(
         e.originalEvent.clientX,
         e.originalEvent.clientY,
         idx,
-        finalIdx,
+        insertIdx,
         hit.projPx,
-        hit.projPy
+        hit.projPy,
+        nearVertex,
       );
     });
 
@@ -274,6 +390,10 @@ function renderVertexMarkers() {
   if (selectedWallIdx < 0 || selectedWallIdx >= walls.length) return;
 
   const w = walls[selectedWallIdx];
+
+  // Don't show vertex markers if this type is hidden
+  if (!visibility[w.type]) return;
+
   const pts = w.points;
 
   // Vertex markers
@@ -292,6 +412,31 @@ function renderVertexMarkers() {
     marker.on("click", (e) => {
       L.DomEvent.stopPropagation(e);
       selectVertex(vi);
+    });
+
+    marker.on("contextmenu", (e) => {
+      L.DomEvent.stopPropagation(e);
+      L.DomEvent.preventDefault(e);
+      if (mode === "draw") return;
+      if (rightDrag && rightDrag.wasDragging()) return;
+
+      // Right-click on vertex: show context menu with delete option
+      const [clickPx, clickPy] = latLngToPixel(e.latlng.lat, e.latlng.lng);
+      const hit = findNearestEdge(selectedWallIdx, clickPx, clickPy);
+      const isClosed = w.closed !== false;
+      const insertIdx = hit.edgeIdx >= 0
+        ? (isClosed ? (hit.edgeIdx + 1) % w.points.length : hit.edgeIdx + 1)
+        : vi;
+
+      showContextMenu(
+        e.originalEvent.clientX,
+        e.originalEvent.clientY,
+        selectedWallIdx,
+        insertIdx,
+        clickPx,
+        clickPy,
+        vi,
+      );
     });
 
     marker.on("dragstart", () => {
@@ -335,7 +480,7 @@ function renderVertexMarkers() {
     });
 
     const ghost = L.marker(ll, { icon, interactive: true });
-    const insertIdx = j; // insert before j
+    const insertIdx = j;
 
     ghost.on("click", (e) => {
       L.DomEvent.stopPropagation(e);
@@ -351,37 +496,90 @@ function renderVertexMarkers() {
 
 function updateWallLayer(idx) {
   if (idx < 0 || idx >= walls.length || idx >= wallLayers.length) return;
+  const layer = wallLayers[idx];
+  if (!layer) return;
   const w = walls[idx];
   const latlngs = w.points.map(([px, py]) => pixelToLatLng(px, py));
-  wallLayers[idx].setLatLngs(latlngs);
+  layer.setLatLngs(latlngs);
 }
 
 function renderWallList() {
   const el = $("wallList");
   el.innerHTML = "";
 
+  // Group walls by type
+  const groups = {};
   walls.forEach((w, idx) => {
-    const div = document.createElement("div");
-    div.className = `we-wall-item ${idx === selectedWallIdx ? "we-wall-item--selected" : ""}`;
-    div.innerHTML = `
-      <div class="we-wall-swatch" style="background:${wallColor(w.type)}"></div>
-      <div class="we-wall-label">${w.type}</div>
-      <div class="we-wall-pts">${w.points.length} pts</div>
-      <button class="we-wall-del" data-idx="${idx}" title="删除">&times;</button>
-    `;
-
-    div.addEventListener("click", (e) => {
-      if (e.target.closest(".we-wall-del")) return;
-      selectWall(idx);
-    });
-
-    div.querySelector(".we-wall-del").addEventListener("click", (e) => {
-      e.stopPropagation();
-      deleteWall(idx);
-    });
-
-    el.appendChild(div);
+    const type = w.type || "outer";
+    if (!groups[type]) groups[type] = [];
+    groups[type].push({ wall: w, idx });
   });
+
+  // Render in order
+  for (const type of WALL_TYPE_ORDER) {
+    const items = groups[type];
+    if (!items || items.length === 0) continue;
+
+    // Group header
+    const header = document.createElement("div");
+    header.className = "we-wall-group-header";
+    header.innerHTML = `${type} <span class="we-wall-group-count">(${items.length})</span>`;
+    el.appendChild(header);
+
+    // Items
+    for (const { wall: w, idx } of items) {
+      const div = document.createElement("div");
+      div.className = `we-wall-item ${idx === selectedWallIdx ? "we-wall-item--selected" : ""}`;
+      div.innerHTML = `
+        <div class="we-wall-swatch" style="background:${wallColor(w.type)}"></div>
+        <div class="we-wall-label">${w.type} #${idx}</div>
+        <div class="we-wall-pts">${w.points.length} pts</div>
+        <button class="we-wall-del" data-idx="${idx}" title="删除">&times;</button>
+      `;
+
+      div.addEventListener("click", (e) => {
+        if (e.target.closest(".we-wall-del")) return;
+        selectWall(idx);
+      });
+
+      div.querySelector(".we-wall-del").addEventListener("click", (e) => {
+        e.stopPropagation();
+        deleteWall(idx);
+      });
+
+      el.appendChild(div);
+    }
+  }
+
+  // Any types not in the order list
+  for (const type of Object.keys(groups)) {
+    if (WALL_TYPE_ORDER.includes(type)) continue;
+    const items = groups[type];
+    const header = document.createElement("div");
+    header.className = "we-wall-group-header";
+    header.innerHTML = `${type} <span class="we-wall-group-count">(${items.length})</span>`;
+    el.appendChild(header);
+
+    for (const { wall: w, idx } of items) {
+      const div = document.createElement("div");
+      div.className = `we-wall-item ${idx === selectedWallIdx ? "we-wall-item--selected" : ""}`;
+      div.innerHTML = `
+        <div class="we-wall-swatch" style="background:${wallColor(w.type)}"></div>
+        <div class="we-wall-label">${w.type} #${idx}</div>
+        <div class="we-wall-pts">${w.points.length} pts</div>
+        <button class="we-wall-del" data-idx="${idx}" title="删除">&times;</button>
+      `;
+      div.addEventListener("click", (e) => {
+        if (e.target.closest(".we-wall-del")) return;
+        selectWall(idx);
+      });
+      div.querySelector(".we-wall-del").addEventListener("click", (e) => {
+        e.stopPropagation();
+        deleteWall(idx);
+      });
+      el.appendChild(div);
+    }
+  }
 }
 
 function renderAll() {
@@ -435,7 +633,8 @@ function updateSelectedWallInfo() {
   sec.hidden = false;
   const w = walls[selectedWallIdx];
   $("selWallType").value = w.type;
-  $("selWallClosed").checked = w.closed !== false;
+  const closedChip = $("selWallClosedChip");
+  closedChip.classList.toggle("le-chip--on", w.closed !== false);
   $("selWallPtsCount").textContent = `点数：${w.points.length}`;
 }
 
@@ -464,7 +663,6 @@ function deleteVertex(wallIdx, vertexIdx) {
   if (wallIdx < 0 || wallIdx >= walls.length) return;
   const w = walls[wallIdx];
   if (w.points.length <= 3) {
-    // Too few points — delete entire wall instead
     deleteWall(wallIdx);
     return;
   }
@@ -497,6 +695,7 @@ function enterDrawMode() {
   $("map").classList.add("map--draw");
   map.doubleClickZoom.disable();
   clearDrawPreview();
+  updateModeSegUI("draw");
   setStatus("绘制模式：点击添加顶点，双击或 Enter 完成，Esc 取消");
 }
 
@@ -506,8 +705,14 @@ function exitDrawMode() {
   $("map").classList.remove("map--draw");
   map.doubleClickZoom.enable();
   clearDrawPreview();
-  document.querySelector('input[name="mode"][value="select"]').checked = true;
+  updateModeSegUI("select");
   setStatus("选择模式");
+}
+
+function updateModeSegUI(activeMode) {
+  document.querySelectorAll("#modeSeg .le-seg__btn").forEach((btn) => {
+    btn.classList.toggle("le-seg__btn--active", btn.dataset.mode === activeMode);
+  });
 }
 
 function clearDrawPreview() {
@@ -635,6 +840,8 @@ async function init() {
     zoomControl: true,
   });
 
+  rightDrag = setupRightDrag(map, $("map"));
+
   tileLayer = L.tileLayer(TILE_URL, {
     minZoom: 12,
     maxZoom: 24,
@@ -645,7 +852,9 @@ async function init() {
   L.control.scale({ imperial: false }).addTo(map);
   map.setView([22.7123312, 113.8654811], 18);
 
-  // Map click handler
+  // Map click handler — in draw mode, clicks on existing walls should
+  // NOT be intercepted (wall layers have interactive:true but we return
+  // early in their click handler when mode === "draw")
   map.on("click", (e) => {
     if (mode === "draw") {
       handleDrawClick(e);
@@ -695,6 +904,7 @@ async function init() {
       ]);
     }
 
+    buildVisibilityChips();
     renderAll();
     setStatus(`已加载 ${walls.length} 个围墙`);
   } catch (err) {
@@ -706,10 +916,10 @@ async function init() {
 }
 
 function wireUI() {
-  // Mode radios
-  document.querySelectorAll('input[name="mode"]').forEach((radio) => {
-    radio.addEventListener("change", (e) => {
-      if (e.target.value === "draw") enterDrawMode();
+  // Mode segmented control
+  document.querySelectorAll("#modeSeg .le-seg__btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      if (btn.dataset.mode === "draw") enterDrawMode();
       else exitDrawMode();
     });
   });
@@ -734,10 +944,13 @@ function wireUI() {
     renderAll();
   });
 
-  $("selWallClosed").addEventListener("change", (e) => {
+  // Closed toggle chip (replaces checkbox)
+  $("selWallClosedChip").addEventListener("click", () => {
     if (selectedWallIdx < 0) return;
     pushUndo();
-    walls[selectedWallIdx].closed = e.target.checked;
+    const w = walls[selectedWallIdx];
+    w.closed = !(w.closed !== false);
+    $("selWallClosedChip").classList.toggle("le-chip--on", w.closed);
     renderAll();
   });
 
@@ -753,11 +966,9 @@ function wireUI() {
 
   // Context menu
   $("ctxAddVertex").addEventListener("click", () => handleCtxAddVertex());
+  $("ctxDeleteVertex").addEventListener("click", () => handleCtxDeleteVertex());
   document.addEventListener("click", () => hideContextMenu());
   map.on("movestart", () => hideContextMenu());
-
-  // Suppress default browser context menu on the map
-  $("map").addEventListener("contextmenu", (e) => e.preventDefault());
 
   // Keyboard shortcuts
   document.addEventListener("keydown", (e) => {

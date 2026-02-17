@@ -545,6 +545,7 @@ async function save() {
 // ---------------------------------------------------------------------------
 async function init() {
   map = L.map("map", { zoomControl: true });
+  setupRightDrag(map, $("map"));
 
   tileLayer = L.tileLayer(TILE_URL, {
     minZoom: 12,
@@ -568,9 +569,6 @@ async function init() {
   map.on("mousemove", (e) => {
     handleCreateMouseMove(e);
   });
-
-  // Suppress context menu on map
-  $("map").addEventListener("contextmenu", (e) => e.preventDefault());
 
   // Load data
   try {
