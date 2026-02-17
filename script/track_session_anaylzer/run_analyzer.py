@@ -1,10 +1,12 @@
 import argparse
 import json
+import math
 import os
 import re
 import shutil
 import socket
 import sys
+import threading
 import webbrowser
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
@@ -33,18 +35,97 @@ def find_free_port(host: str, start_port: int, max_tries: int) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Output paths (relative to repo root, resolved at startup)
+# Output paths — absolute, resolved from repo root at import time.
+# Server chdir's to the analyzer directory for static file serving,
+# so all data paths must be absolute.
 # ---------------------------------------------------------------------------
-_WALLS_JSON = os.path.join("output", "07_ai_walls", "walls.json")
-_GEO_META_JSON = os.path.join("output", "07_ai_walls", "geo_metadata.json")
-_GAME_OBJECTS_JSON = os.path.join("output", "08_ai_game_objects", "game_objects.json")
-_GAME_OBJECTS_GEO_META_JSON = os.path.join("output", "08_ai_game_objects", "geo_metadata.json")
-_CENTERLINE_JSON = os.path.join("output", "08_ai_game_objects", "centerline.json")
-_LAYOUTS_DIR = os.path.join("output", "02a_track_layouts")
-_LAYOUTS_JSON = os.path.join("output", "02a_track_layouts", "layouts.json")
-_MASK_FULL_MAP_DIR = os.path.join("output", "02_mask_full_map")
-_GAME_OBJECTS_DIR = os.path.join("output", "08_ai_game_objects")
-_MANUAL_GAME_OBJECTS_DIR = os.path.join("output", "08a_manual_game_objects")
+_REPO_ROOT = repo_root_from_here()
+_WALLS_JSON = os.path.join(_REPO_ROOT, "output", "07_ai_walls", "walls.json")
+_MANUAL_WALLS_JSON = os.path.join(_REPO_ROOT, "output", "07a_manual_walls", "walls.json")
+_MANUAL_WALLS_DIR = os.path.join(_REPO_ROOT, "output", "07a_manual_walls")
+_GEO_META_JSON = os.path.join(_REPO_ROOT, "output", "07_ai_walls", "geo_metadata.json")
+_GAME_OBJECTS_JSON = os.path.join(_REPO_ROOT, "output", "08_ai_game_objects", "game_objects.json")
+_GAME_OBJECTS_GEO_META_JSON = os.path.join(_REPO_ROOT, "output", "08_ai_game_objects", "geo_metadata.json")
+_CENTERLINE_JSON = os.path.join(_REPO_ROOT, "output", "08_ai_game_objects", "centerline.json")
+_LAYOUTS_DIR = os.path.join(_REPO_ROOT, "output", "02a_track_layouts")
+_LAYOUTS_JSON = os.path.join(_REPO_ROOT, "output", "02a_track_layouts", "layouts.json")
+_MASK_FULL_MAP_DIR = os.path.join(_REPO_ROOT, "output", "02_mask_full_map")
+_GAME_OBJECTS_DIR = os.path.join(_REPO_ROOT, "output", "08_ai_game_objects")
+_MANUAL_GAME_OBJECTS_DIR = os.path.join(_REPO_ROOT, "output", "08a_manual_game_objects")
+_MANUAL_SURFACE_MASKS_DIR = os.path.join(_REPO_ROOT, "output", "05a_manual_surface_masks")
+_STAGE5_PREVIEW_DIR = os.path.join(_REPO_ROOT, "output", "05_convert_to_blender", "merge_preview")
+
+
+# ---------------------------------------------------------------------------
+# Surface mask tile cache (lazy-loaded in-memory numpy arrays)
+# ---------------------------------------------------------------------------
+_surface_mask_cache = {}    # tag -> numpy.ndarray (H, W, uint8)
+_surface_meta_cache = None
+_cache_lock = threading.Lock()
+
+
+def _get_surface_meta():
+    global _surface_meta_cache
+    if _surface_meta_cache is None:
+        p = os.path.join(_MANUAL_SURFACE_MASKS_DIR, "surface_masks.json")
+        if os.path.isfile(p):
+            with open(p, "r", encoding="utf-8") as f:
+                _surface_meta_cache = json.load(f)
+    return _surface_meta_cache
+
+
+def _get_surface_mask(tag):
+    """Load full mask into memory cache, return numpy array or None."""
+    with _cache_lock:
+        if tag in _surface_mask_cache:
+            return _surface_mask_cache[tag]
+    import cv2
+    manual = os.path.join(_MANUAL_SURFACE_MASKS_DIR, f"{tag}_mask.png")
+    stage5 = os.path.join(_STAGE5_PREVIEW_DIR, f"{tag}_merged.png")
+    path = manual if os.path.isfile(manual) else stage5
+    if not os.path.isfile(path):
+        return None
+    mask = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+    with _cache_lock:
+        _surface_mask_cache[tag] = mask
+    return mask
+
+
+def _patch_surface_tile(tag, col, row, tile_png_bytes):
+    """Decode tile PNG and patch into the cached full mask."""
+    import cv2
+    import numpy as np
+    meta = _get_surface_meta()
+    if not meta:
+        return False
+    ts = meta.get("tile_size", 512)
+    mask = _get_surface_mask(tag)
+    if mask is None:
+        return False
+    arr = np.frombuffer(tile_png_bytes, dtype=np.uint8)
+    tile = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
+    if tile is None:
+        return False
+    y0, x0 = row * ts, col * ts
+    h = min(ts, mask.shape[0] - y0)
+    w = min(ts, mask.shape[1] - x0)
+    if h <= 0 or w <= 0:
+        return False
+    with _cache_lock:
+        mask[y0:y0 + h, x0:x0 + w] = tile[:h, :w]
+    return True
+
+
+def _flush_surface_masks():
+    """Write all cached masks to disk."""
+    import cv2
+    os.makedirs(_MANUAL_SURFACE_MASKS_DIR, exist_ok=True)
+    with _cache_lock:
+        tags = list(_surface_mask_cache.keys())
+        for tag in tags:
+            path = os.path.join(_MANUAL_SURFACE_MASKS_DIR, f"{tag}_mask.png")
+            cv2.imwrite(path, _surface_mask_cache[tag])
+    return len(tags)
 
 
 def _safe_layout_name(name: str) -> str:
@@ -113,7 +194,11 @@ class ApiHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
         # --- Existing endpoints ---
         if self.path == "/api/walls":
-            self._serve_json_file(_WALLS_JSON)
+            # 7a manual > 7 auto
+            if os.path.isfile(_MANUAL_WALLS_JSON):
+                self._serve_json_file(_MANUAL_WALLS_JSON)
+            else:
+                self._serve_json_file(_WALLS_JSON)
         elif self.path == "/api/geo_metadata":
             self._serve_json_file(_GEO_META_JSON)
         elif self.path == "/api/game_objects":
@@ -159,6 +244,37 @@ class ApiHandler(SimpleHTTPRequestHandler):
             else:
                 self.send_error(404, "No modelscale image found")
 
+        # --- Surface masks (5a manual editing) ---
+        elif self.path == "/api/surface_masks":
+            sf_json = os.path.join(_MANUAL_SURFACE_MASKS_DIR, "surface_masks.json")
+            self._serve_json_file(sf_json)
+
+        elif self.path.startswith("/api/surface_mask/"):
+            tag = self.path[len("/api/surface_mask/"):]
+            tag = re.sub(r'[^\w]', '', tag)
+            # Priority: 5a manual > Stage 5 merge_preview
+            manual_path = os.path.join(_MANUAL_SURFACE_MASKS_DIR, f"{tag}_mask.png")
+            stage5_path = os.path.join(_STAGE5_PREVIEW_DIR, f"{tag}_merged.png")
+            if os.path.isfile(manual_path):
+                self._serve_binary_file(manual_path, "image/png")
+            elif os.path.isfile(stage5_path):
+                self._serve_binary_file(stage5_path, "image/png")
+            else:
+                self.send_error(404, f"No mask for tag '{tag}'")
+
+        # --- Surface tiles (tile-based editing) ---
+        elif self.path.startswith("/api/surface_tile/"):
+            parts = self.path[len("/api/surface_tile/"):].split("/")
+            if len(parts) == 2:
+                tag = re.sub(r'[^\w]', '', parts[0])
+                m = re.match(r'(\d+)_(\d+)\.png$', parts[1])
+                if m:
+                    self._serve_surface_tile(tag, int(m.group(1)), int(m.group(2)))
+                else:
+                    self.send_error(400, "Bad tile coords")
+            else:
+                self.send_error(400, "Bad surface tile path")
+
         # --- Per-layout centerline & game objects (8a > 8 priority) ---
         elif self.path.startswith("/api/layout_centerline/"):
             name = self.path[len("/api/layout_centerline/"):]
@@ -186,6 +302,26 @@ class ApiHandler(SimpleHTTPRequestHandler):
         elif self.path.startswith("/api/layout_mask/"):
             name = self.path[len("/api/layout_mask/"):]
             self._save_layout_mask(name)
+
+        # --- Surface masks (5a) ---
+        elif self.path.startswith("/api/surface_mask/"):
+            tag = self.path[len("/api/surface_mask/"):]
+            self._save_surface_mask(tag)
+
+        elif self.path.startswith("/api/surface_tile/"):
+            parts = self.path[len("/api/surface_tile/"):].split("/")
+            if len(parts) == 2:
+                tag = re.sub(r'[^\w]', '', parts[0])
+                m = re.match(r'(\d+)_(\d+)$', parts[1])
+                if m:
+                    self._handle_save_surface_tile(tag, int(m.group(1)), int(m.group(2)))
+                else:
+                    self.send_error(400, "Bad tile coords")
+            else:
+                self.send_error(400, "Bad surface tile path")
+
+        elif self.path == "/api/surface_flush":
+            self._handle_surface_flush()
 
         # --- Per-layout centerline & game objects (always write to 8a) ---
         elif self.path.startswith("/api/layout_centerline/"):
@@ -258,6 +394,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
         return self.rfile.read(length)
 
     def _save_walls(self):
+        """Save walls JSON — always writes to 7a (manual), preserving 7 (AI)."""
         try:
             body = self._read_body()
             data = json.loads(body)
@@ -271,11 +408,19 @@ class ApiHandler(SimpleHTTPRequestHandler):
                     self.send_error(400, f"Wall {i} missing 'type' or 'points'")
                     return
 
-            if os.path.isfile(_WALLS_JSON):
-                shutil.copy2(_WALLS_JSON, _WALLS_JSON + ".bak")
+            os.makedirs(_MANUAL_WALLS_DIR, exist_ok=True)
 
-            with open(_WALLS_JSON, "w", encoding="utf-8") as f:
+            if os.path.isfile(_MANUAL_WALLS_JSON):
+                shutil.copy2(_MANUAL_WALLS_JSON, _MANUAL_WALLS_JSON + ".bak")
+
+            with open(_MANUAL_WALLS_JSON, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
+
+            # Copy geo_metadata.json to 7a if not present
+            src_geo = _GEO_META_JSON
+            dst_geo = os.path.join(_MANUAL_WALLS_DIR, "geo_metadata.json")
+            if os.path.isfile(src_geo) and not os.path.isfile(dst_geo):
+                shutil.copy2(src_geo, dst_geo)
 
             self._send_json_ok()
         except json.JSONDecodeError as e:
@@ -351,6 +496,76 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 f.write(body)
 
             self._send_json_ok({"path": mask_path, "size": len(body)})
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def _save_surface_mask(self, tag: str):
+        """Save surface mask PNG to 05a directory."""
+        try:
+            tag = re.sub(r'[^\w]', '', tag)
+            body = self._read_body()
+
+            if len(body) < 8:
+                self.send_error(400, "Empty or too small PNG data")
+                return
+
+            os.makedirs(_MANUAL_SURFACE_MASKS_DIR, exist_ok=True)
+            mask_path = os.path.join(_MANUAL_SURFACE_MASKS_DIR, f"{tag}_mask.png")
+
+            with open(mask_path, "wb") as f:
+                f.write(body)
+
+            self._send_json_ok({"path": mask_path, "size": len(body)})
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def _serve_surface_tile(self, tag, col, row):
+        """Extract and serve a 512x512 tile from the full mask."""
+        import cv2
+        import numpy as np
+        try:
+            meta = _get_surface_meta()
+            if not meta:
+                self.send_error(404, "No surface meta")
+                return
+            ts = meta.get("tile_size", 512)
+            mask = _get_surface_mask(tag)
+            if mask is None:
+                tile = np.zeros((ts, ts), dtype=np.uint8)
+            else:
+                y0, x0 = row * ts, col * ts
+                y1 = min(y0 + ts, mask.shape[0])
+                x1 = min(x0 + ts, mask.shape[1])
+                tile = np.zeros((ts, ts), dtype=np.uint8)
+                if y0 < mask.shape[0] and x0 < mask.shape[1]:
+                    tile[:y1 - y0, :x1 - x0] = mask[y0:y1, x0:x1]
+            _, buf = cv2.imencode(".png", tile)
+            data = buf.tobytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def _handle_save_surface_tile(self, tag, col, row):
+        """Receive a tile PNG and patch into the cached mask."""
+        try:
+            body = self._read_body()
+            if _patch_surface_tile(tag, col, row, body):
+                self._send_json_ok()
+            else:
+                self.send_error(400, "Failed to patch tile")
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def _handle_surface_flush(self):
+        """Flush all cached surface masks to disk."""
+        try:
+            count = _flush_surface_masks()
+            self._send_json_ok({"flushed": count})
         except Exception as e:
             self.send_error(500, str(e))
 
@@ -658,20 +873,24 @@ def main() -> int:
         "--page",
         default="index.html",
         help="Page to open: index.html, wall_editor.html, objects_editor.html, "
-             "layout_editor.html, centerline_editor.html, or gameobjects_editor.html",
+             "layout_editor.html, centerline_editor.html, gameobjects_editor.html, "
+             "or surface_editor.html",
     )
     args = ap.parse_args()
 
-    repo_root = repo_root_from_here()
-    os.chdir(repo_root)
+    # Serve static files from the analyzer directory so URLs are clean:
+    #   http://localhost:8000/wall_editor.html  (not /script/track_session_anaylzer/...)
+    analyzer_dir = os.path.dirname(os.path.abspath(__file__))
+    os.chdir(analyzer_dir)
 
     port = find_free_port(args.host, args.port, args.max_tries)
-    url = f"http://{args.host}:{port}/script/track_session_anaylzer/{args.page}"
+    url = f"http://{args.host}:{port}/{args.page}"
 
     httpd = ThreadingHTTPServer((args.host, port), ApiHandler)
 
     print(f"Python: {sys.executable}")
-    print(f"Repo root: {repo_root}")
+    print(f"Repo root: {_REPO_ROOT}")
+    print(f"Analyzer dir: {analyzer_dir}")
     print(f"Serving: {url}")
     print("Press Ctrl+C to stop.")
 

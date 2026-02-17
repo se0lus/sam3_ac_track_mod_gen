@@ -1,0 +1,225 @@
+/* Surface Editor styles (extends style.css + reuses layout_editor patterns) */
+
+/* ── Toolbar ────────────────────────────────────────────────── */
+.se-toolbar__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.btn--primary {
+  background: rgba(96, 165, 250, 0.25);
+  border-color: rgba(96, 165, 250, 0.5);
+}
+.btn--primary:hover {
+  background: rgba(96, 165, 250, 0.35);
+}
+
+.se-dirty {
+  color: #fbbf24;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+/* ── Segmented control (Tool selector) ──────────────────────── */
+.le-seg {
+  display: inline-flex;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.le-seg__btn {
+  position: relative;
+  padding: 7px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  transition: all 0.15s ease;
+  user-select: none;
+}
+.le-seg__btn:not(:last-child) {
+  border-right: 1px solid var(--border);
+}
+.le-seg__btn:hover {
+  color: var(--text);
+  background: rgba(148, 163, 184, 0.08);
+}
+.le-seg__btn--active {
+  color: #fff;
+  background: rgba(96, 165, 250, 0.3);
+}
+.le-seg__btn--active:hover {
+  background: rgba(96, 165, 250, 0.38);
+}
+
+/* ── Brush size ─────────────────────────────────────────────── */
+.le-brush-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  margin-top: 8px;
+}
+
+.le-brush-label {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+#brushSizeVal {
+  color: var(--muted);
+  min-width: 36px;
+  font-size: 11px;
+}
+
+/* Custom range slider */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(148, 163, 184, 0.2);
+  outline: none;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #60a5fa;
+  border: 2px solid rgba(15, 23, 42, 0.8);
+  cursor: pointer;
+  transition: transform 0.1s;
+}
+input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+}
+
+/* ── Toggle chip (replaces checkboxes) ──────────────────────── */
+.le-chip-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.le-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.2);
+  color: var(--muted);
+  transition: all 0.15s ease;
+}
+.le-chip:hover {
+  background: rgba(148, 163, 184, 0.08);
+  color: var(--text);
+}
+.le-chip--on {
+  color: #fff;
+  border-color: var(--chip-color, rgba(96, 165, 250, 0.5));
+  background: var(--chip-bg, rgba(96, 165, 250, 0.2));
+  box-shadow: 0 0 8px var(--chip-glow, rgba(96, 165, 250, 0.15));
+}
+
+/* Dot indicator inside chip */
+.le-chip__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.35;
+  transition: opacity 0.15s ease;
+}
+.le-chip--on .le-chip__dot {
+  opacity: 1;
+  background: var(--chip-dot, #60a5fa);
+}
+
+/* ── Surface tag list ──────────────────────────────────────── */
+.se-tag-list {
+  display: grid;
+  gap: 4px;
+}
+
+.se-tag-item {
+  display: grid;
+  grid-template-columns: 16px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  border: 1px solid transparent;
+  transition: all 0.12s ease;
+}
+.se-tag-item:hover {
+  background: rgba(148, 163, 184, 0.08);
+}
+.se-tag-item--selected {
+  border-color: rgba(96, 165, 250, 0.5);
+  background: rgba(96, 165, 250, 0.1);
+}
+
+.se-tag-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+}
+
+.se-tag-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.se-tag-sublabel {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+/* ── Detail row ─────────────────────────────────────────────── */
+.se-detail-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+
+/* ── Brush cursor ───────────────────────────────────────────── */
+.le-brush-cursor {
+  position: fixed;
+  pointer-events: none;
+  border: 2px solid rgba(255, 255, 255, 0.7);
+  border-radius: 50%;
+  box-sizing: border-box;
+  z-index: 10000;
+  display: none;
+  transform: translate(-50%, -50%);
+}
+
+/* ── Drawing mode cursor ────────────────────────────────────── */
+.map--paint {
+  cursor: none !important;
+}
+.map--paint .leaflet-grab {
+  cursor: none !important;
+}
+.map--paint .leaflet-container {
+  cursor: none !important;
+}
