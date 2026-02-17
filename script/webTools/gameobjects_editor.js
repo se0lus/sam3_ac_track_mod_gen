@@ -1444,7 +1444,7 @@ async function init() {
     }).addTo(map);
   } catch {}
 
-  map.fitBounds(imageBounds);
+  map.fitBounds(imageBounds, { padding: [10, 10] });
 
   // Map events
   map.on("click", (e) => {

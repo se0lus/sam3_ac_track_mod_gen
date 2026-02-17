@@ -1,8 +1,7 @@
 /* global L */
 
-// 底图瓦片默认放在与 index.html 同目录的 map/ 下：
-// script/track_session_anaylzer/map/{z}/{x}/{y}.png
-const TILE_URL = "./map/{z}/{x}/{y}.png";
+// 底图瓦片通过服务器 /tiles/ 路由提供
+const TILE_URL = "/tiles/{z}/{x}/{y}.png";
 
 const COLORS = [
   "#60a5fa",
@@ -172,6 +171,8 @@ const canvasRenderer = L.canvas({ padding: 0.2 });
 const map = L.map("map", {
   preferCanvas: true,
   zoomControl: true,
+  zoomSnap: 0.25,
+  zoomDelta: 0.5,
   renderer: canvasRenderer,
 });
 setupRightDrag(map, $("map"));
@@ -185,7 +186,7 @@ const tileLayer = L.tileLayer(TILE_URL, {
 tileLayer.addTo(map);
 L.control.scale({ imperial: false }).addTo(map);
 
-map.setView([22.7123312, 113.8654811], 18);
+map.setView([22.7123312, 113.8654811], 19);
 
 // --- State ---
 let simplifyMeters = 0.3;

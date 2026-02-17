@@ -584,12 +584,14 @@ async function init() {
   // Create map with standard Web Mercator CRS
   map = L.map("map", {
     zoomControl: true,
+    zoomSnap: 0.25,
+    zoomDelta: 0.5,
     dragging: false,
   });
   setupRightDrag(map, $("map"));
 
   // Geographic basemap tiles (same as objects_editor / wall_editor)
-  basemapLayer = L.tileLayer("./map/{z}/{x}/{y}.png", {
+  basemapLayer = L.tileLayer("/tiles/{z}/{x}/{y}.png", {
     minZoom: 12,
     maxZoom: 24,
     maxNativeZoom: 24,
@@ -597,7 +599,7 @@ async function init() {
 
   // Fit to geo bounds
   const { north, south, east, west } = geoBounds;
-  map.fitBounds([[south, west], [north, east]]);
+  map.fitBounds([[south, west], [north, east]], { padding: [10, 10] });
 
   // Create and load mask layers
   setStatus("Loading mask layers...");

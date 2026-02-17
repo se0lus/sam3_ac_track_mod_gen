@@ -4,7 +4,7 @@
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-const TILE_URL = "./map/{z}/{x}/{y}.png";
+const TILE_URL = "/tiles/{z}/{x}/{y}.png";
 const WALL_COLORS = {
   outer: "#00ff00",
   inner: "#ff6600",
@@ -838,6 +838,8 @@ async function init() {
   // Create map
   map = L.map("map", {
     zoomControl: true,
+    zoomSnap: 0.25,
+    zoomDelta: 0.5,
   });
 
   rightDrag = setupRightDrag(map, $("map"));
@@ -850,7 +852,7 @@ async function init() {
   }).addTo(map);
 
   L.control.scale({ imperial: false }).addTo(map);
-  map.setView([22.7123312, 113.8654811], 18);
+  map.setView([22.7123312, 113.8654811], 19);
 
   // Map click handler — in draw mode, clicks on existing walls should
   // NOT be intercepted (wall layers have interactive:true but we return
@@ -901,7 +903,7 @@ async function init() {
       map.fitBounds([
         [south, west],
         [north, east],
-      ]);
+      ], { padding: [10, 10] });
     }
 
     buildVisibilityChips();

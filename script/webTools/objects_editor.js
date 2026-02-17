@@ -4,7 +4,7 @@
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-const TILE_URL = "./map/{z}/{x}/{y}.png";
+const TILE_URL = "/tiles/{z}/{x}/{y}.png";
 const OBJ_COLORS = {
   hotlap_start: "#ff00ff",
   pit: "#00ffff",
@@ -544,7 +544,11 @@ async function save() {
 // Init
 // ---------------------------------------------------------------------------
 async function init() {
-  map = L.map("map", { zoomControl: true });
+  map = L.map("map", {
+    zoomControl: true,
+    zoomSnap: 0.25,
+    zoomDelta: 0.5,
+  });
   setupRightDrag(map, $("map"));
 
   tileLayer = L.tileLayer(TILE_URL, {
@@ -555,7 +559,7 @@ async function init() {
   }).addTo(map);
 
   L.control.scale({ imperial: false }).addTo(map);
-  map.setView([22.7123312, 113.8654811], 18);
+  map.setView([22.7123312, 113.8654811], 19);
 
   // Map click handler
   map.on("click", (e) => {
@@ -595,7 +599,7 @@ async function init() {
       map.fitBounds([
         [south, west],
         [north, east],
-      ]);
+      ], { padding: [10, 10] });
     }
 
     renderAll();

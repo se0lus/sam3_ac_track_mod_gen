@@ -50,19 +50,24 @@ sam3_track_seg/
 │       ├── texture_tools.py          # 纹理解包/转换 Action
 │       ├── clear_scene.py            # 清除场景
 │       └── mask_select_utils.py      # Mask XZ 投影相交测试
-├── script/track_session_anaylzer/    # Web 可视化 + 交互编辑器套件
-│   ├── run_analyzer.py               # HTTP 服务器启动器
-│   ├── index.html / app.js / style.css  # GPS 遥测数据可视化分析器
-│   ├── centerline_editor.html/js/css    # 赛道中线交互编辑器
-│   ├── layout_editor.html/js/css        # 赛道布局交互编辑器
-│   ├── wall_editor.html/js/css          # 围墙交互编辑器
-│   ├── objects_editor.html/js/css       # 游戏对象交互编辑器
-│   ├── gameobjects_editor.html/js       # 游戏对象高级编辑器
-│   └── map/                             # 本地离线瓦片地图
+├── script/webTools/                  # Dashboard + Web 编辑器套件
+│   ├── run_webtools.py               # 主 HTTP 服务器 (Dashboard + 编辑器 + API)
+│   ├── dashboard.html/js/css         # Dashboard 主页 (流水线可视化 + 执行控制)
+│   ├── analyzer.html / analyzer.js   # GPS 遥测数据可视化分析器
+│   ├── style.css                     # 全局共享样式
+│   ├── centerline_editor.html/js/css # 赛道中线交互编辑器
+│   ├── layout_editor.html/js/css     # 赛道布局交互编辑器
+│   ├── wall_editor.html/js/css       # 围墙交互编辑器
+│   ├── objects_editor.html/js/css    # 游戏对象交互编辑器
+│   ├── gameobjects_editor.html/js    # 游戏对象高级编辑器
+│   └── surface_editor.html/js/css    # 表面 mask 交互编辑器
+├── script/track_session_anaylzer/    # 向后兼容瘦包装器
+│   └── run_analyzer.py               # 调用 run_webtools.py --page analyzer.html
 ├── model/                            # SAM3 模型权重
 ├── sam3/                             # SAM3 模型源码
 ├── test_images_shajing/              # 测试数据集（沙井赛道）
 │   ├── b3dm/                         # 3D Tiles 原始数据
+│   ├── map/                          # 离线瓦片地图 (WGS84/WebMercator)
 │   └── result.tif                    # 2D 赛道全图 GeoTIFF
 ├── output/                           # 所有输出（按阶段子目录组织）
 │   ├── 01_b3dm_convert/              # GLB 转换结果
@@ -171,7 +176,13 @@ python script/sam3_track_gen.py \
     --stage ai_walls --stage ai_game_objects \
     --geotiff test_images_shajing/result.tif --output-dir output
 
-# 启动 Web 编辑器套件
+# 启动 Dashboard + Web 编辑器套件
+python script/webTools/run_webtools.py
+
+# 直接打开 GPS 分析器
+python script/webTools/run_webtools.py --page analyzer.html
+
+# 向后兼容 (等价于上面)
 python script/track_session_anaylzer/run_analyzer.py
 ```
 
@@ -232,4 +243,4 @@ AI 生成的游戏对象（不可见，无网格），Z 轴为行驶方向，Y �
 | Objects Editor | 游戏对象位置/朝向交互编辑 |
 | Game Objects Editor | 游戏对象高级编辑器 |
 
-启动方式：`python script/track_session_anaylzer/run_analyzer.py`
+启动方式：`python script/webTools/run_webtools.py`（默认打开 Dashboard，可通过 `--page` 参数打开指定编辑器）

@@ -545,7 +545,7 @@ async function init() {
     }).addTo(map);
   } catch {}
 
-  map.fitBounds(imageBounds);
+  map.fitBounds(imageBounds, { padding: [10, 10] });
 
   // Load layout list
   const select = $("layoutSelect");

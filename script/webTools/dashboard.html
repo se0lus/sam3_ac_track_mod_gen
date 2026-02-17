@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SAM3 赛道生成工具</title>
+    <link rel="stylesheet" href="./style.css" />
+    <link rel="stylesheet" href="./dashboard.css" />
+  </head>
+  <body>
+    <div class="dashboard">
+      <!-- Header -->
+      <header class="db-header">
+        <div class="db-header__title">SAM3 赛道生成工具</div>
+        <div class="db-header__actions">
+          <button id="btnRunAll" class="btn btn--primary" title="运行全部自动阶段">
+            &#9654; 运行全部
+          </button>
+          <button id="btnStop" class="btn btn--danger" title="停止运行" disabled>
+            &#9632; 停止
+          </button>
+          <a href="analyzer.html" class="btn btn--ghost" target="_blank" title="GPS 走线分析器">
+            GPS 分析器
+          </a>
+        </div>
+      </header>
+
+      <!-- Main content -->
+      <div class="db-main">
+        <!-- Left: Pipeline Flow -->
+        <aside class="db-pipeline" id="pipelinePanel">
+          <div class="db-pipeline__header">流水线</div>
+          <div class="db-pipeline__stages" id="stagesContainer">
+            <!-- Populated by JS -->
+          </div>
+        </aside>
+
+        <!-- Right: Detail Panel -->
+        <main class="db-detail" id="detailPanel">
+          <div class="db-detail__tabs" id="detailTabs">
+            <button class="db-tab active" data-tab="info">详情</button>
+            <button class="db-tab" data-tab="files">文件</button>
+            <button class="db-tab" data-tab="editor">编辑器</button>
+          </div>
+          <div class="db-detail__content" id="detailContent">
+            <div class="db-tab-pane active" id="tab-info">
+              <div class="db-welcome">
+                <h2>欢迎使用 SAM3 赛道生成工具</h2>
+                <p>点击左侧阶段卡片查看详情，或点击运行按钮开始执行。</p>
+                <p>手动阶段 (标记为 <span class="badge badge--manual">手动</span>)
+                   可通过编辑器交互调整 AI 输出。</p>
+              </div>
+            </div>
+            <div class="db-tab-pane" id="tab-files">
+              <div class="db-filebrowser">
+                <div class="db-filebrowser__tree" id="fileTree">
+                  <div class="db-empty">选择一个阶段查看输出文件</div>
+                </div>
+                <div class="db-filebrowser__preview" id="previewArea">
+                  <div class="db-empty">点击文件进行预览</div>
+                </div>
+              </div>
+            </div>
+            <div class="db-tab-pane" id="tab-editor">
+              <div class="db-editor" id="editorArea">
+                <div class="db-empty">仅手动阶段可打开编辑器</div>
+              </div>
+            </div>
+          </div>
+        </main>
+      </div>
+
+      <!-- Console (collapsible) -->
+      <div class="db-console" id="consolePanel">
+        <div class="db-console__header" id="consoleToggle">
+          <span>&#9654; 控制台</span>
+          <div class="db-console__actions">
+            <button id="btnConsoleClear" class="btn btn--sm btn--ghost">清空</button>
+          </div>
+        </div>
+        <div class="db-console__body" id="consoleBody">
+          <pre id="consoleOutput"></pre>
+        </div>
+      </div>
+    </div>
+
+    <script src="./dashboard.js"></script>
+  </body>
+</html>

@@ -632,7 +632,7 @@ async function init() {
     interactive: false,
   }).addTo(map);
 
-  map.fitBounds(imageBounds);
+  map.fitBounds(imageBounds, { padding: [10, 10] });
 
   // Load existing layouts
   try {

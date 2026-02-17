@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>赛道数据分析工具（本地）</title>
+    <title>赛道走线分析器</title>
 
     <!-- Leaflet (CDN). 如需离线，可在本文件中改为本地 vendor 引用 -->
     <link
@@ -26,7 +26,7 @@
         <header class="panel__header">
           <div class="title">赛道数据分析（本地）</div>
           <div class="subtitle">
-            底图来自 <code>./map</code>（与本页面同目录，WGS84 / WebMercator 瓦片）
+            底图由服务器 <code>/tiles/</code> 路由提供（WGS84 / WebMercator 瓦片）
           </div>
         </header>
 
@@ -83,7 +83,7 @@
     </div>
 
     <script src="./map_rightdrag.js"></script>
-    <script src="./app.js"></script>
+    <script src="./analyzer.js"></script>
   </body>
 </html>
 
