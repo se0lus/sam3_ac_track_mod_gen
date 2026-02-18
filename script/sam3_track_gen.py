@@ -165,6 +165,28 @@ Available stages: """ + ", ".join(PIPELINE_STAGES)
         help='Inpainting model (default: gemini-2.5-flash-image). Use "disabled" to skip.',
     )
 
+    # --- Stage 6 options ---
+    p.add_argument("--generate-curves", action="store_true",
+                    help="Generate diagnostic 2D curves in Stage 6 (default: skip)")
+
+    # --- Stage 9 options ---
+    p.add_argument("--base-level", type=int, default=0,
+                    help="Base tile level for Blender import (default: use config)")
+    p.add_argument("--target-level", type=int, default=0,
+                    help="Target refinement level (default: use config)")
+    p.add_argument("--no-walls", action="store_true",
+                    help="Skip wall import in Stage 9")
+    p.add_argument("--no-game-objects", action="store_true",
+                    help="Skip game object import in Stage 9")
+    p.add_argument("--no-surfaces", action="store_true",
+                    help="Skip surface extraction in Stage 9")
+    p.add_argument("--no-textures", action="store_true",
+                    help="Skip texture processing in Stage 9")
+    p.add_argument("--no-background", action="store_true",
+                    help="Run Blender without --background (show GUI)")
+    p.add_argument("--refine-tags", default="",
+                    help="Comma-separated mask tags for tile refinement (default: road)")
+
     return p
 
 
@@ -187,6 +209,22 @@ def config_from_args(args: argparse.Namespace) -> PipelineConfig:
             config.inpaint_center_holes = False
         else:
             config.inpaint_model = args.inpaint_model
+
+    # Stage 6 options
+    config.s6_generate_curves = args.generate_curves
+
+    # Stage 9 options
+    if args.base_level:
+        config.base_level = args.base_level
+    if args.target_level:
+        config.target_fine_level = args.target_level
+    config.s9_no_walls = args.no_walls
+    config.s9_no_game_objects = args.no_game_objects
+    config.s9_no_surfaces = args.no_surfaces
+    config.s9_no_textures = args.no_textures
+    config.s9_no_background = args.no_background
+    if args.refine_tags:
+        config.s9_refine_tags = [t.strip() for t in args.refine_tags.split(",") if t.strip()]
 
     return config.resolve()
 

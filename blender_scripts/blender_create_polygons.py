@@ -618,7 +618,12 @@ def _load_pretriangulated_json_files(root: str) -> Dict[str, List[Dict[str, Any]
     return tag_groups
 
 
-def generate_polygons_from_blender_clips(blender_input_path: str, output_file: str) -> None:
+def generate_polygons_from_blender_clips(
+    blender_input_path: str,
+    output_file: str,
+    *,
+    generate_curves: bool = False,
+) -> None:
     """
     Read ``*_blender.json`` from *blender_input_path* and generate polygon meshes.
 
@@ -634,6 +639,9 @@ def generate_polygons_from_blender_clips(blender_input_path: str, output_file: s
         mask_polygon_collection/
             mask_polygon_{tag}/
                 mask_polygon_{tag}   ← merged mesh per tag
+
+    Args:
+        generate_curves: If True, also create diagnostic 2D curve objects.
     """
 
     blender_input_path = os.path.abspath(blender_input_path)
@@ -646,29 +654,30 @@ def generate_polygons_from_blender_clips(blender_input_path: str, output_file: s
     pretri_groups = _load_pretriangulated_json_files(blender_input_path)
 
     if pretri_groups:
-        _generate_from_pretriangulated(pretri_groups, output_file)
+        _generate_from_pretriangulated(pretri_groups, output_file, generate_curves=generate_curves)
         return
 
     # Fallback: legacy path (include/exclude polygons with 2D curve fill)
-    _generate_from_legacy(blender_input_path, output_file)
+    _generate_from_legacy(blender_input_path, output_file, generate_curves=generate_curves)
 
 
 def _generate_from_pretriangulated(
     tag_groups: Dict[str, List[Dict[str, Any]]],
     output_file: str,
+    *,
+    generate_curves: bool = False,
 ) -> None:
     """Generate meshes from pre-triangulated data (earcut output)."""
 
     root_poly = _get_or_create_root_collection(ROOT_POLYGON_COLLECTION_NAME)
-    root_curve = _get_or_create_root_collection(ROOT_CURVE_COLLECTION_NAME)
 
     created = 0
     for tag in sorted(tag_groups.keys()):
         groups = tag_groups[tag]
         tag_poly_col = _get_or_create_child_collection(root_poly, f"mask_polygon_{tag}")
 
-        # Also create diagnostic curve from the contour outlines
-        all_outlines: List[List[Tuple[float, float, float]]] = []
+        # Optionally collect outlines for diagnostic curves
+        all_outlines: List[List[Tuple[float, float, float]]] = [] if generate_curves else None
 
         # Create one mesh per group, then merge
         for i, mg in enumerate(groups):
@@ -682,13 +691,14 @@ def _generate_from_pretriangulated(
             _link_object_to_collection(obj, tag_poly_col)
             created += 1
 
-            # Collect outline for diagnostic curve
-            outline = [(float(p[0]), float(p[1]), float(p[2])) for p in pts[:50]]
-            if outline:
-                all_outlines.append(outline)
+            if all_outlines is not None:
+                outline = [(float(p[0]), float(p[1]), float(p[2])) for p in pts[:50]]
+                if outline:
+                    all_outlines.append(outline)
 
-        # Create a diagnostic 3D curve showing the contour outlines
+        # Create diagnostic 3D curve showing contour outlines (only if requested)
         if all_outlines:
+            root_curve = _get_or_create_root_collection(ROOT_CURVE_COLLECTION_NAME)
             tag_curve_col = _get_or_create_child_collection(root_curve, f"mask_curve2D_{tag}")
             curve_name = _sanitize_name(f"mask_curve2D_{tag}_outline", max_len=63)
             curve_obj = _create_curve_object(curve_name, all_outlines)
@@ -705,7 +715,12 @@ def _generate_from_pretriangulated(
     print(f"[generate_polygons] Saved: {output_file}")
 
 
-def _generate_from_legacy(blender_input_path: str, output_file: str) -> None:
+def _generate_from_legacy(
+    blender_input_path: str,
+    output_file: str,
+    *,
+    generate_curves: bool = False,
+) -> None:
     """Legacy path: generate meshes from include/exclude polygons via 2D curve fill."""
 
     groups = _load_and_group_polygons(blender_input_path)
@@ -713,27 +728,28 @@ def _generate_from_legacy(blender_input_path: str, output_file: str) -> None:
         print("[generate_polygons] No polygon data found, exiting.")
         return
 
-    root_curve = _get_or_create_root_collection(ROOT_CURVE_COLLECTION_NAME)
     root_poly = _get_or_create_root_collection(ROOT_POLYGON_COLLECTION_NAME)
 
     created_curve_objects = 0
     created_mesh_objects = 0
 
-    # 1) Diagnostic curves per (tag, kind)
-    tag_kind_polys: Dict[Tuple[str, str], List[List[Tuple[float, float, float]]]] = {}
-    for key, gd in groups.items():
-        tk = (gd.tag, gd.kind)
-        if tk not in tag_kind_polys:
-            tag_kind_polys[tk] = []
-        tag_kind_polys[tk].extend(gd.polys)
+    # 1) Diagnostic curves per (tag, kind) — only if requested
+    if generate_curves:
+        root_curve = _get_or_create_root_collection(ROOT_CURVE_COLLECTION_NAME)
+        tag_kind_polys: Dict[Tuple[str, str], List[List[Tuple[float, float, float]]]] = {}
+        for key, gd in groups.items():
+            tk = (gd.tag, gd.kind)
+            if tk not in tag_kind_polys:
+                tag_kind_polys[tk] = []
+            tag_kind_polys[tk].extend(gd.polys)
 
-    for (tag, kind) in sorted(tag_kind_polys.keys()):
-        polys = tag_kind_polys[(tag, kind)]
-        tag_curve_col = _get_or_create_child_collection(root_curve, f"mask_curve2D_{tag}")
-        curve_obj_name = _sanitize_name(f"mask_curve2D_{tag}_{kind}", max_len=63)
-        curve_obj = _create_curve_object(curve_obj_name, polys)
-        _link_object_to_collection(curve_obj, tag_curve_col)
-        created_curve_objects += 1
+        for (tag, kind) in sorted(tag_kind_polys.keys()):
+            polys = tag_kind_polys[(tag, kind)]
+            tag_curve_col = _get_or_create_child_collection(root_curve, f"mask_curve2D_{tag}")
+            curve_obj_name = _sanitize_name(f"mask_curve2D_{tag}_{kind}", max_len=63)
+            curve_obj = _create_curve_object(curve_obj_name, polys)
+            _link_object_to_collection(curve_obj, tag_curve_col)
+            created_curve_objects += 1
 
     # 2) Polygon meshes per (tag, clip, mask_index)
     merged: Dict[Tuple[str, str, int], Dict[str, List[List[Tuple[float, float, float]]]]] = {}
@@ -817,6 +833,8 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
     p.add_argument("--input", required=True, help="包含 *_blender.json 的目录（会递归扫描）")
     p.add_argument("--output", required=True, help="输出 .blend 文件路径")
     p.add_argument("--no-clean", action="store_true", help="不清空场景（默认会清空以保证可复现）")
+    p.add_argument("--generate-curves", action="store_true",
+                    help="Generate diagnostic 2D curves (default: skip)")
     p.add_argument("--debugpy", action="store_true", help="启用 debugpy 远程断点调试")
     p.add_argument("--debugpy-port", type=int, default=5678, help="debugpy 监听端口")
     p.add_argument("--wait-client", action="store_true", help="启动后等待调试器连接")
@@ -839,7 +857,9 @@ if __name__ == "__main__":
     if not args.no_clean:
         _clean_scene()
 
-    generate_polygons_from_blender_clips(args.input, args.output)
+    generate_polygons_from_blender_clips(
+        args.input, args.output, generate_curves=args.generate_curves,
+    )
 
 r"""
 后台批处理（推荐）：

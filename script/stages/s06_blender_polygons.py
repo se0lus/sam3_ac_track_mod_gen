@@ -54,6 +54,8 @@ def run(config: PipelineConfig) -> None:
         "--input", input_dir,
         "--output", config.blend_file,
     ]
+    if config.s6_generate_curves:
+        cmd.append("--generate-curves")
     logger.info("Running Blender: %s", " ".join(cmd))
     subprocess.run(cmd, check=True)
     logger.info("Blender polygon generation complete: %s", config.blend_file)

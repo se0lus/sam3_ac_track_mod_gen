@@ -167,6 +167,17 @@ class PipelineConfig:
         "road", "trees", "grass", "kerb", "sand", "building", "water", "concrete",
     ])
 
+    # --- Stage 6 options ---
+    s6_generate_curves: bool = False  # Generate diagnostic 2D curves (slow, debug only)
+
+    # --- Stage 9 options ---
+    s9_no_walls: bool = False
+    s9_no_game_objects: bool = False
+    s9_no_surfaces: bool = False
+    s9_no_textures: bool = False
+    s9_no_background: bool = False
+    s9_refine_tags: List[str] = field(default_factory=lambda: ["road"])
+
     # --- Derived paths (populated by resolve()) ---
     glb_dir: str = ""
     clips_dir: str = ""

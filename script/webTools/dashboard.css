@@ -466,6 +466,120 @@
   margin: 0 0 16px;
 }
 
+/* ===== Stage config — number inputs ===== */
+.db-config--stage input[type="number"] {
+  width: 100%;
+  padding: 8px 12px;
+  background: #12122a;
+  border: 1px solid #2a2a4a;
+  border-radius: 6px;
+  color: #e0e0e0;
+  font-size: 13px;
+  font-family: "SF Mono", "Cascadia Code", "Fira Code", Consolas, monospace;
+  transition: border-color 0.15s;
+}
+.db-config--stage input[type="number"]:focus {
+  outline: none;
+  border-color: #60a5fa;
+  background: #14142e;
+}
+
+/* ===== Stage config — inline level pair ===== */
+.s9-level-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+/* ===== Toggle switch (modern, no native checkbox) ===== */
+.s9-toggles {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: #12122a;
+  border: 1px solid #2a2a4a;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.s9-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: background 0.12s;
+  user-select: none;
+}
+.s9-toggle:hover { background: #1a1a34; }
+
+.s9-toggle__label {
+  font-size: 13px;
+  color: #ccd;
+}
+.s9-toggle__desc {
+  font-size: 11px;
+  color: #556;
+  margin-top: 2px;
+}
+
+.s9-toggle__track {
+  width: 36px;
+  height: 20px;
+  border-radius: 10px;
+  background: #2a2a4a;
+  position: relative;
+  flex-shrink: 0;
+  transition: background 0.2s;
+}
+.s9-toggle__track.active {
+  background: #2563eb;
+}
+.s9-toggle__thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #667;
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  transition: transform 0.2s, background 0.2s;
+}
+.s9-toggle__track.active .s9-toggle__thumb {
+  transform: translateX(16px);
+  background: #fff;
+}
+
+/* ===== Tag pill selector (multi-select) ===== */
+.s9-tag-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.s9-tag-pill {
+  padding: 5px 16px;
+  border-radius: 16px;
+  border: 1px solid #2a2a4a;
+  background: #12122a;
+  color: #667;
+  font-size: 12px;
+  font-family: "SF Mono", "Cascadia Code", "Fira Code", Consolas, monospace;
+  cursor: pointer;
+  transition: all 0.15s;
+  user-select: none;
+  line-height: 1.4;
+}
+.s9-tag-pill:hover {
+  border-color: #60a5fa66;
+  color: #99a;
+}
+.s9-tag-pill.active {
+  background: #60a5fa18;
+  border-color: #60a5fa;
+  color: #60a5fa;
+}
+
 /* ===== Empty state ===== */
 .db-empty {
   color: #556;

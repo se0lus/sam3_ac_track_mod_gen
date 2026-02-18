@@ -48,9 +48,10 @@ def run(config: PipelineConfig) -> None:
     if not os.path.isdir(blender_clips):
         blender_clips = config.blender_clips_dir  # fallback
 
-    cmd = [
-        config.blender_exe,
-        "--background",
+    cmd = [config.blender_exe]
+    if not config.s9_no_background:
+        cmd.append("--background")
+    cmd.extend([
         "--python", blender_script,
         "--",
         "--blend-input", config.blend_file,
@@ -60,14 +61,27 @@ def run(config: PipelineConfig) -> None:
         "--output", config.final_blend_file,
         "--base-level", str(config.base_level),
         "--target-level", str(config.target_fine_level),
-    ]
+    ])
+
+    # Stage 9 skip flags
+    if config.s9_no_surfaces:
+        cmd.append("--skip-surfaces")
+    if config.s9_no_textures:
+        cmd.append("--skip-textures")
+
+    # Refine tags
+    if config.s9_refine_tags:
+        cmd.extend(["--refine-tags", ",".join(config.s9_refine_tags)])
 
     # Walls from 07_result junction
     walls_result = config.walls_result_dir
     if not os.path.isdir(walls_result):
         walls_result = os.path.dirname(config.walls_json)  # fallback
     walls_json = os.path.join(walls_result, "walls.json")
-    if os.path.isfile(walls_json):
+    if config.s9_no_walls:
+        cmd.append("--skip-walls")
+        logger.info("Walls import disabled (s9_no_walls)")
+    elif os.path.isfile(walls_json):
         cmd.extend(["--walls-json", walls_json])
         logger.info("Using walls: %s", walls_json)
 
@@ -76,9 +90,27 @@ def run(config: PipelineConfig) -> None:
     if not os.path.isdir(go_result):
         go_result = os.path.dirname(config.game_objects_json)  # fallback
     go_json = os.path.join(go_result, "game_objects.json")
-    if os.path.isfile(go_json):
+    if config.s9_no_game_objects:
+        cmd.append("--skip-game-objects")
+        logger.info("Game objects import disabled (s9_no_game_objects)")
+    elif os.path.isfile(go_json):
         cmd.extend(["--game-objects-json", go_json])
         logger.info("Using game objects: %s", go_json)
+
+    # Find geo_metadata.json for coordinate conversion
+    geo_metadata = ""
+    for candidate_dir in [walls_result, go_result,
+                          os.path.dirname(config.walls_json),
+                          os.path.dirname(config.game_objects_json)]:
+        candidate = os.path.join(candidate_dir, "geo_metadata.json")
+        if os.path.isfile(candidate):
+            geo_metadata = candidate
+            break
+    if geo_metadata:
+        cmd.extend(["--geo-metadata", geo_metadata])
+        logger.info("Using geo metadata: %s", geo_metadata)
+    else:
+        logger.warning("geo_metadata.json not found, wall/object coordinates may be misaligned")
 
     logger.info("Running Blender automation: %s", " ".join(cmd))
     subprocess.run(cmd, check=True)

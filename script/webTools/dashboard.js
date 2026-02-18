@@ -284,11 +284,34 @@ async function showStageInfo(stage) {
   // Build per-stage config section
   let stageConfigHtml = "";
   let cfg = {};
-  if (stage.id === "mask_full_map") {
+  if (stage.id === "mask_full_map" || stage.id === "blender_polygons" || stage.id === "blender_automate") {
     try {
       const resp = await fetch("/api/pipeline/config");
       cfg = await resp.json();
     } catch { cfg = {}; }
+  }
+  if (stage.id === "blender_polygons") {
+    const curvesOn = !!cfg.s6_generate_curves;
+    stageConfigHtml = `
+      <div class="db-config db-config--stage">
+        <h4>阶段配置</h4>
+        <div class="config-field">
+          <label>执行选项</label>
+          <div class="s9-toggles" id="s6Toggles">
+            <div class="s9-toggle" data-key="s6_generate_curves">
+              <div>
+                <div class="s9-toggle__label">生成 2D 诊断曲线</div>
+                <div class="s9-toggle__desc">创建 mask_curve2D_collection 用于轮廓可视化调试（较慢）</div>
+              </div>
+              <div class="s9-toggle__track${curvesOn ? " active" : ""}"><div class="s9-toggle__thumb"></div></div>
+            </div>
+          </div>
+        </div>
+        <div class="config-actions">
+          <button class="btn btn--primary" id="btnSaveStageConfig">保存</button>
+        </div>
+      </div>`;
+  } else if (stage.id === "mask_full_map") {
     const model = cfg.inpaint_model || "gemini-2.5-flash-image";
     stageConfigHtml = `
       <div class="db-config db-config--stage">
@@ -300,6 +323,57 @@ async function showStageInfo(stage) {
             <option value="gemini-3-pro-image-preview" ${model === "gemini-3-pro-image-preview" ? "selected" : ""}>Gemini 3 Pro Image Preview</option>
             <option value="disabled" ${model === "disabled" ? "selected" : ""}>跳过补洞 (Skip inpainting)</option>
           </select>
+        </div>
+        <div class="config-actions">
+          <button class="btn btn--primary" id="btnSaveStageConfig">保存</button>
+        </div>
+      </div>`;
+  } else if (stage.id === "blender_automate") {
+    const baseLevel = cfg.s9_base_level || 17;
+    const targetLevel = cfg.s9_target_level || 22;
+    const refineTags = cfg.s9_refine_tags || ["road"];
+    const allTags = ["road", "grass", "sand", "kerb", "road2"];
+    const tagPills = allTags.map(tag =>
+      `<div class="s9-tag-pill${refineTags.includes(tag) ? " active" : ""}" data-tag="${tag}">${tag}</div>`
+    ).join("");
+    const toggles = [
+      { key: "s9_import_walls",       label: "导入围墙",        desc: "从 Stage 7 导入虚拟碰撞墙", def: true },
+      { key: "s9_import_game_objects", label: "导入游戏对象",    desc: "从 Stage 8 导入发车格、计时点等", def: true },
+      { key: "s9_extract_surfaces",   label: "生成碰撞表面",    desc: "从 mask 多边形提取驾驶表面网格", def: true },
+      { key: "s9_convert_textures",   label: "转换纹理",        desc: "解包纹理并转换为 PNG + BSDF 材质", def: true },
+      { key: "s9_background",         label: "Blender 后台运行", desc: "以 --background 无界面模式执行", def: true },
+    ];
+    const toggleHtml = toggles.map(t => {
+      const on = cfg[t.key] !== undefined ? cfg[t.key] : t.def;
+      return `
+        <div class="s9-toggle" data-key="${t.key}">
+          <div>
+            <div class="s9-toggle__label">${t.label}</div>
+            <div class="s9-toggle__desc">${t.desc}</div>
+          </div>
+          <div class="s9-toggle__track${on ? " active" : ""}"><div class="s9-toggle__thumb"></div></div>
+        </div>`;
+    }).join("");
+    stageConfigHtml = `
+      <div class="db-config db-config--stage">
+        <h4>阶段配置</h4>
+        <div class="s9-level-row">
+          <div class="config-field">
+            <label>基础层级 (Base Level)</label>
+            <input type="number" id="s9BaseLevel" value="${baseLevel}" min="10" max="25" />
+          </div>
+          <div class="config-field">
+            <label>目标层级 (Target Level)</label>
+            <input type="number" id="s9TargetLevel" value="${targetLevel}" min="15" max="25" />
+          </div>
+        </div>
+        <div class="config-field">
+          <label>精细化 Mask 范围</label>
+          <div class="s9-tag-pills" id="s9TagPills">${tagPills}</div>
+        </div>
+        <div class="config-field">
+          <label>执行选项</label>
+          <div class="s9-toggles" id="s9Toggles">${toggleHtml}</div>
         </div>
         <div class="config-actions">
           <button class="btn btn--primary" id="btnSaveStageConfig">保存</button>
@@ -332,7 +406,29 @@ async function showStageInfo(stage) {
   `;
 
   // Wire up per-stage config save
-  if (stage.id === "mask_full_map") {
+  if (stage.id === "blender_polygons") {
+    // Wire toggle switch
+    document.querySelectorAll("#s6Toggles .s9-toggle").forEach(row => {
+      row.addEventListener("click", () => {
+        row.querySelector(".s9-toggle__track").classList.toggle("active");
+      });
+    });
+    $("btnSaveStageConfig").addEventListener("click", async () => {
+      const on = document.querySelector('#s6Toggles .s9-toggle__track').classList.contains("active");
+      const updated = { ...cfg, s6_generate_curves: on };
+      try {
+        await fetch("/api/pipeline/config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(updated),
+        });
+        $("btnSaveStageConfig").textContent = "已保存";
+        setTimeout(() => { $("btnSaveStageConfig").textContent = "保存"; }, 1500);
+      } catch (e) {
+        alert("保存失败: " + e.message);
+      }
+    });
+  } else if (stage.id === "mask_full_map") {
     $("btnSaveStageConfig").addEventListener("click", async () => {
       const val = $("cfgInpaintModel").value;
       try {
@@ -340,6 +436,42 @@ async function showStageInfo(stage) {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ ...cfg, inpaint_model: val }),
+        });
+        $("btnSaveStageConfig").textContent = "已保存";
+        setTimeout(() => { $("btnSaveStageConfig").textContent = "保存"; }, 1500);
+      } catch (e) {
+        alert("保存失败: " + e.message);
+      }
+    });
+  } else if (stage.id === "blender_automate") {
+    // Wire tag pill toggles
+    document.querySelectorAll(".s9-tag-pill").forEach(pill => {
+      pill.addEventListener("click", () => pill.classList.toggle("active"));
+    });
+    // Wire toggle switches
+    document.querySelectorAll(".s9-toggle").forEach(row => {
+      row.addEventListener("click", () => {
+        const track = row.querySelector(".s9-toggle__track");
+        track.classList.toggle("active");
+      });
+    });
+    // Save handler
+    $("btnSaveStageConfig").addEventListener("click", async () => {
+      const tags = Array.from(document.querySelectorAll(".s9-tag-pill.active")).map(p => p.dataset.tag);
+      const updated = { ...cfg };
+      updated.s9_base_level = parseInt($("s9BaseLevel").value) || 17;
+      updated.s9_target_level = parseInt($("s9TargetLevel").value) || 22;
+      updated.s9_refine_tags = tags.length > 0 ? tags : ["road"];
+      document.querySelectorAll(".s9-toggle").forEach(row => {
+        const key = row.dataset.key;
+        const on = row.querySelector(".s9-toggle__track").classList.contains("active");
+        updated[key] = on;
+      });
+      try {
+        await fetch("/api/pipeline/config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(updated),
         });
         $("btnSaveStageConfig").textContent = "已保存";
         setTimeout(() => { $("btnSaveStageConfig").textContent = "保存"; }, 1500);

@@ -319,6 +319,29 @@ class PipelineRunner:
         if config_dict.get("inpaint_model"):
             cmd.extend(["--inpaint-model", config_dict["inpaint_model"]])
 
+        # Stage 6 options
+        if config_dict.get("s6_generate_curves"):
+            cmd.append("--generate-curves")
+
+        # Stage 9 options
+        if config_dict.get("s9_base_level"):
+            cmd.extend(["--base-level", str(config_dict["s9_base_level"])])
+        if config_dict.get("s9_target_level"):
+            cmd.extend(["--target-level", str(config_dict["s9_target_level"])])
+        if not config_dict.get("s9_import_walls", True):
+            cmd.append("--no-walls")
+        if not config_dict.get("s9_import_game_objects", True):
+            cmd.append("--no-game-objects")
+        if not config_dict.get("s9_extract_surfaces", True):
+            cmd.append("--no-surfaces")
+        if not config_dict.get("s9_convert_textures", True):
+            cmd.append("--no-textures")
+        if not config_dict.get("s9_background", True):
+            cmd.append("--no-background")
+        refine_tags = config_dict.get("s9_refine_tags", ["road"])
+        if refine_tags:
+            cmd.extend(["--refine-tags", ",".join(refine_tags)])
+
         # Set up result junctions before running
         try:
             script_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
