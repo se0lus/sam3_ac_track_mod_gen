@@ -365,6 +365,214 @@ def _rasterize_tag_clips(
     return canvas
 
 
+def _absorb_narrow_kerb_into_road(
+    composited: Dict[str, np.ndarray],
+    bounds: Dict[str, float],
+    canvas_w: int,
+    canvas_h: int,
+    max_width_m: float = 0.30,
+    adjacency_m: float = 0.20,
+) -> None:
+    """Reclassify narrow kerb protrusions adjacent to road as road (in-place).
+
+    SAM3 sometimes misidentifies thin white lane markings as kerb.  These
+    false kerbs are narrow (< *max_width_m*) strips connected to or near the
+    road surface.  A narrow strip may be attached to a thick kerb body — the
+    per-component max width would be dominated by the thick part, so we use
+    **morphological opening** to isolate narrow protrusions:
+
+    1. Opening with a circular kernel removes features narrower than
+       *max_width_m*.
+    2. Over-dilating the opened result by 2 px covers thick-kerb edges so
+       they are not mistaken for narrow features.
+    3. ``narrow = kerb AND NOT over_dilated_opened`` gives truly narrow
+       protrusions (white lines, thin artifacts).
+    4. Among those, connected components near road (within *adjacency_m*)
+       are reclassified as road.
+    """
+    if "kerb" not in composited or "road" not in composited:
+        return
+
+    kerb = composited["kerb"]
+    road = composited["road"]
+
+    if np.count_nonzero(kerb) == 0:
+        return
+
+    # --- pixel size in metres ------------------------------------------------
+    import math
+
+    geo_w_deg = bounds["right"] - bounds["left"]
+    geo_h_deg = bounds["top"] - bounds["bottom"]
+    lat_mid = (bounds["top"] + bounds["bottom"]) / 2.0
+
+    m_per_deg_lat = 111_320.0
+    m_per_deg_lon = 111_320.0 * math.cos(math.radians(lat_mid))
+
+    geo_w_m = geo_w_deg * m_per_deg_lon
+    geo_h_m = geo_h_deg * m_per_deg_lat
+
+    pixel_size_x_m = geo_w_m / canvas_w
+    pixel_size_y_m = geo_h_m / canvas_h
+    pixel_size_m = (pixel_size_x_m + pixel_size_y_m) / 2.0
+
+    # Opening kernel radius in pixels — features narrower than 2*radius vanish
+    radius_px = max(1, int(round(max_width_m / pixel_size_m / 2)))
+    if radius_px < 1:
+        return
+
+    logger.debug(
+        "  Narrow-kerb: pixel_size=%.4f m/px, opening radius=%d px "
+        "(≈%.0f cm width)",
+        pixel_size_m, radius_px, radius_px * 2 * pixel_size_m * 100,
+    )
+
+    # --- Step 1: morphological opening removes narrow features ---------------
+    ksize = 2 * radius_px + 1
+    open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksize, ksize))
+    opened = cv2.morphologyEx(kerb, cv2.MORPH_OPEN, open_kernel)
+
+    # --- Step 2: over-dilate to cover thick-kerb edge pixels -----------------
+    expand_kernel = np.ones((5, 5), dtype=np.uint8)
+    opened_expanded = cv2.dilate(opened, expand_kernel, iterations=1)
+
+    # --- Step 3: narrow features = original minus expanded opened ------------
+    narrow = cv2.bitwise_and(kerb, cv2.bitwise_not(opened_expanded))
+    n_narrow = np.count_nonzero(narrow)
+    if n_narrow == 0:
+        logger.debug("  Narrow kerb → road: no narrow features found")
+        return
+
+    # --- Step 4: filter to road-adjacent components --------------------------
+    adj_px = max(1, int(round(adjacency_m / pixel_size_m)))
+    adj_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (2 * adj_px + 1, 2 * adj_px + 1),
+    )
+    road_dilated = cv2.dilate(road, adj_kernel, iterations=1)
+
+    # Label narrow features and keep only components near road
+    num_labels, labels = cv2.connectedComponents(narrow, connectivity=8)
+    adjacent_mask = cv2.bitwise_and(narrow, road_dilated)
+    adjacent_labels = set(np.unique(labels[adjacent_mask > 0])) - {0}
+
+    merged_components = 0
+    merged_pixels = 0
+
+    for lbl in adjacent_labels:
+        mask_lbl = labels == lbl
+        npx = int(np.count_nonzero(mask_lbl))
+        road[mask_lbl] = 255
+        kerb[mask_lbl] = 0
+        merged_components += 1
+        merged_pixels += npx
+
+    if merged_components > 0:
+        logger.info(
+            "  Narrow kerb → road: merged %d component(s), %d px "
+            "(opening radius=%d px ≈ %.0f cm, adjacency=%d px ≈ %.0f cm)",
+            merged_components, merged_pixels,
+            radius_px, radius_px * 2 * pixel_size_m * 100,
+            adj_px, adjacency_m * 100,
+        )
+    else:
+        logger.debug(
+            "  Narrow kerb → road: %d narrow px found but none near road",
+            n_narrow,
+        )
+
+
+def _absorb_orphan_kerb(
+    composited: Dict[str, np.ndarray],
+    adjacency_px: int = 2,
+) -> None:
+    """Absorb kerb components not adjacent to road into their largest neighbor.
+
+    Real kerbs are always adjacent to the road surface.  Kerb components that
+    do not touch road (within *adjacency_px*) are false positives — typically
+    white markings on grass/concrete or SAM3 artifacts.  Each such orphan is
+    reclassified to whichever neighboring surface tag shares the longest
+    contact perimeter with it.
+
+    Modifies *composited* masks in-place.
+    """
+    if "kerb" not in composited or "road" not in composited:
+        return
+
+    kerb = composited["kerb"]
+    road = composited["road"]
+
+    if np.count_nonzero(kerb) == 0:
+        return
+
+    # Which kerb pixels are adjacent to road?
+    adj_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (2 * adjacency_px + 1, 2 * adjacency_px + 1),
+    )
+    road_dilated = cv2.dilate(road, adj_kernel, iterations=1)
+
+    num_labels, labels = cv2.connectedComponents(kerb, connectivity=8)
+    road_touch = cv2.bitwise_and(kerb, road_dilated)
+    road_labels = set(np.unique(labels[road_touch > 0])) - {0}
+
+    # Orphan labels = components that do NOT touch road
+    orphan_labels = set(range(1, num_labels)) - road_labels
+    if not orphan_labels:
+        logger.debug("  Orphan kerb: all %d component(s) touch road", num_labels - 1)
+        return
+
+    # Candidate neighbor tags (everything in composited except kerb itself)
+    neighbor_tags = [t for t in composited if t != "kerb"]
+
+    contact_kernel = np.ones((3, 3), dtype=np.uint8)
+    absorbed_by: Dict[str, int] = {}   # tag -> pixel count
+    absorbed_components = 0
+    deleted_components = 0
+    deleted_pixels = 0
+
+    for lbl in orphan_labels:
+        mask_lbl = (labels == lbl).astype(np.uint8) * 255
+        npx = int(np.count_nonzero(mask_lbl))
+        if npx == 0:
+            continue
+
+        # Dilate component by 1px to find contact perimeter with neighbors
+        dilated = cv2.dilate(mask_lbl, contact_kernel, iterations=1)
+        border = cv2.subtract(dilated, mask_lbl)  # 1px ring around component
+
+        best_tag = None
+        best_contact = 0
+        for tag in neighbor_tags:
+            contact = int(np.count_nonzero(
+                cv2.bitwise_and(border, composited[tag])
+            ))
+            if contact > best_contact:
+                best_contact = contact
+                best_tag = tag
+
+        if best_tag is not None:
+            composited[best_tag][mask_lbl > 0] = 255
+            kerb[mask_lbl > 0] = 0
+            absorbed_by[best_tag] = absorbed_by.get(best_tag, 0) + npx
+            absorbed_components += 1
+        else:
+            # No neighbor at all — isolated in empty space, just delete
+            kerb[mask_lbl > 0] = 0
+            deleted_components += 1
+            deleted_pixels += npx
+
+    parts = []
+    if absorbed_components > 0:
+        detail = ", ".join(f"{t}: {n} px" for t, n in sorted(absorbed_by.items()))
+        parts.append(f"absorbed {absorbed_components} → {{{detail}}}")
+    if deleted_components > 0:
+        parts.append(f"deleted {deleted_components} isolated ({deleted_pixels} px)")
+    if parts:
+        logger.info("  Orphan kerb: %s", "; ".join(parts))
+    else:
+        logger.debug("  Orphan kerb: all %d component(s) touch road",
+                      num_labels - 1)
+
+
 def _composite_surface_tags(
     clip_masks: Dict[str, np.ndarray],
     fullmap_masks: Dict[str, Optional[np.ndarray]],
@@ -677,6 +885,12 @@ def merge_clip_masks(
             canvas_h=canvas_h,
             canvas_w=canvas_w,
         )
+
+        # 1d-post. Absorb narrow kerb into road
+        _absorb_narrow_kerb_into_road(composited, bounds, canvas_w, canvas_h)
+
+        # 1d-post2. Absorb orphan kerb (not adjacent to road) into neighbors
+        _absorb_orphan_kerb(composited)
 
         # 1e. Extract contours + triangulate for each composited tag
         for cfg in composite_priority:
