@@ -46,18 +46,18 @@ def find_free_port(host: str, start_port: int, max_tries: int) -> int:
 # ---------------------------------------------------------------------------
 _REPO_ROOT = repo_root_from_here()
 # --- Direct stage output directories ---
-_WALLS_JSON = os.path.join(_REPO_ROOT, "output", "07_ai_walls", "walls.json")
-_MANUAL_WALLS_JSON = os.path.join(_REPO_ROOT, "output", "07a_manual_walls", "walls.json")
-_MANUAL_WALLS_DIR = os.path.join(_REPO_ROOT, "output", "07a_manual_walls")
-_GEO_META_JSON = os.path.join(_REPO_ROOT, "output", "07_ai_walls", "geo_metadata.json")
-_GAME_OBJECTS_JSON = os.path.join(_REPO_ROOT, "output", "08_ai_game_objects", "game_objects.json")
-_GAME_OBJECTS_GEO_META_JSON = os.path.join(_REPO_ROOT, "output", "08_ai_game_objects", "geo_metadata.json")
-_CENTERLINE_JSON = os.path.join(_REPO_ROOT, "output", "08_ai_game_objects", "centerline.json")
+_WALLS_JSON = os.path.join(_REPO_ROOT, "output", "06_ai_walls", "walls.json")
+_MANUAL_WALLS_JSON = os.path.join(_REPO_ROOT, "output", "06a_manual_walls", "walls.json")
+_MANUAL_WALLS_DIR = os.path.join(_REPO_ROOT, "output", "06a_manual_walls")
+_GEO_META_JSON = os.path.join(_REPO_ROOT, "output", "06_ai_walls", "geo_metadata.json")
+_GAME_OBJECTS_JSON = os.path.join(_REPO_ROOT, "output", "07_ai_game_objects", "game_objects.json")
+_GAME_OBJECTS_GEO_META_JSON = os.path.join(_REPO_ROOT, "output", "07_ai_game_objects", "geo_metadata.json")
+_CENTERLINE_JSON = os.path.join(_REPO_ROOT, "output", "07_ai_game_objects", "centerline.json")
 _LAYOUTS_DIR = os.path.join(_REPO_ROOT, "output", "02a_track_layouts")
 _LAYOUTS_JSON = os.path.join(_REPO_ROOT, "output", "02a_track_layouts", "layouts.json")
 _MASK_FULL_MAP_DIR = os.path.join(_REPO_ROOT, "output", "02_mask_full_map")
-_GAME_OBJECTS_DIR = os.path.join(_REPO_ROOT, "output", "08_ai_game_objects")
-_MANUAL_GAME_OBJECTS_DIR = os.path.join(_REPO_ROOT, "output", "08a_manual_game_objects")
+_GAME_OBJECTS_DIR = os.path.join(_REPO_ROOT, "output", "07_ai_game_objects")
+_MANUAL_GAME_OBJECTS_DIR = os.path.join(_REPO_ROOT, "output", "07a_manual_game_objects")
 _MANUAL_SURFACE_MASKS_DIR = os.path.join(_REPO_ROOT, "output", "05a_manual_surface_masks")
 _MANUAL_SURFACE_MASKS_EDIT_DIR = os.path.join(_REPO_ROOT, "output", "05a_manual_surface_masks", "masks")
 _STAGE5_PREVIEW_DIR = os.path.join(_REPO_ROOT, "output", "05_convert_to_blender", "merge_preview")
@@ -67,8 +67,8 @@ _CONFIG_JSON = os.path.join(_REPO_ROOT, "output", "webtools_config.json")
 # --- Result junction directories (downstream stages read from these) ---
 _02_RESULT_DIR = os.path.join(_REPO_ROOT, "output", "02_result")
 _05_RESULT_DIR = os.path.join(_REPO_ROOT, "output", "05_result")
+_06_RESULT_DIR = os.path.join(_REPO_ROOT, "output", "06_result")
 _07_RESULT_DIR = os.path.join(_REPO_ROOT, "output", "07_result")
-_08_RESULT_DIR = os.path.join(_REPO_ROOT, "output", "08_result")
 
 
 def _result_or_fallback(result_dir: str, fallback_dir: str) -> str:
@@ -154,9 +154,9 @@ def _safe_layout_name(name: str) -> str:
 
 
 def _layout_read_path(layout_name: str, filename: str) -> str:
-    """Read from 08_result junction (points to 08 or 08a)."""
+    """Read from 07_result junction (points to 07 or 07a)."""
     safe = _safe_layout_name(layout_name)
-    result_dir = _result_or_fallback(_08_RESULT_DIR, _GAME_OBJECTS_DIR)
+    result_dir = _result_or_fallback(_07_RESULT_DIR, _GAME_OBJECTS_DIR)
     p = os.path.join(result_dir, safe, filename)
     if os.path.isfile(p):
         return p
@@ -169,7 +169,7 @@ def _layout_read_path(layout_name: str, filename: str) -> str:
 
 
 def _layout_write_path(layout_name: str, filename: str) -> str:
-    """Write always goes to 8a."""
+    """Write always goes to 7a."""
     safe = _safe_layout_name(layout_name)
     p = os.path.join(_MANUAL_GAME_OBJECTS_DIR, safe, filename)
     os.makedirs(os.path.dirname(p), exist_ok=True)
@@ -177,7 +177,7 @@ def _layout_write_path(layout_name: str, filename: str) -> str:
 
 
 def _auto_merge_manual() -> None:
-    """After any write to 8a, re-merge all layouts into top-level game_objects.json."""
+    """After any write to 7a, re-merge all layouts into top-level game_objects.json."""
     if not os.path.isdir(_MANUAL_GAME_OBJECTS_DIR):
         return
     all_objects = []
@@ -236,18 +236,18 @@ PIPELINE_STAGE_META = [
     {"id": "manual_surface_masks","num": "5a", "name": "表面编辑",   "type": "manual",
      "desc": "手动编辑表面 mask（可选）", "output_dir": "05a_manual_surface_masks",
      "editor": "surface_editor.html"},
-    {"id": "blender_polygons",   "num": "6",  "name": "多边形生成", "type": "auto",
-     "desc": "Blender 批处理生成 2D Curve + Mesh", "output_dir": "06_blender_polygons"},
-    {"id": "ai_walls",           "num": "7",  "name": "围墙生成",   "type": "auto",
-     "desc": "程序化围墙生成（SAM3 洪水填充，无 LLM 依赖）", "output_dir": "07_ai_walls"},
-    {"id": "manual_walls",       "num": "7a", "name": "围墙编辑",   "type": "manual",
-     "desc": "手动编辑围墙边界（可选）", "output_dir": "07a_manual_walls",
+    {"id": "ai_walls",           "num": "6",  "name": "围墙生成",   "type": "auto",
+     "desc": "程序化围墙生成（SAM3 洪水填充，无 LLM 依赖）", "output_dir": "06_ai_walls"},
+    {"id": "manual_walls",       "num": "6a", "name": "围墙编辑",   "type": "manual",
+     "desc": "手动编辑围墙边界（可选）", "output_dir": "06a_manual_walls",
      "editor": "wall_editor.html"},
-    {"id": "ai_game_objects",    "num": "8",  "name": "游戏对象",   "type": "auto",
-     "desc": "混合游戏对象生成（VLM 布局对象 + 程序化计时点）", "output_dir": "08_ai_game_objects"},
-    {"id": "manual_game_objects","num": "8a", "name": "对象编辑",   "type": "manual",
-     "desc": "手动编辑游戏对象位置/朝向（可选）", "output_dir": "08a_manual_game_objects",
+    {"id": "ai_game_objects",    "num": "7",  "name": "游戏对象",   "type": "auto",
+     "desc": "混合游戏对象生成（VLM 布局对象 + 程序化计时点）", "output_dir": "07_ai_game_objects"},
+    {"id": "manual_game_objects","num": "7a", "name": "对象编辑",   "type": "manual",
+     "desc": "手动编辑游戏对象位置/朝向（可选）", "output_dir": "07a_manual_game_objects",
      "editor": "gameobjects_editor.html"},
+    {"id": "blender_polygons",   "num": "8",  "name": "多边形生成", "type": "auto",
+     "desc": "Blender 批处理生成 2D Curve + Mesh", "output_dir": "08_blender_polygons"},
     {"id": "blender_automate",   "num": "9",  "name": "Blender集成", "type": "auto",
      "desc": "Blender 无头自动化（加载瓦片 → 精炼 → 表面提取 → 导入 → 保存）",
      "output_dir": "09_blender_automate"},
@@ -319,9 +319,15 @@ class PipelineRunner:
         if config_dict.get("inpaint_model"):
             cmd.extend(["--inpaint-model", config_dict["inpaint_model"]])
 
-        # Stage 6 options
-        if config_dict.get("s6_generate_curves"):
+        # Stage 8 options
+        if config_dict.get("s8_generate_curves"):
             cmd.append("--generate-curves")
+        if config_dict.get("s8_gap_fill_enabled") is False:
+            cmd.append("--no-gap-fill")
+        if config_dict.get("s8_gap_fill_threshold_m"):
+            cmd.extend(["--gap-fill-threshold", str(config_dict["s8_gap_fill_threshold_m"])])
+        if config_dict.get("s8_gap_fill_default_tag"):
+            cmd.extend(["--gap-fill-default-tag", config_dict["s8_gap_fill_default_tag"]])
 
         # Stage 9 options
         if config_dict.get("s9_base_level"):
@@ -640,28 +646,28 @@ class ApiHandler(SimpleHTTPRequestHandler):
         # --- Existing endpoints ---
         if self.path == "/api/walls":
             # Read from 07_result junction
-            result_walls = os.path.join(_result_or_fallback(_07_RESULT_DIR, os.path.dirname(_WALLS_JSON)), "walls.json")
+            result_walls = os.path.join(_result_or_fallback(_06_RESULT_DIR, os.path.dirname(_WALLS_JSON)), "walls.json")
             self._serve_json_file(result_walls)
         elif self.path == "/api/geo_metadata":
             # Read from 07_result or fallback
-            result_meta = os.path.join(_result_or_fallback(_07_RESULT_DIR, os.path.dirname(_GEO_META_JSON)), "geo_metadata.json")
+            result_meta = os.path.join(_result_or_fallback(_06_RESULT_DIR, os.path.dirname(_GEO_META_JSON)), "geo_metadata.json")
             self._serve_json_file(result_meta)
         elif self.path == "/api/game_objects":
             # Read from 08_result junction
-            result_go = os.path.join(_result_or_fallback(_08_RESULT_DIR, _GAME_OBJECTS_DIR), "game_objects.json")
+            result_go = os.path.join(_result_or_fallback(_07_RESULT_DIR, _GAME_OBJECTS_DIR), "game_objects.json")
             self._serve_json_file(result_go)
         elif self.path == "/api/game_objects/geo_metadata":
             # Read from 08_result, then 07_result
-            result_go_dir = _result_or_fallback(_08_RESULT_DIR, _GAME_OBJECTS_DIR)
+            result_go_dir = _result_or_fallback(_07_RESULT_DIR, _GAME_OBJECTS_DIR)
             go_meta = os.path.join(result_go_dir, "geo_metadata.json")
             if os.path.isfile(go_meta):
                 self._serve_json_file(go_meta)
             else:
-                result_w_dir = _result_or_fallback(_07_RESULT_DIR, os.path.dirname(_GEO_META_JSON))
+                result_w_dir = _result_or_fallback(_06_RESULT_DIR, os.path.dirname(_GEO_META_JSON))
                 self._serve_json_file(os.path.join(result_w_dir, "geo_metadata.json"))
         elif self.path == "/api/centerline":
             # Read from 08_result
-            result_go_dir = _result_or_fallback(_08_RESULT_DIR, _GAME_OBJECTS_DIR)
+            result_go_dir = _result_or_fallback(_07_RESULT_DIR, _GAME_OBJECTS_DIR)
             self._serve_json_file(os.path.join(result_go_dir, "centerline.json"))
 
         # --- Track layouts (read from 02_result) ---
@@ -735,7 +741,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
             else:
                 self.send_error(400, "Bad surface tile path")
 
-        # --- Per-layout centerline & game objects (8a > 8 priority) ---
+        # --- Per-layout centerline & game objects (7a > 7 priority) ---
         elif self.path.startswith("/api/layout_centerline/"):
             name = self.path[len("/api/layout_centerline/"):]
             cl_path = _layout_read_path(name, "centerline.json")
@@ -810,7 +816,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
         elif self.path == "/api/surface_flush":
             self._handle_surface_flush()
 
-        # --- Per-layout centerline & game objects (always write to 8a) ---
+        # --- Per-layout centerline & game objects (always write to 7a) ---
         elif self.path.startswith("/api/layout_centerline/"):
             name = self.path[len("/api/layout_centerline/"):]
             cl_path = _layout_write_path(name, "centerline.json")
@@ -891,7 +897,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
         return self.rfile.read(length)
 
     def _save_walls(self):
-        """Save walls JSON — always writes to 7a (manual), preserving 7 (AI)."""
+        """Save walls JSON — always writes to 6a (manual), preserving 6 (AI)."""
         try:
             body = self._read_body()
             data = json.loads(body)
@@ -913,7 +919,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
             with open(_MANUAL_WALLS_JSON, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
 
-            # Copy geo_metadata.json to 7a if not present
+            # Copy geo_metadata.json to 6a if not present
             src_geo = _GEO_META_JSON
             dst_geo = os.path.join(_MANUAL_WALLS_DIR, "geo_metadata.json")
             if os.path.isfile(src_geo) and not os.path.isfile(dst_geo):
@@ -1466,8 +1472,8 @@ class ApiHandler(SimpleHTTPRequestHandler):
     _MANUAL_STAGE_DIRS = {
         "track_layouts":      "02a_track_layouts",
         "manual_surface_masks": "05a_manual_surface_masks",
-        "manual_walls":       "07a_manual_walls",
-        "manual_game_objects": "08a_manual_game_objects",
+        "manual_walls":       "06a_manual_walls",
+        "manual_game_objects": "07a_manual_game_objects",
     }
 
     def _serve_manual_stages(self):
@@ -1576,7 +1582,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 run_s02a(pc)
                 print("[pipeline] Re-initialised track_layouts from stage 2")
             elif sid == "manual_walls":
-                # Create 07a dir and copy from 07
+                # Create 06a dir and copy from 06
                 src = pc.stage_dir("ai_walls")
                 dst = pc.stage_dir("manual_walls")
                 if os.path.isdir(src):
@@ -1587,11 +1593,11 @@ class ApiHandler(SimpleHTTPRequestHandler):
                         if os.path.isfile(s) and not os.path.isfile(d):
                             import shutil as _sh
                             _sh.copy2(s, d)
-                    print("[pipeline] Re-initialised manual_walls from stage 7")
+                    print("[pipeline] Re-initialised manual_walls from stage 6")
             elif sid == "manual_game_objects":
-                from stages.s08a_manual_game_objects import run as run_s08a
-                run_s08a(pc)
-                print("[pipeline] Re-initialised manual_game_objects from stage 8")
+                from stages.s07a_manual_game_objects import run as run_s07a
+                run_s07a(pc)
+                print("[pipeline] Re-initialised manual_game_objects from stage 7")
         except Exception as e:
             print(f"[pipeline] WARNING: Failed to re-init {sid}: {e}")
 

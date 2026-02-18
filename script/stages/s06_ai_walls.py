@@ -1,4 +1,4 @@
-"""Stage 7: Generate virtual wall data using mask contours + Gemini AI."""
+"""Stage 6: Generate virtual wall data using programmatic mask contours."""
 from __future__ import annotations
 
 import argparse
@@ -7,7 +7,7 @@ import logging
 import os
 import sys
 
-logger = logging.getLogger("sam3_pipeline.s07")
+logger = logging.getLogger("sam3_pipeline.s06")
 
 _script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _script_dir not in sys.path:
@@ -17,13 +17,13 @@ from pipeline_config import PipelineConfig
 
 
 def run(config: PipelineConfig) -> None:
-    """Execute Stage 7: AI wall generation.
+    """Execute Stage 6: AI wall generation.
 
     Reads modelscale image from ``config.mask_full_map_dir`` (stage 2 output),
     uses trees/grass masks for precise wall placement,
     writes walls JSON + preview to ``config.stage_dir("ai_walls")``.
     """
-    logger.info("=== Stage 7: AI wall generation ===")
+    logger.info("=== Stage 6: AI wall generation ===")
 
     from ai_wall_generator import generate_walls
     from ai_visualizer import visualize_walls
@@ -123,7 +123,7 @@ def _write_geo_metadata(config: PipelineConfig, out_dir: str) -> None:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
-    p = argparse.ArgumentParser(description="Stage 7: AI wall generation")
+    p = argparse.ArgumentParser(description="Stage 6: AI wall generation")
     p.add_argument("--geotiff", required=True, help="Path to GeoTIFF image")
     p.add_argument("--output-dir", default="output", help="Output base directory")
     p.add_argument("--gemini-api-key", default="", help="Gemini API key")

@@ -1,7 +1,7 @@
-"""Stage 8a: Initialize manual game objects directory from stage 8 output.
+"""Stage 7a: Initialize manual game objects directory from stage 7 output.
 
-Copies stage 8 results into 08a_manual_game_objects/ for manual editing.
-Existing edits in 8a are preserved (never overwritten).
+Copies stage 7 results into 07a_manual_game_objects/ for manual editing.
+Existing edits in 7a are preserved (never overwritten).
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import re
 import shutil
 import sys
 
-logger = logging.getLogger("sam3_pipeline.s08a")
+logger = logging.getLogger("sam3_pipeline.s07a")
 
 _script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _script_dir not in sys.path:
@@ -73,8 +73,8 @@ def _merge_all_layouts(dst_dir: str) -> None:
 
 
 def run(config: PipelineConfig) -> None:
-    """Initialize 08a_manual_game_objects from stage 8 output."""
-    logger.info("=== Stage 8a: Initialize manual game objects ===")
+    """Initialize 07a_manual_game_objects from stage 7 output."""
+    logger.info("=== Stage 7a: Initialize manual game objects ===")
 
     src_dir = config.stage_dir("ai_game_objects")
     dst_dir = config.stage_dir("manual_game_objects")
@@ -100,12 +100,12 @@ def run(config: PipelineConfig) -> None:
             dst_sub = os.path.join(dst_dir, safe)
 
             if os.path.isdir(dst_sub):
-                logger.info("Layout '%s' already exists in 8a, preserving edits", safe)
+                logger.info("Layout '%s' already exists in 7a, preserving edits", safe)
                 skipped += 1
                 continue
 
             if not os.path.isdir(src_sub):
-                logger.warning("Layout '%s' not found in stage 8 output, skipping", safe)
+                logger.warning("Layout '%s' not found in stage 7 output, skipping", safe)
                 continue
 
             os.makedirs(dst_sub, exist_ok=True)
@@ -121,12 +121,12 @@ def run(config: PipelineConfig) -> None:
                 _copy_if_exists(src_dir, dst_dir, f)
 
     _merge_all_layouts(dst_dir)
-    logger.info("Stage 8a complete: %s", dst_dir)
+    logger.info("Stage 7a complete: %s", dst_dir)
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
-    p = argparse.ArgumentParser(description="Stage 8a: Initialize manual game objects")
+    p = argparse.ArgumentParser(description="Stage 7a: Initialize manual game objects")
     p.add_argument("--output-dir", default="output", help="Output base directory")
     args = p.parse_args()
     config = PipelineConfig(output_dir=args.output_dir).resolve()

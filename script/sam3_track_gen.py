@@ -7,9 +7,9 @@ Full pipeline:
   3. clip_full_map() -- clip image into tiles for per-tile processing
   4. generate_mask_on_clips() -- SAM3 per-clip segmentation
   5. convert_mask_to_blender_input() -- geo -> blender coords + consolidation
-  6. Blender polygon generation with mesh conversion -- via subprocess
-  7. AI wall generation -- generates wall JSON + preview
-  8. AI game object generation -- generates objects JSON + preview
+  6. AI wall generation -- generates wall JSON + preview
+  7. AI game object generation -- generates objects JSON + preview
+  8. Blender polygon generation with mesh conversion -- via subprocess
   9. Blender headless automation (load tiles, refine, extract, import, save)
 
 Usage:
@@ -39,9 +39,9 @@ from stages import (
     s03_clip_full_map,
     s04_mask_on_clips,
     s05_convert_to_blender,
-    s06_blender_polygons,
-    s07_ai_walls,
-    s08_ai_game_objects,
+    s06_ai_walls,
+    s07_ai_game_objects,
+    s08_blender_polygons,
     s09_blender_automate,
 )
 
@@ -64,9 +64,9 @@ STAGE_FUNCTIONS: Dict[str, Callable[[PipelineConfig], None]] = {
     "clip_full_map": s03_clip_full_map.run,
     "mask_on_clips": s04_mask_on_clips.run,
     "convert_to_blender": s05_convert_to_blender.run,
-    "blender_polygons": s06_blender_polygons.run,
-    "ai_walls": s07_ai_walls.run,
-    "ai_game_objects": s08_ai_game_objects.run,
+    "ai_walls": s06_ai_walls.run,
+    "ai_game_objects": s07_ai_game_objects.run,
+    "blender_polygons": s08_blender_polygons.run,
     "blender_automate": s09_blender_automate.run,
 }
 
@@ -165,9 +165,15 @@ Available stages: """ + ", ".join(PIPELINE_STAGES)
         help='Inpainting model (default: gemini-2.5-flash-image). Use "disabled" to skip.',
     )
 
-    # --- Stage 6 options ---
+    # --- Stage 8 options ---
     p.add_argument("--generate-curves", action="store_true",
-                    help="Generate diagnostic 2D curves in Stage 6 (default: skip)")
+                    help="Generate diagnostic 2D curves in Stage 8 (default: skip)")
+    p.add_argument("--no-gap-fill", action="store_true",
+                    help="Skip Stage 8 mask gap auto-filling")
+    p.add_argument("--gap-fill-threshold", type=float, default=0.20,
+                    help="Gap fill threshold in metres (default: 0.20)")
+    p.add_argument("--gap-fill-default-tag", default="road2",
+                    help="Default fill tag for remaining voids (default: road2)")
 
     # --- Stage 9 options ---
     p.add_argument("--base-level", type=int, default=0,
@@ -210,8 +216,11 @@ def config_from_args(args: argparse.Namespace) -> PipelineConfig:
         else:
             config.inpaint_model = args.inpaint_model
 
-    # Stage 6 options
-    config.s6_generate_curves = args.generate_curves
+    # Stage 8 options
+    config.s8_generate_curves = args.generate_curves
+    config.s8_gap_fill_enabled = not args.no_gap_fill
+    config.s8_gap_fill_threshold_m = args.gap_fill_threshold
+    config.s8_gap_fill_default_tag = args.gap_fill_default_tag
 
     # Stage 9 options
     if args.base_level:

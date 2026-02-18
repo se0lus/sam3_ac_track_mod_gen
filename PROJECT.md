@@ -37,21 +37,21 @@ GeoTIFF 影像 + 3D Tiles (b3dm)
 │  读取 3D Tiles tileset.json 坐标原点，将地理坐标多边形转为 Blender 坐标  │
 │  同时按类型（road/grass/sand/kerb）合并生成整合 clip 文件               │
 ├─────────────────────────────────────────────────────────────────────┤
-│  阶段 6: blender_create_polygons                                    │
-│  在 Blender 中批量读取 *_blender.json，生成 2D Curve + Mesh            │
-│  注意：生成的对象已自动转换为 Mesh（非 Curve），以确保后续操作可执行      │
-├─────────────────────────────────────────────────────────────────────┤
-│  阶段 7: 程序化围墙生成                                               │
+│  阶段 6: 程序化围墙生成                                               │
 │  SAM3 洪水填充算法：从 road → 穿越 driveable 区域 → 到达障碍物边界       │
 │  无 LLM 依赖，纯 mask 几何运算                                        │
 ├─────────────────────────────────────────────────────────────────────┤
-│  阶段 8: 混合游戏对象生成                                              │
+│  阶段 7: 混合游戏对象生成                                              │
 │  VLM (Gemini 2.5 Pro) 生成布局对象 (hotlap/pit/start)                 │
 │  程序化中线分析生成计时点 (timing)                                      │
 │  snap-to-road 后处理确保 100% 验证通过                                 │
 ├─────────────────────────────────────────────────────────────────────┤
-│  阶段 8a: 手动游戏对象编辑（可选）                                      │
+│  阶段 7a: 手动游戏对象编辑（可选）                                      │
 │  通过 Web 编辑器精调 AI 生成的游戏对象位置和朝向                        │
+├─────────────────────────────────────────────────────────────────────┤
+│  阶段 8: blender_create_polygons                                    │
+│  在 Blender 中批量读取 *_blender.json，生成 2D Curve + Mesh            │
+│  注意：生成的对象已自动转换为 Mesh（非 Curve），以确保后续操作可执行      │
 ├─────────────────────────────────────────────────────────────────────┤
 │  阶段 9: Blender 无头自动化集成                                       │
 │  加载瓦片 → 按 mask 精炼到高级别 → 提取赛道表面 → 导入围墙/对象 → 保存   │
@@ -128,11 +128,11 @@ output/
 ├── 03_clip_full_map/      → clip_0.tif, clip_1.tif, ..., clip_boxes_visualization.png
 ├── 04_mask_on_clips/      → road/, grass/, kerb/, sand/, trees/, building/, water/, concrete/
 ├── 05_convert_to_blender/ → blender JSON 文件 + 按标签合并的 {tag}_clip.json
-├── 06_blender_polygons/   → polygons.blend
-├── 07_ai_walls/           → walls.json, walls_preview.png
-├── 08_ai_game_objects/    → geo_metadata.json, {LayoutName}/game_objects.json,
+├── 06_ai_walls/           → walls.json, walls_preview.png
+├── 07_ai_game_objects/    → geo_metadata.json, {LayoutName}/game_objects.json,
 │                            {LayoutName}/centerline.json, {LayoutName}/game_objects_preview.png
-├── 08a_manual_game_objects/ → game_objects.json（手动精调，可选）
+├── 07a_manual_game_objects/ → game_objects.json（手动精调，可选）
+├── 08_blender_polygons/   → polygons.blend
 └── 09_blender_automate/   → final_track.blend
 ```
 
@@ -235,18 +235,7 @@ WGS84 (lon, lat, alt) → ECEF (X, Y, Z) → ENU (East, North, Up) → Blender (
   - `{tag}/clip_N_blender.json` — 单个 clip 的 Blender 坐标
   - `{tag}_clip.json` — 按标签合并的整合文件
 
-##### 阶段 6: Blender 多边形生成 (`s06_blender_polygons.py`)
-
-以 Blender 后台模式运行，读取所有 `*_blender.json`，在 Blender 中生成：
-- **2D Curve 对象**（调试/可视化用）：按 tag → clip → mask_index → include/exclude 分组
-- **Mesh 对象**（最终多边形面）：include 区域扣除 exclude 洞，经 2D Curve 填充 → 转 Mesh → 三角化
-
-生成的 Mesh 对象可直接用于后续的 mask 投影和表面提取。
-
-- 输入: `output/05_convert_to_blender/`
-- 输出: `output/06_blender_polygons/polygons.blend`
-
-##### 阶段 7: 程序化围墙生成 (`s07_ai_walls.py`)
+##### 阶段 6: 程序化围墙生成 (`s06_ai_walls.py`)
 
 **纯程序化实现，无 LLM 依赖。** 使用 SAM3 mask 进行洪水填充算法：
 
@@ -260,11 +249,11 @@ WGS84 (lon, lat, alt) → ECEF (X, Y, Z) → ENU (East, North, Up) → Blender (
 - **赛道邻近约束**（80px）：防止围墙包含远离赛道的建筑物
 
 - 输入: `output/02_mask_full_map/` (各标签 mask) + GeoTIFF
-- 输出: `output/07_ai_walls/`
+- 输出: `output/06_ai_walls/`
   - `walls.json` — 围墙线段数据
   - `walls_preview.png` — 2D 预览图
 
-##### 阶段 8: 混合游戏对象生成 (`s08_ai_game_objects.py`)
+##### 阶段 7: 混合游戏对象生成 (`s07_ai_game_objects.py`)
 
 采用 **VLM + 程序化** 混合策略生成 Assetto Corsa 游戏功能对象：
 
@@ -283,17 +272,28 @@ WGS84 (lon, lat, alt) → ECEF (X, Y, Z) → ENU (East, North, Up) → Blender (
 支持多布局（每个布局独立的游戏对象 JSON）。
 
 - 输入: `output/02_mask_full_map/result_vlmscale.png` + road mask + GeoTIFF
-- 输出: `output/08_ai_game_objects/`
+- 输出: `output/07_ai_game_objects/`
   - `geo_metadata.json` — 图像-地理坐标映射
   - `{LayoutName}/game_objects.json` — 游戏对象数据
   - `{LayoutName}/centerline.json` — 赛道中线数据
   - `{LayoutName}/game_objects_preview.png` — 2D 预览图
 
-##### 阶段 8a: 手动游戏对象编辑 (`s08a_manual_game_objects.py`) — 可选
+##### 阶段 7a: 手动游戏对象编辑 (`s07a_manual_game_objects.py`) — 可选
 
-初始化手动编辑目录，从阶段 8 AI 结果复制初始数据。通过 Web 编辑器（Objects Editor / Game Objects Editor）精调后保存。保留已有手动编辑结果，仅覆盖不存在的布局。
+初始化手动编辑目录，从阶段 7 AI 结果复制初始数据。通过 Web 编辑器（Objects Editor / Game Objects Editor）精调后保存。保留已有手动编辑结果，仅覆盖不存在的布局。
 
-- 输出: `output/08a_manual_game_objects/game_objects.json`
+- 输出: `output/07a_manual_game_objects/game_objects.json`
+
+##### 阶段 8: Blender 多边形生成 (`s08_blender_polygons.py`)
+
+以 Blender 后台模式运行，读取所有 `*_blender.json`，在 Blender 中生成：
+- **2D Curve 对象**（调试/可视化用）：按 tag → clip → mask_index → include/exclude 分组
+- **Mesh 对象**（最终多边形面）：include 区域扣除 exclude 洞，经 2D Curve 填充 → 转 Mesh → 三角化
+
+生成的 Mesh 对象可直接用于后续的 mask 投影和表面提取。
+
+- 输入: `output/05_convert_to_blender/`
+- 输出: `output/08_blender_polygons/polygons.blend`
 
 ##### 阶段 9: Blender 无头自动化 (`s09_blender_automate.py`)
 
@@ -301,12 +301,12 @@ WGS84 (lon, lat, alt) → ECEF (X, Y, Z) → ENU (East, North, Up) → Blender (
 1. 加载基础 3D 瓦片（base_level 级别）
 2. 按 road mask 自动精炼到 target_fine_level
 3. 提取赛道表面（按 road/grass/sand/kerb 分别设定采样密度）
-4. 导入围墙对象（从阶段 7 的 JSON）
-5. 导入游戏对象（从阶段 8/8a 的 JSON）
+4. 导入围墙对象（从阶段 6 的 JSON）
+5. 导入游戏对象（从阶段 7/7a 的 JSON）
 6. 纹理处理（解包、转换为 PNG、材质转 BSDF）
 7. 保存最终 .blend 文件
 
-- 输入: 阶段 1/5/6/7/8 的输出
+- 输入: 阶段 1/5/6/7/8 的输出（围墙 6、对象 7、多边形 8）
 - 输出: `output/09_blender_automate/final_track.blend`
 
 ---
@@ -626,16 +626,16 @@ python script/stages/s05_convert_to_blender.py \
     --geotiff test_images_shajing/result.tif \
     --tiles-dir test_images_shajing/b3dm --output-dir output
 
-# 阶段6: Blender 多边形生成
-python script/stages/s06_blender_polygons.py --output-dir output
-
-# 阶段7: 程序化围墙生成
-python script/stages/s07_ai_walls.py \
+# 阶段6: 程序化围墙生成
+python script/stages/s06_ai_walls.py \
     --geotiff test_images_shajing/result.tif --output-dir output
 
-# 阶段8: AI 游戏对象生成
-python script/stages/s08_ai_game_objects.py \
+# 阶段7: AI 游戏对象生成
+python script/stages/s07_ai_game_objects.py \
     --geotiff test_images_shajing/result.tif --output-dir output
+
+# 阶段8: Blender 多边形生成
+python script/stages/s08_blender_polygons.py --output-dir output
 
 # 阶段9: Blender 自动化集成
 python script/stages/s09_blender_automate.py \

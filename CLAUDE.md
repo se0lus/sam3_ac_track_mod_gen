@@ -18,10 +18,11 @@ sam3_track_seg/
 │   │   ├── s03_clip_full_map.py      # 阶段3: 全图裁剪为瓦片
 │   │   ├── s04_mask_on_clips.py      # 阶段4: 逐瓦片精细分割（含回退提示词）
 │   │   ├── s05_convert_to_blender.py # 阶段5: 地理坐标 → Blender 坐标
-│   │   ├── s06_blender_polygons.py   # 阶段6: Blender 多边形生成
-│   │   ├── s07_ai_walls.py           # 阶段7: AI 围墙生成（纯程序化，无 LLM）
-│   │   ├── s08_ai_game_objects.py    # 阶段8: AI 游戏对象生成（VLM + 程序化混合）
-│   │   ├── s08a_manual_game_objects.py # 阶段8a: 手动编辑游戏对象（可选）
+│   │   ├── s06_ai_walls.py           # 阶段6: AI 围墙生成（纯程序化，无 LLM）
+│   │   ├── s06a_manual_walls.py      # 阶段6a: 手动编辑围墙（可选）
+│   │   ├── s07_ai_game_objects.py    # 阶段7: AI 游戏对象生成（VLM + 程序化混合）
+│   │   ├── s07a_manual_game_objects.py # 阶段7a: 手动编辑游戏对象（可选）
+│   │   ├── s08_blender_polygons.py   # 阶段8: Blender 多边形生成
 │   │   └── s09_blender_automate.py   # 阶段9: Blender 自动化集成
 │   ├── geo_tiff_image.py             # GeoTIFF 影像读取/缩放/坐标转换
 │   ├── geo_sam3_image.py             # SAM3 分割 + mask → 多边形转换
@@ -76,10 +77,11 @@ sam3_track_seg/
 │   ├── 03_clip_full_map/             # 裁剪瓦片
 │   ├── 04_mask_on_clips/             # 逐瓦片分割结果（8 类标签）
 │   ├── 05_convert_to_blender/        # Blender 坐标 JSON
-│   ├── 06_blender_polygons/          # polygons.blend
-│   ├── 07_ai_walls/                  # 围墙 JSON + 预览图
-│   ├── 08_ai_game_objects/           # 游戏对象 JSON + 预览图（按布局子目录）
-│   ├── 08a_manual_game_objects/      # 手动编辑的游戏对象（可选）
+│   ├── 06_ai_walls/                  # 围墙 JSON + 预览图
+│   ├── 06a_manual_walls/             # 手动编辑的围墙（可选）
+│   ├── 07_ai_game_objects/           # 游戏对象 JSON + 预览图（按布局子目录）
+│   ├── 07a_manual_game_objects/      # 手动编辑的游戏对象（可选）
+│   ├── 08_blender_polygons/          # polygons.blend
 │   └── 09_blender_automate/          # 最终 final_track.blend
 └── tests/                            # 单元和模块测试
 ```
@@ -117,10 +119,11 @@ GeoTIFF 影像 + 3D Tiles(b3dm)
     ├─[4]  逐瓦片精细分割 (road/grass/sand/kerb/trees/building/water/concrete)
     │      └─ road 支持回退提示词："asphalt road" / "concrete road"
     ├─[5]  地理坐标 → Blender 坐标转换 + 按类型合并
-    ├─[6]  Blender 批处理生成 2D Curve + Mesh
-    ├─[7]  程序化围墙生成（SAM3 洪水填充，无 LLM 依赖）
-    ├─[8]  混合游戏对象生成（VLM 布局对象 + 程序化计时点 + snap-to-road 后处理）
-    ├─[8a] 手动游戏对象编辑（可选，Web 编辑器）
+    ├─[6]  程序化围墙生成（SAM3 洪水填充，无 LLM 依赖）
+    ├─[6a] 手动围墙编辑（可选，Web 编辑器）
+    ├─[7]  混合游戏对象生成（VLM 布局对象 + 程序化计时点 + snap-to-road 后处理）
+    ├─[7a] 手动游戏对象编辑（可选，Web 编辑器）
+    ├─[8]  Blender 批处理生成 2D Curve + Mesh
     └─[9]  Blender 无头自动化（加载瓦片 → 精炼 → 表面提取 → 导入围墙/对象 → 保存）
 ```
 
@@ -156,16 +159,16 @@ python script/stages/s05_convert_to_blender.py \
     --geotiff test_images_shajing/result.tif \
     --tiles-dir test_images_shajing/b3dm --output-dir output
 
-# 阶段6: Blender 多边形生成
-python script/stages/s06_blender_polygons.py --output-dir output
-
-# 阶段7: AI 围墙生成
-python script/stages/s07_ai_walls.py \
+# 阶段6: AI 围墙生成
+python script/stages/s06_ai_walls.py \
     --geotiff test_images_shajing/result.tif --output-dir output
 
-# 阶段8: AI 游戏对象生成
-python script/stages/s08_ai_game_objects.py \
+# 阶段7: AI 游戏对象生成
+python script/stages/s07_ai_game_objects.py \
     --geotiff test_images_shajing/result.tif --output-dir output
+
+# 阶段8: Blender 多边形生成
+python script/stages/s08_blender_polygons.py --output-dir output
 
 # 阶段9: Blender 自动化集成
 python script/stages/s09_blender_automate.py \

@@ -33,13 +33,23 @@ STAGE_ORDER: Dict[str, int] = {
     "clip_full_map": 3,
     "mask_on_clips": 4,
     "convert_to_blender": 5,
-    "blender_polygons": 6,
-    "ai_walls": 7,
-    "ai_game_objects": 8,
+    "ai_walls": 6,
+    "ai_game_objects": 7,
+    "blender_polygons": 8,
     "blender_automate": 9,
 }
 
-PIPELINE_STAGES: List[str] = list(STAGE_ORDER.keys())
+PIPELINE_STAGES: List[str] = [
+    "b3dm_convert",
+    "mask_full_map",
+    "clip_full_map",
+    "mask_on_clips",
+    "convert_to_blender",
+    "ai_walls",
+    "ai_game_objects",
+    "blender_polygons",
+    "blender_automate",
+]
 
 # ---------------------------------------------------------------------------
 # Manual stage pairs: auto_stage → manual_stage
@@ -167,8 +177,11 @@ class PipelineConfig:
         "road", "trees", "grass", "kerb", "sand", "building", "water", "concrete",
     ])
 
-    # --- Stage 6 options ---
-    s6_generate_curves: bool = False  # Generate diagnostic 2D curves (slow, debug only)
+    # --- Stage 8 options ---
+    s8_generate_curves: bool = False  # Generate diagnostic 2D curves (slow, debug only)
+    s8_gap_fill_enabled: bool = True  # Auto-fill mask gaps within driveable zone
+    s8_gap_fill_threshold_m: float = 0.20  # Small gap threshold in metres
+    s8_gap_fill_default_tag: str = "road2"  # Default fill tag for remaining voids
 
     # --- Stage 9 options ---
     s9_no_walls: bool = False
@@ -200,8 +213,8 @@ class PipelineConfig:
     concrete_mask_path: str = ""  # concrete mask for wall generation
     track_layouts_json: str = ""  # track layouts metadata
     manual_surface_masks_dir: str = ""  # manual-edited surface masks (stage 5a)
-    manual_walls_json: str = ""  # manual-edited walls (stage 7a)
-    manual_game_objects_json: str = ""  # manual-edited game objects (stage 8a)
+    manual_walls_json: str = ""  # manual-edited walls (stage 6a)
+    manual_game_objects_json: str = ""  # manual-edited game objects (stage 7a)
 
     def stage_dir(self, stage_name: str) -> str:
         """Return ``output/NN_stage_name/`` for a given stage."""
@@ -210,9 +223,9 @@ class PipelineConfig:
         if stage_name == "manual_surface_masks":
             return os.path.join(self.output_dir, "05a_manual_surface_masks")
         if stage_name == "manual_walls":
-            return os.path.join(self.output_dir, "07a_manual_walls")
+            return os.path.join(self.output_dir, "06a_manual_walls")
         if stage_name == "manual_game_objects":
-            return os.path.join(self.output_dir, "08a_manual_game_objects")
+            return os.path.join(self.output_dir, "07a_manual_game_objects")
         idx = STAGE_ORDER.get(stage_name, 0)
         return os.path.join(self.output_dir, f"{idx:02d}_{stage_name}")
 
@@ -338,7 +351,7 @@ class PipelineConfig:
         # Result directories (junction targets for downstream stages)
         self.mask_full_map_result = self.result_dir("mask_full_map")       # 02_result
         self.blender_clips_result = self.result_dir("convert_to_blender")  # 05_result
-        self.walls_result_dir = self.result_dir("ai_walls")                # 07_result
-        self.game_objects_result_dir = self.result_dir("ai_game_objects")   # 08_result
+        self.walls_result_dir = self.result_dir("ai_walls")                # 06_result
+        self.game_objects_result_dir = self.result_dir("ai_game_objects")   # 07_result
 
         return self

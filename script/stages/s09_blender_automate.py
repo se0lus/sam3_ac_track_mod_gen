@@ -20,11 +20,11 @@ def run(config: PipelineConfig) -> None:
     """Execute Stage 9: Blender headless automation.
 
     Reads:
-    - ``config.blend_file`` from stage 6
+    - ``config.blend_file`` from stage 8
     - ``config.glb_dir`` from stage 1
     - ``config.blender_clips_dir`` from stage 5
-    - ``config.walls_json`` from stage 7 (optional)
-    - ``config.game_objects_json`` from stage 8 (optional)
+    - ``config.walls_json`` from stage 6 (optional)
+    - ``config.game_objects_json`` from stage 7 (optional)
 
     Writes ``final_track.blend`` to ``config.final_blend_file``.
     """
@@ -43,7 +43,7 @@ def run(config: PipelineConfig) -> None:
     )
     blender_script = os.path.abspath(blender_script)
 
-    # Read from result junctions (05_result, 07_result, 08_result)
+    # Read from result junctions (05_result, 06_result, 07_result)
     blender_clips = config.blender_clips_result
     if not os.path.isdir(blender_clips):
         blender_clips = config.blender_clips_dir  # fallback
@@ -73,7 +73,7 @@ def run(config: PipelineConfig) -> None:
     if config.s9_refine_tags:
         cmd.extend(["--refine-tags", ",".join(config.s9_refine_tags)])
 
-    # Walls from 07_result junction
+    # Walls from 06_result junction
     walls_result = config.walls_result_dir
     if not os.path.isdir(walls_result):
         walls_result = os.path.dirname(config.walls_json)  # fallback
@@ -85,7 +85,7 @@ def run(config: PipelineConfig) -> None:
         cmd.extend(["--walls-json", walls_json])
         logger.info("Using walls: %s", walls_json)
 
-    # Game objects from 08_result junction
+    # Game objects from 07_result junction
     go_result = config.game_objects_result_dir
     if not os.path.isdir(go_result):
         go_result = os.path.dirname(config.game_objects_json)  # fallback

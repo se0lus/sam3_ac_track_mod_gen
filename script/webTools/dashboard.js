@@ -291,20 +291,43 @@ async function showStageInfo(stage) {
     } catch { cfg = {}; }
   }
   if (stage.id === "blender_polygons") {
-    const curvesOn = !!cfg.s6_generate_curves;
+    const curvesOn = !!cfg.s8_generate_curves;
+    const gapFillOn = cfg.s8_gap_fill_enabled !== false;
+    const gapThreshold = cfg.s8_gap_fill_threshold_m || 0.20;
+    const defaultTag = cfg.s8_gap_fill_default_tag || "road2";
+    const allFillTags = ["sand", "grass", "road2", "road", "kerb"];
     stageConfigHtml = `
       <div class="db-config db-config--stage">
         <h4>阶段配置</h4>
         <div class="config-field">
           <label>执行选项</label>
-          <div class="s9-toggles" id="s6Toggles">
-            <div class="s9-toggle" data-key="s6_generate_curves">
+          <div class="s9-toggles" id="s8Toggles">
+            <div class="s9-toggle" data-key="s8_gap_fill_enabled">
+              <div>
+                <div class="s9-toggle__label">自动空隙填充</div>
+                <div class="s9-toggle__desc">消除可驾驶区域内的 mask 空隙，防止赛车掉落</div>
+              </div>
+              <div class="s9-toggle__track${gapFillOn ? " active" : ""}"><div class="s9-toggle__thumb"></div></div>
+            </div>
+            <div class="s9-toggle" data-key="s8_generate_curves">
               <div>
                 <div class="s9-toggle__label">生成 2D 诊断曲线</div>
                 <div class="s9-toggle__desc">创建 mask_curve2D_collection 用于轮廓可视化调试（较慢）</div>
               </div>
               <div class="s9-toggle__track${curvesOn ? " active" : ""}"><div class="s9-toggle__thumb"></div></div>
             </div>
+          </div>
+        </div>
+        <div class="s9-level-row">
+          <div class="config-field">
+            <label>空隙阈值 (米)</label>
+            <input type="number" id="s8GapThreshold" value="${gapThreshold}" min="0.05" max="2.0" step="0.05" />
+          </div>
+          <div class="config-field">
+            <label>默认填充类型</label>
+            <select id="s8DefaultTag">
+              ${allFillTags.map(t => `<option value="${t}" ${t===defaultTag?"selected":""}>${t}</option>`).join("")}
+            </select>
           </div>
         </div>
         <div class="config-actions">
@@ -407,15 +430,23 @@ async function showStageInfo(stage) {
 
   // Wire up per-stage config save
   if (stage.id === "blender_polygons") {
-    // Wire toggle switch
-    document.querySelectorAll("#s6Toggles .s9-toggle").forEach(row => {
+    // Wire toggle switches
+    document.querySelectorAll("#s8Toggles .s9-toggle").forEach(row => {
       row.addEventListener("click", () => {
         row.querySelector(".s9-toggle__track").classList.toggle("active");
       });
     });
     $("btnSaveStageConfig").addEventListener("click", async () => {
-      const on = document.querySelector('#s6Toggles .s9-toggle__track').classList.contains("active");
-      const updated = { ...cfg, s6_generate_curves: on };
+      const updated = { ...cfg };
+      // Collect all toggles
+      document.querySelectorAll("#s8Toggles .s9-toggle").forEach(row => {
+        const key = row.dataset.key;
+        const on = row.querySelector(".s9-toggle__track").classList.contains("active");
+        updated[key] = on;
+      });
+      // Gap-fill threshold + default tag
+      updated.s8_gap_fill_threshold_m = parseFloat($("s8GapThreshold").value) || 0.20;
+      updated.s8_gap_fill_default_tag = $("s8DefaultTag").value || "road2";
       try {
         await fetch("/api/pipeline/config", {
           method: "POST",

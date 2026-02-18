@@ -892,7 +892,35 @@ def merge_clip_masks(
         # 1d-post2. Absorb orphan kerb (not adjacent to road) into neighbors
         _absorb_orphan_kerb(composited)
 
-        # 1e. Extract contours + triangulate for each composited tag
+        # 1e. Save composite label map for downstream gap-filling (Stage 8)
+        if preview_dir:
+            # Rebuild label map from post-processed binary masks
+            tag_ids = {cfg["tag"]: idx + 1 for idx, cfg in enumerate(composite_priority)}
+            composite_labels = np.zeros((canvas_h, canvas_w), dtype=np.uint8)
+            for cfg in composite_priority:
+                tag = cfg["tag"]
+                composite_labels[composited[tag] > 0] = tag_ids[tag]
+
+            parent_dir = os.path.dirname(preview_dir)
+            labels_path = os.path.join(parent_dir, "composite_labels.npy")
+            np.save(labels_path, composite_labels)
+
+            meta = {
+                "canvas_w": canvas_w,
+                "canvas_h": canvas_h,
+                "bounds": bounds,
+                "tag_ids": tag_ids,
+            }
+            meta_path = os.path.join(parent_dir, "composite_meta.json")
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(meta, f, indent=2, ensure_ascii=False)
+
+            logger.info(
+                "  Saved composite_labels.npy (%dx%d) and composite_meta.json to %s",
+                canvas_w, canvas_h, parent_dir,
+            )
+
+        # 1f. Extract contours + triangulate for each composited tag
         for cfg in composite_priority:
             tag = cfg["tag"]
             binary = composited[tag]
@@ -908,7 +936,7 @@ def merge_clip_masks(
                 cv2.imwrite(preview_path, binary)
                 logger.info("  Preview saved: %s", preview_path)
 
-        # 1f. Multi-color composite preview
+        # 1g. Multi-color composite preview
         if preview_dir:
             color_preview = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
             for cfg in composite_priority:

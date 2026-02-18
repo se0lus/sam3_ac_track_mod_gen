@@ -1,4 +1,4 @@
-"""Stage 8: Generate game objects using hybrid VLM + programmatic approach.
+"""Stage 7: Generate game objects using hybrid VLM + programmatic approach.
 
 Supports multi-layout mode: if stage 2a track layouts exist, generates
 independent centerline + game objects for each layout in a per-layout subdirectory.
@@ -13,7 +13,7 @@ import os
 import re
 import sys
 
-logger = logging.getLogger("sam3_pipeline.s08")
+logger = logging.getLogger("sam3_pipeline.s07")
 
 _script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _script_dir not in sys.path:
@@ -23,12 +23,12 @@ from pipeline_config import PipelineConfig
 
 
 def run(config: PipelineConfig) -> None:
-    """Execute Stage 8: AI game object generation (hybrid).
+    """Execute Stage 7: AI game object generation (hybrid).
 
     If track layouts exist (stage 2a), processes each layout independently.
     Otherwise falls back to the original single-layout flow.
     """
-    logger.info("=== Stage 8: AI game object generation (hybrid) ===")
+    logger.info("=== Stage 7: AI game object generation (hybrid) ===")
 
     if not config.geotiff_path:
         raise ValueError("geotiff_path is required for ai_game_objects stage")
@@ -345,12 +345,12 @@ def _write_geo_metadata(config: PipelineConfig, out_dir: str) -> None:
         result_dir = config.mask_full_map_dir
     masks_json = os.path.join(result_dir, "result_masks.json")
     if not os.path.isfile(masks_json):
-        stage7_meta = os.path.join(config.stage_dir("ai_walls"), "geo_metadata.json")
-        if os.path.isfile(stage7_meta):
+        stage6_meta = os.path.join(config.stage_dir("ai_walls"), "geo_metadata.json")
+        if os.path.isfile(stage6_meta):
             import shutil
             out_path = os.path.join(out_dir, "geo_metadata.json")
-            shutil.copy2(stage7_meta, out_path)
-            logger.info("Geo metadata copied from stage 7: %s", out_path)
+            shutil.copy2(stage6_meta, out_path)
+            logger.info("Geo metadata copied from stage 6: %s", out_path)
             return
         logger.warning("No geo metadata source found, skipping geo_metadata.json")
         return
@@ -384,7 +384,7 @@ def _write_geo_metadata(config: PipelineConfig, out_dir: str) -> None:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
-    p = argparse.ArgumentParser(description="Stage 8: AI game object generation")
+    p = argparse.ArgumentParser(description="Stage 7: AI game object generation")
     p.add_argument("--geotiff", required=True, help="Path to GeoTIFF image")
     p.add_argument("--output-dir", default="output", help="Output base directory")
     p.add_argument("--gemini-api-key", default="", help="Gemini API key")
