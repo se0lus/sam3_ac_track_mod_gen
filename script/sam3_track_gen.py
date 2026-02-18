@@ -32,7 +32,7 @@ _script_dir = os.path.dirname(os.path.abspath(__file__))
 if _script_dir not in sys.path:
     sys.path.insert(0, _script_dir)
 
-from pipeline_config import PipelineConfig, PIPELINE_STAGES, _DEFAULT_OUTPUT_DIR
+from pipeline_config import PipelineConfig, PIPELINE_STAGES, _DEFAULT_OUTPUT_DIR, _PROJECT_ROOT
 from stages import (
     s01_b3dm_convert,
     s02_mask_full_map,
@@ -74,10 +74,28 @@ STAGE_FUNCTIONS: Dict[str, Callable[[PipelineConfig], None]] = {
 # ---------------------------------------------------------------------------
 # Pipeline Runner
 # ---------------------------------------------------------------------------
+def _load_manual_stages_config(config: PipelineConfig) -> Dict[str, bool]:
+    """Read manual_stages from webtools_config.json if available."""
+    config_json = os.path.join(config.output_dir, "webtools_config.json")
+    if os.path.isfile(config_json):
+        try:
+            import json
+            with open(config_json, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data.get("manual_stages", {})
+        except Exception:
+            pass
+    return {}
+
+
 def run_pipeline(config: PipelineConfig, stages: Optional[List[str]] = None) -> None:
     """Run the pipeline, either all stages or a subset."""
     if stages is None:
         stages = list(PIPELINE_STAGES)
+
+    # Set up result directory junctions before running any stage
+    manual_cfg = _load_manual_stages_config(config)
+    config.setup_result_junctions(manual_cfg)
 
     logger.info("Pipeline starting with %d stages: %s", len(stages), stages)
     logger.info("Output directory: %s", config.output_dir)
@@ -142,6 +160,10 @@ Available stages: """ + ", ".join(PIPELINE_STAGES)
         help="Track driving direction (default: clockwise)",
     )
     p.add_argument("--track-description", default="", help="Optional track description for AI prompts")
+    p.add_argument(
+        "--inpaint-model", default="",
+        help='Inpainting model (default: gemini-2.5-flash-image). Use "disabled" to skip.',
+    )
 
     return p
 
@@ -160,6 +182,11 @@ def config_from_args(args: argparse.Namespace) -> PipelineConfig:
         config.blender_exe = args.blender_exe
     if args.gemini_api_key:
         config.gemini_api_key = args.gemini_api_key
+    if args.inpaint_model:
+        if args.inpaint_model == "disabled":
+            config.inpaint_center_holes = False
+        else:
+            config.inpaint_model = args.inpaint_model
 
     return config.resolve()
 

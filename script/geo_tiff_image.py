@@ -435,8 +435,8 @@ class GeoTiffImage():
                 gpu_chunk_size=gpu_chunk_size
             )
         else:
-            # CPU模式暂不支持，提示使用GPU模式
-            raise NotImplementedError("scale_to_max_size目前仅支持GPU模式。请设置use_gpu=True")
+            # CPU模式：使用 rasterio 读取 + PIL resize (LANCZOS)
+            return self._scale_by_factor_cpu(scale_factor, window, band_indices)
     
     def scale_to_gsd(self, target_gsd: float, window: Optional[Window] = None, 
                      band_indices: Optional[list] = None, 
@@ -696,7 +696,57 @@ class GeoTiffImage():
             pil_image = Image.fromarray(img_array, mode='RGB')
         
         return pil_image
-    
+
+    def _scale_by_factor_cpu(self, scale_factor: float,
+                             window: Optional[Window] = None,
+                             band_indices: Optional[list] = None) -> Image.Image:
+        """
+        使用 rasterio 读取 + PIL resize (LANCZOS) 进行 CPU 重采样。
+        适用于中小尺寸图像（如裁剪后的 clip），无需 GPU。
+        """
+        if band_indices is None:
+            if self.count == 1:
+                band_indices = [1]
+            elif self.count >= 3:
+                band_indices = [1, 2, 3]
+            else:
+                band_indices = list(range(1, self.count + 1))
+
+        if window is None:
+            src_width = self.width
+            src_height = self.height
+        else:
+            src_width = window.width
+            src_height = window.height
+
+        new_width = max(1, int(src_width * scale_factor))
+        new_height = max(1, int(src_height * scale_factor))
+
+        bands = []
+        for band_idx in band_indices:
+            if window is None:
+                data = self.dataset.read(band_idx)
+            else:
+                data = self.dataset.read(band_idx, window=window)
+            if data.dtype != np.uint8:
+                if data.max() > 255:
+                    data = (data / data.max() * 255).astype(np.uint8)
+                else:
+                    data = data.astype(np.uint8)
+            bands.append(data)
+
+        if len(bands) == 1:
+            pil_image = Image.fromarray(bands[0], mode='L')
+        elif len(bands) == 3:
+            pil_image = Image.fromarray(np.stack(bands, axis=-1), mode='RGB')
+        elif len(bands) == 4:
+            pil_image = Image.fromarray(np.stack(bands, axis=-1), mode='RGBA')
+        else:
+            pil_image = Image.fromarray(np.stack(bands[:3], axis=-1), mode='RGB')
+
+        pil_image = pil_image.resize((new_width, new_height), Image.LANCZOS)
+        return pil_image
+
     def _scale_to_gsd_gpu(self, target_gsd: float, scale_factor: float,
                           window: Optional[Window] = None,
                           band_indices: Optional[list] = None,

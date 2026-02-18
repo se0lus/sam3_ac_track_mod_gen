@@ -7,12 +7,14 @@
 const TILE_SIZE = 512;
 const UNDO_LIMIT = 30;
 
+// Priority compositing order (low → high), same as Stage 5.
+// Higher-priority tags overwrite lower: kerb > road > road2 > grass > sand.
 const SURFACE_TAGS = [
-  { tag: "road",  color: "#666666", label: "路面 road" },
-  { tag: "grass", color: "#00c800", label: "草地 grass" },
   { tag: "sand",  color: "#c8c864", label: "砂石 sand" },
-  { tag: "kerb",  color: "#ff0000", label: "路缘 kerb" },
+  { tag: "grass", color: "#00c800", label: "草地 grass" },
   { tag: "road2", color: "#b4b4b4", label: "次路面 road2" },
+  { tag: "road",  color: "#666666", label: "路面 road" },
+  { tag: "kerb",  color: "#ff0000", label: "路缘 kerb" },
 ];
 
 const $ = (id) => document.getElementById(id);
@@ -41,6 +43,7 @@ let painting = false;
 let lastPaintPt = null;     // [canvasX, canvasY]
 let undoStacks = {};        // tag -> [UndoEntry]
 let redoStacks = {};        // tag -> [UndoEntry]
+let lastMouseEvent = null;  // cache for cursor size updates
 
 // ---------------------------------------------------------------------------
 // Coordinate conversion (canvas pixel <-> geographic latlng)
@@ -102,7 +105,23 @@ class MaskLayer {
   async load() {
     const img = await loadImage(`/api/surface_mask/${this.tag}`);
     if (!img) return;
+    this._loadFromImage(img);
+  }
 
+  /** Reload mask from server (e.g. after compositing changed the mask). */
+  async reload() {
+    const img = await loadImage(`/api/surface_mask/${this.tag}?t=${Date.now()}`);
+    if (!img) return;
+    // Remove all existing overlays
+    for (const overlay of this._overlays.values()) overlay.remove();
+    this._rawTiles.clear();
+    this._displayTiles.clear();
+    this._overlays.clear();
+    this._dirtyTiles.clear();
+    this._loadFromImage(img);
+  }
+
+  _loadFromImage(img) {
     // Draw full image onto temporary canvas
     const fullCanvas = document.createElement("canvas");
     fullCanvas.width = maskW;
@@ -130,13 +149,12 @@ class MaskLayer {
         const display = this._tintTile(raw);
         this._displayTiles.set(key, display);
         const overlay = L.imageOverlay(display.toDataURL(), tileBounds(c, r), {
-          opacity: this._opacity,
+          opacity: this._layerVisible ? this._opacity : 0,
           interactive: false,
         }).addTo(map);
         this._overlays.set(key, overlay);
       }
     }
-    // fullCanvas is now eligible for GC
   }
 
   _tileIsEmpty(canvas) {
@@ -390,15 +408,14 @@ function redo() {
 // ---------------------------------------------------------------------------
 // Brush: screen pixels -> canvas pixels conversion
 // ---------------------------------------------------------------------------
-function getCanvasRadius(latlng) {
-  // Measure scale at the actual mouse position (not a fixed corner)
-  // and average X/Y to handle Mercator anisotropy.
-  const [cx, cy] = latLngToCanvasPixel(latlng.lat, latlng.lng);
-  const p0 = map.latLngToContainerPoint(canvasPixelToLatLng(cx, cy));
-  const px = map.latLngToContainerPoint(canvasPixelToLatLng(cx + 1, cy));
-  const py = map.latLngToContainerPoint(canvasPixelToLatLng(cx, cy + 1));
-  const scaleX = Math.abs(px.x - p0.x);
-  const scaleY = Math.abs(py.y - p0.y);
+function getCanvasRadius() {
+  // Compute screen-pixels-per-canvas-pixel using the full geo extent
+  // (numerically stable at any zoom level, unlike 1-pixel sampling).
+  const { north, south, east, west } = geoBounds;
+  const nwPt = map.latLngToContainerPoint([north, west]);
+  const sePt = map.latLngToContainerPoint([south, east]);
+  const scaleX = Math.abs(sePt.x - nwPt.x) / maskW;
+  const scaleY = Math.abs(sePt.y - nwPt.y) / maskH;
   const scale = (scaleX + scaleY) / 2;
   if (scale < 0.001) return 1;
   return (brushScreenSize / 2) / scale;
@@ -451,14 +468,16 @@ function handlePaintEnd() {
 // Brush cursor — constant screen size (screen-relative)
 // ---------------------------------------------------------------------------
 function updateBrushCursor(mouseEvent) {
+  if (mouseEvent) lastMouseEvent = mouseEvent;
   const cursor = $("brushCursor");
-  if (selectedIdx < 0 || !mouseEvent) {
+  const evt = mouseEvent || lastMouseEvent;
+  if (selectedIdx < 0 || !evt) {
     cursor.style.display = "none";
     return;
   }
   cursor.style.display = "block";
-  cursor.style.left = mouseEvent.clientX + "px";
-  cursor.style.top = mouseEvent.clientY + "px";
+  cursor.style.left = evt.clientX + "px";
+  cursor.style.top = evt.clientY + "px";
   cursor.style.width = brushScreenSize + "px";
   cursor.style.height = brushScreenSize + "px";
   cursor.style.borderColor = tool === "eraser"
@@ -529,12 +548,20 @@ async function saveAll() {
         tileCount++;
       }
     }
-    // Flush cached masks to disk
+    // Flush cached masks to disk + reconvert with priority compositing
+    setStatus("Saving... compositing masks");
     const flushResp = await fetch("/api/surface_flush", { method: "POST" });
     if (!flushResp.ok) throw new Error(`Flush failed: ${flushResp.status}`);
     const flushData = await flushResp.json();
     markClean();
-    setStatus(`Saved ${tileCount} tile(s), flushed ${flushData.flushed} mask(s)`);
+
+    // If compositing was applied, reload all layers to show resolved overlaps
+    if (flushData.composited) {
+      setStatus("Reloading composited masks...");
+      await Promise.all(layers.map(l => l.maskLayer.reload()));
+      updateTagStats();
+    }
+    setStatus(`Saved ${tileCount} tile(s), flushed ${flushData.flushed} mask(s), composited`);
   } catch (err) {
     setStatus(`Save failed: ${err.message}`);
   }
@@ -685,6 +712,7 @@ function wireUI() {
   $("brushSize").addEventListener("input", (e) => {
     brushScreenSize = parseInt(e.target.value, 10);
     $("brushSizeVal").textContent = brushScreenSize;
+    updateBrushCursor();
   });
 
   // Layer chip toggles

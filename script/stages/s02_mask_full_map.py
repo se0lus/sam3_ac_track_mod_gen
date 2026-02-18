@@ -53,6 +53,10 @@ def run(config: PipelineConfig) -> None:
     # Generate VLM-scale image (higher resolution for VLM input in stage 8)
     _generate_vlmscale_image(geo_image, config)
 
+    # Generate default layout + geo_metadata for downstream stages
+    _generate_default_layout(config)
+    _generate_geo_metadata(config)
+
     logger.info("Full map segmentation complete. Output: %s", config.mask_full_map_dir)
 
 
@@ -290,6 +294,84 @@ def _generate_vlmscale_image(geo_image, config: PipelineConfig) -> None:
 
     vlm_img.save(vlm_path)
     logger.info("VLM-scale image saved: %s (%s)", vlm_path, vlm_img.size)
+
+
+def _generate_default_layout(config: PipelineConfig) -> None:
+    """Generate Default layout mask + layouts.json in stage 2 output.
+
+    The merged_mask.png is copied as ``Default.png`` and a ``layouts.json``
+    is written so that downstream stages (3, 5, 7, 8) can read layouts
+    directly from the 02_result junction without requiring stage 2a.
+    """
+    import json, shutil
+
+    output_dir = config.mask_full_map_dir
+    merged_mask = os.path.join(output_dir, "merged_mask.png")
+    default_png = os.path.join(output_dir, "Default.png")
+    layouts_json = os.path.join(output_dir, "layouts.json")
+
+    if not os.path.isfile(merged_mask):
+        logger.warning("merged_mask.png not found, skipping default layout generation")
+        return
+
+    # Copy merged_mask as Default.png (only if not already present)
+    if not os.path.isfile(default_png):
+        shutil.copy2(merged_mask, default_png)
+        logger.info("Default layout mask: %s", default_png)
+
+    # Write layouts.json (only if not already present)
+    if not os.path.isfile(layouts_json):
+        data = {
+            "layouts": [{
+                "name": "Default",
+                "mask_file": "Default.png",
+                "track_direction": config.track_direction,
+            }]
+        }
+        with open(layouts_json, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        logger.info("Default layouts.json written: %s", layouts_json)
+
+
+def _generate_geo_metadata(config: PipelineConfig) -> None:
+    """Extract geo metadata from result_masks.json and write geo_metadata.json."""
+    import json
+
+    output_dir = config.mask_full_map_dir
+    masks_json = os.path.join(output_dir, "result_masks.json")
+    geo_meta_path = os.path.join(output_dir, "geo_metadata.json")
+
+    if os.path.isfile(geo_meta_path):
+        return  # already exists
+
+    if not os.path.isfile(masks_json):
+        logger.warning("result_masks.json not found, skipping geo_metadata.json")
+        return
+
+    try:
+        with open(masks_json, "r", encoding="utf-8") as f:
+            masks_data = json.load(f)
+
+        meta = masks_data.get("meta", {})
+        model_scale = meta.get("model_scale_size", {})
+        geo_bounds = meta.get("geo", {}).get("bounds", {})
+
+        geo_metadata = {
+            "image_width": model_scale.get("width", 0),
+            "image_height": model_scale.get("height", 0),
+            "bounds": {
+                "north": geo_bounds.get("top", 0),
+                "south": geo_bounds.get("bottom", 0),
+                "east": geo_bounds.get("right", 0),
+                "west": geo_bounds.get("left", 0),
+            },
+        }
+
+        with open(geo_meta_path, "w", encoding="utf-8") as f:
+            json.dump(geo_metadata, f, indent=2, ensure_ascii=False)
+        logger.info("geo_metadata.json written: %s", geo_meta_path)
+    except Exception as e:
+        logger.warning("geo_metadata.json generation failed: %s", e)
 
 
 if __name__ == "__main__":

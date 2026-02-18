@@ -7,6 +7,8 @@ except ModuleNotFoundError:  # pragma: no cover
     ndimage = None  # type: ignore
 
 try:
+    import matplotlib
+    matplotlib.use('Agg')  # non-interactive backend for subprocess safety
     import matplotlib.pyplot as plt  # type: ignore
     import matplotlib.patches as patches  # type: ignore
 except ModuleNotFoundError:  # pragma: no cover

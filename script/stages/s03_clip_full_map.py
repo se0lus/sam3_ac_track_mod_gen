@@ -26,7 +26,12 @@ def run(config: PipelineConfig) -> None:
     if not config.geotiff_path:
         raise ValueError("geotiff_path is required for clip_full_map stage")
 
-    _clip_full_map(config.geotiff_path, config.clips_dir, config.mask_full_map_dir)
+    # Read from 02_result junction (points to 02 or 02a)
+    result_dir = config.mask_full_map_result
+    if not os.path.isdir(result_dir):
+        # Fallback: direct stage 2 output (no junction set up)
+        result_dir = config.mask_full_map_dir
+    _clip_full_map(config.geotiff_path, config.clips_dir, result_dir)
     logger.info("Clipping complete. Clips saved to %s", config.clips_dir)
 
 
@@ -87,20 +92,21 @@ def _clip_full_map(src_img_file: str, clips_output_dir: str, mask_full_map_dir: 
     if not geo_image.has_model_scale_image():
         geo_image.generate_model_scale_image()
 
-    # Check for track layout masks (stage 2a) — if present, use their union
-    layouts_dir = os.path.join(os.path.dirname(mask_full_map_dir), "02a_track_layouts")
-    layouts_json = os.path.join(layouts_dir, "layouts.json")
+    # Read layouts.json from the result directory (02_result junction)
+    # The junction points to either 02 (auto) or 02a (manual),
+    # both of which contain layouts.json + layout mask PNGs.
+    layouts_json = os.path.join(mask_full_map_dir, "layouts.json")
     merged_mask = None
 
     if os.path.isfile(layouts_json):
-        merged_mask = _union_layout_masks(layouts_json, layouts_dir)
+        merged_mask = _union_layout_masks(layouts_json, mask_full_map_dir)
         if merged_mask is not None:
             import json
             with open(layouts_json, "r", encoding="utf-8") as f:
                 n_layouts = len(json.load(f).get("layouts", []))
-            logger.info("Using merged mask from %d track layouts", n_layouts)
+            logger.info("Using merged mask from %d track layout(s)", n_layouts)
 
-    # Fall back to stage 2 merged mask
+    # Fall back to merged_mask.png in the same directory
     if merged_mask is None:
         merged_mask_path = os.path.join(mask_full_map_dir, "merged_mask.png")
         if os.path.isfile(merged_mask_path):
@@ -128,13 +134,17 @@ def _clip_full_map(src_img_file: str, clips_output_dir: str, mask_full_map_dir: 
     visualize_clip_boxes(merged_mask, clip_boxes, show_plot=False,
                          save_path=os.path.join(clips_output_dir, "clip_boxes_visualization.png"))
 
+    total = len(clip_boxes)
     for i, box in enumerate(clip_boxes):
+        logger.info("Clipping %d/%d ...", i + 1, total)
         cropped = geo_image.crop_and_scale_to_gsd(
             box, geo_image.geo_image.get_gsd()[0],
             dst_image_path=os.path.join(clips_output_dir, f"clip_{i}.tif"),
         )
         cropped.generate_model_scale_image()
         cropped.save(save_masks=False, output_dir=clips_output_dir)
+        # Explicitly close rasterio dataset to avoid file-handle accumulation
+        cropped.geo_image.close()
 
 
 if __name__ == "__main__":

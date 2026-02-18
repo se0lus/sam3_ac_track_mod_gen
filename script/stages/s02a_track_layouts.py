@@ -1,9 +1,9 @@
 """Stage 2a: Track layout mask management (optional manual step).
 
 Users create per-layout binary masks via the web-based layout editor.
-This stage validates existing layouts and initialises the output directory.
-It does NOT participate in the automatic pipeline — run it manually or
-use the layout editor directly.
+This stage initialises the output directory by copying ALL of Stage 2's
+output (masks, images, metadata) so that 02_result junction can point
+here and downstream stages see a complete, format-compatible directory.
 """
 from __future__ import annotations
 
@@ -24,32 +24,42 @@ from pipeline_config import PipelineConfig
 
 
 def run(config: PipelineConfig) -> None:
-    """Initialise / validate the track layouts directory."""
+    """Initialise / validate the track layouts directory.
+
+    Copies all files from stage 2 output into 02a, preserving any
+    existing user-edited files (layouts.json, layout mask PNGs).
+    """
     logger.info("=== Stage 2a: Track layout management ===")
 
+    stage2_dir = config.mask_full_map_dir
     layouts_dir = config.stage_dir("track_layouts")
     os.makedirs(layouts_dir, exist_ok=True)
 
-    # Copy geo_metadata from stage 2 if not present
-    geo_meta_dst = os.path.join(layouts_dir, "geo_metadata.json")
-    if not os.path.isfile(geo_meta_dst):
-        # Try stage 7, then stage 8 sources
-        for src_dir in [config.stage_dir("ai_walls"),
-                        config.stage_dir("ai_game_objects")]:
-            src = os.path.join(src_dir, "geo_metadata.json")
-            if os.path.isfile(src):
-                shutil.copy2(src, geo_meta_dst)
-                logger.info("Copied geo_metadata from %s", src)
-                break
+    if not os.path.isdir(stage2_dir):
+        logger.warning("Stage 2 output not found: %s. Run stage 2 first.", stage2_dir)
+        return
 
-    # Initialise layouts.json if missing
-    if not os.path.isfile(config.track_layouts_json):
-        initial = {"layouts": []}
-        with open(config.track_layouts_json, "w", encoding="utf-8") as f:
-            json.dump(initial, f, indent=2, ensure_ascii=False)
-        logger.info("Created empty layouts.json at %s", config.track_layouts_json)
+    # Copy all files from stage 2, but never overwrite existing files
+    copied = 0
+    skipped = 0
+    for fname in os.listdir(stage2_dir):
+        src = os.path.join(stage2_dir, fname)
+        dst = os.path.join(layouts_dir, fname)
+        if not os.path.isfile(src):
+            continue
+        if os.path.isfile(dst):
+            skipped += 1
+            continue
+        shutil.copy2(src, dst)
+        copied += 1
+    logger.info("Copied %d files from stage 2, skipped %d existing", copied, skipped)
+
+    # Validate layouts.json if present
+    layouts_json = os.path.join(layouts_dir, "layouts.json")
+    if os.path.isfile(layouts_json):
+        _validate_layouts(layouts_json, layouts_dir)
     else:
-        _validate_layouts(config.track_layouts_json, layouts_dir)
+        logger.info("No layouts.json yet — use the layout editor to create layouts")
 
     logger.info("Track layouts directory ready: %s", layouts_dir)
 

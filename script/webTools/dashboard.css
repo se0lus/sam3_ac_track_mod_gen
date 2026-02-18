@@ -452,6 +452,20 @@
   border-top: 1px solid #2a2a4a;
 }
 
+/* ===== Per-stage config (reuses .db-config, nested inside stage info) ===== */
+.db-config--stage {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid #2a2a4a;
+}
+
+.db-config--stage h4 {
+  font-size: 13px;
+  font-weight: 600;
+  color: #8899aa;
+  margin: 0 0 16px;
+}
+
 /* ===== Empty state ===== */
 .db-empty {
   color: #556;

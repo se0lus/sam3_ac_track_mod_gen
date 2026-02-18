@@ -77,10 +77,12 @@ def run(config: PipelineConfig) -> None:
     logger.info("Composite surface tags: %s", [c["tag"] for c in composite_priority])
     logger.info("Independent tags: %s", independent_tags)
 
-    # Stage 2, 2a, and 5a directories
-    fullmap_mask_dir = config.mask_full_map_dir
-    layout_mask_dir = config.stage_dir("track_layouts")
-    manual_surface_dir = config.manual_surface_masks_dir
+    # Read from 02_result junction (points to 02 or 02a)
+    result_dir = config.mask_full_map_result
+    if not os.path.isdir(result_dir):
+        result_dir = config.mask_full_map_dir  # fallback
+    fullmap_mask_dir = result_dir
+    layout_mask_dir = result_dir  # layouts.json + masks live in same dir
 
     _merge_and_convert(
         geotiff_path=config.geotiff_path,
@@ -90,7 +92,6 @@ def run(config: PipelineConfig) -> None:
         tags=independent_tags,
         fullmap_mask_dir=fullmap_mask_dir,
         layout_mask_dir=layout_mask_dir,
-        manual_surface_mask_dir=manual_surface_dir,
         composite_priority=composite_priority,
     )
     logger.info("Blender input files written to %s", output_dir)

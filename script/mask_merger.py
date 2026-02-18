@@ -658,7 +658,7 @@ def _composite_surface_tags(
 # Contour extraction + triangulation (shared by both composited and independent)
 # ---------------------------------------------------------------------------
 
-def _extract_contours_and_triangulate(
+def extract_contours_and_triangulate(
     binary_mask: np.ndarray,
     tag: str,
     bounds: Dict[str, float],
@@ -896,7 +896,7 @@ def merge_clip_masks(
         for cfg in composite_priority:
             tag = cfg["tag"]
             binary = composited[tag]
-            groups = _extract_contours_and_triangulate(
+            groups = extract_contours_and_triangulate(
                 binary, tag, bounds, canvas_w, canvas_h,
                 simplify_epsilon, min_contour_area,
             )
@@ -933,7 +933,7 @@ def merge_clip_masks(
             logger.warning("Tag '%s': no pixels after rasterization, skipping", tag)
             continue
 
-        groups = _extract_contours_and_triangulate(
+        groups = extract_contours_and_triangulate(
             full_canvas, tag, bounds, canvas_w, canvas_h,
             simplify_epsilon, min_contour_area,
         )

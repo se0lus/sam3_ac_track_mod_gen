@@ -83,8 +83,14 @@ def run(config: PipelineConfig) -> None:
     # Always overwrite geo_metadata.json (metadata, not user edits)
     _copy_if_exists(src_dir, dst_dir, "geo_metadata.json")
 
-    # Per-layout: only copy if layout subdir doesn't exist in 8a yet
-    layouts = _load_layouts(config.track_layouts_json)
+    # Read layouts from 02_result or direct
+    result_dir = config.mask_full_map_result
+    if not os.path.isdir(result_dir):
+        result_dir = config.mask_full_map_dir
+    result_layouts_json = os.path.join(result_dir, "layouts.json")
+    layouts = _load_layouts(result_layouts_json)
+    if not layouts:
+        layouts = _load_layouts(config.track_layouts_json)
     if layouts:
         copied = 0
         skipped = 0

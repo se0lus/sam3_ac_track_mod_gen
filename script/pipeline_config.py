@@ -8,9 +8,14 @@ Single source of truth for ALL config.  Replaces both:
 
 from __future__ import annotations
 
+import logging
 import os
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger("sam3_pipeline.config")
 
 
 # ---------------------------------------------------------------------------
@@ -36,6 +41,63 @@ STAGE_ORDER: Dict[str, int] = {
 
 PIPELINE_STAGES: List[str] = list(STAGE_ORDER.keys())
 
+# ---------------------------------------------------------------------------
+# Manual stage pairs: auto_stage → manual_stage
+# ---------------------------------------------------------------------------
+MANUAL_STAGE_PAIRS: Dict[str, str] = {
+    "mask_full_map": "track_layouts",
+    "convert_to_blender": "manual_surface_masks",
+    "ai_walls": "manual_walls",
+    "ai_game_objects": "manual_game_objects",
+}
+
+
+# ---------------------------------------------------------------------------
+# Junction utilities (Windows mklink /J, POSIX symlink)
+# ---------------------------------------------------------------------------
+def _is_junction(path: str) -> bool:
+    """Check if *path* is a directory junction (Windows) or symlink (POSIX)."""
+    if not os.path.lexists(path):
+        return False
+    if sys.platform == "win32":
+        import ctypes
+        attrs = ctypes.windll.kernel32.GetFileAttributesW(str(path))
+        if attrs == -1:
+            return False
+        FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+        return bool(attrs & FILE_ATTRIBUTE_REPARSE_POINT)
+    return os.path.islink(path)
+
+
+def _create_junction(link: str, target: str) -> None:
+    """Create a directory junction (Windows) or symlink (POSIX)."""
+    target = os.path.abspath(target)
+    link = os.path.abspath(link)
+    if sys.platform == "win32":
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", link, target],
+            check=True, capture_output=True,
+        )
+    else:
+        os.symlink(target, link, target_is_directory=True)
+
+
+def _remove_junction_safe(path: str) -> None:
+    """Remove a junction/symlink without deleting the target contents.
+
+    IMPORTANT: shutil.rmtree() would follow the junction and delete
+    the real directory contents.  Use os.rmdir() for junctions.
+    """
+    if not os.path.lexists(path):
+        return
+    if _is_junction(path):
+        if sys.platform == "win32":
+            # os.rmdir works for junctions on Windows
+            os.rmdir(path)
+        else:
+            os.unlink(path)
+    # If it's a real directory, leave it alone
+
 
 # ---------------------------------------------------------------------------
 # Configuration dataclass
@@ -60,7 +122,7 @@ class PipelineConfig:
 
     # --- Inpainting (center hole repair) ---
     inpaint_center_holes: bool = True
-    inpaint_model: str = "gemini-3-pro-image-preview"
+    inpaint_model: str = "gemini-2.5-flash-image"
     inpaint_min_hole_ratio: float = 0.001  # 0.1% of image area threshold
 
     # --- VLM input ---
@@ -143,6 +205,55 @@ class PipelineConfig:
         idx = STAGE_ORDER.get(stage_name, 0)
         return os.path.join(self.output_dir, f"{idx:02d}_{stage_name}")
 
+    def result_dir(self, auto_stage: str) -> str:
+        """Return ``output/NN_result/`` — the junction target for downstream readers."""
+        idx = STAGE_ORDER.get(auto_stage, 0)
+        return os.path.join(self.output_dir, f"{idx:02d}_result")
+
+    def setup_result_junctions(self, manual_stages: Dict[str, bool] | None = None) -> None:
+        """Create NN_result/ junctions for each auto/manual stage pair.
+
+        For each pair in MANUAL_STAGE_PAIRS:
+        - If the manual stage is enabled AND its directory has data,
+          junction points to the manual directory.
+        - Otherwise, junction points to the auto directory.
+        """
+        if manual_stages is None:
+            manual_stages = {}
+
+        for auto_name, manual_name in MANUAL_STAGE_PAIRS.items():
+            result_path = self.result_dir(auto_name)
+            auto_dir = self.stage_dir(auto_name)
+            manual_dir = self.stage_dir(manual_name)
+
+            # Determine target
+            manual_enabled = manual_stages.get(manual_name, False)
+            manual_has_data = os.path.isdir(manual_dir) and bool(os.listdir(manual_dir))
+            use_manual = manual_enabled and manual_has_data
+
+            target = manual_dir if use_manual else auto_dir
+
+            # Skip if target doesn't exist
+            if not os.path.isdir(target):
+                logger.debug("Junction target not found: %s, skipping %s", target, result_path)
+                continue
+
+            # Remove existing junction if it points to a different target
+            if _is_junction(result_path):
+                current = os.path.realpath(result_path)
+                if os.path.normcase(os.path.normpath(current)) == os.path.normcase(os.path.normpath(target)):
+                    continue  # already correct
+                _remove_junction_safe(result_path)
+
+            # Don't clobber a real directory
+            if os.path.isdir(result_path) and not _is_junction(result_path):
+                logger.warning("Real directory exists at %s, skipping junction", result_path)
+                continue
+
+            _create_junction(result_path, target)
+            label = "manual" if use_manual else "auto"
+            logger.info("Junction %s -> %s (%s)", result_path, target, label)
+
     def resolve(self) -> "PipelineConfig":
         """Derive all intermediate paths from the base settings.
 
@@ -212,5 +323,11 @@ class PipelineConfig:
         self.manual_game_objects_json = os.path.join(
             self.stage_dir("manual_game_objects"), "game_objects.json"
         )
+
+        # Result directories (junction targets for downstream stages)
+        self.mask_full_map_result = self.result_dir("mask_full_map")       # 02_result
+        self.blender_clips_result = self.result_dir("convert_to_blender")  # 05_result
+        self.walls_result_dir = self.result_dir("ai_walls")                # 07_result
+        self.game_objects_result_dir = self.result_dir("ai_game_objects")   # 08_result
 
         return self

@@ -1,4 +1,8 @@
-"""Stage 6: Run Blender to create polygon meshes from blender clips."""
+"""Stage 6: Run Blender to create polygon meshes from blender clips.
+
+Reads blender JSON from 05_result (junction to 05 or 05a) and
+generates polygons.blend via Blender headless.
+"""
 from __future__ import annotations
 
 import argparse
@@ -19,15 +23,20 @@ from pipeline_config import PipelineConfig
 def run(config: PipelineConfig) -> None:
     """Execute Stage 6: Blender polygon generation.
 
-    Reads blender clips from ``config.blender_clips_dir`` (stage 5 output),
-    writes ``polygons.blend`` to ``config.blend_file``.
+    Reads blender clips from 05_result junction and writes
+    ``polygons.blend`` to ``config.blend_file``.
     """
     logger.info("=== Stage 6: Blender polygon generation ===")
 
     if not config.blender_exe:
         raise ValueError("blender_exe is required for blender_polygons stage")
-    if not os.path.isdir(config.blender_clips_dir):
-        raise ValueError(f"blender_clips_dir not found: {config.blender_clips_dir}")
+
+    # Read from 05_result junction (points to 05 or 05a)
+    input_dir = config.blender_clips_result
+    if not os.path.isdir(input_dir):
+        input_dir = config.blender_clips_dir  # fallback
+    if not os.path.isdir(input_dir):
+        raise ValueError(f"Blender clips directory not found: {input_dir}")
 
     out_dir = os.path.dirname(config.blend_file)
     os.makedirs(out_dir, exist_ok=True)
@@ -42,7 +51,7 @@ def run(config: PipelineConfig) -> None:
         "--background",
         "--python", blender_script,
         "--",
-        "--input", config.blender_clips_dir,
+        "--input", input_dir,
         "--output", config.blend_file,
     ]
     logger.info("Running Blender: %s", " ".join(cmd))

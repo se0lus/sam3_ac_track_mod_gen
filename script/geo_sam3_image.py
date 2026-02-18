@@ -969,10 +969,24 @@ class GeoSam3Image:
             output_dir = os.path.dirname(os.path.abspath(dst_image_path))
             if output_dir and not os.path.exists(output_dir):
                 os.makedirs(output_dir, exist_ok=True)
-        
+
+        # On Windows, GDAL tries to delete an existing file before creating
+        # a new one with the same name.  If the old file is locked by another
+        # process (search indexer, antivirus, web server preview …), the write
+        # fails with "Permission denied".  Work around this by always writing
+        # to a fresh temp file, then renaming to the intended path.
+        abs_dst = os.path.abspath(dst_image_path)
+        need_rename = os.path.exists(abs_dst)
+        if need_rename:
+            temp_fd2, write_path = tempfile.mkstemp(
+                suffix='.tif', dir=os.path.dirname(abs_dst))
+            os.close(temp_fd2)
+        else:
+            write_path = dst_image_path
+
         # 创建新的GeoTIFF文件
         with rasterio.open(
-            dst_image_path,
+            write_path,
             'w',
             driver='GTiff',
             height=scaled_height,
@@ -984,6 +998,25 @@ class GeoSam3Image:
             compress='lzw'
         ) as dst:
             dst.write(img_array)
+
+        # Rename temp → target (with retry for transient locks)
+        if need_rename:
+            import time as _time
+            for _attempt in range(5):
+                try:
+                    os.replace(write_path, abs_dst)
+                    break
+                except OSError:
+                    if _attempt < 4:
+                        _time.sleep(0.3)
+                    else:
+                        # All retries exhausted — force-remove then rename
+                        try:
+                            os.remove(abs_dst)
+                        except OSError:
+                            pass
+                        os.replace(write_path, abs_dst)
+            dst_image_path = abs_dst
         
         # 创建新的 GeoSam3Image 实例
         new_geo_sam3_image = GeoSam3Image(dst_image_path)

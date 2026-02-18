@@ -43,6 +43,11 @@ def run(config: PipelineConfig) -> None:
     )
     blender_script = os.path.abspath(blender_script)
 
+    # Read from result junctions (05_result, 07_result, 08_result)
+    blender_clips = config.blender_clips_result
+    if not os.path.isdir(blender_clips):
+        blender_clips = config.blender_clips_dir  # fallback
+
     cmd = [
         config.blender_exe,
         "--background",
@@ -51,23 +56,26 @@ def run(config: PipelineConfig) -> None:
         "--blend-input", config.blend_file,
         "--glb-dir", config.glb_dir,
         "--tiles-dir", config.tiles_dir,
-        "--consolidated-clips-dir", config.blender_clips_dir,
+        "--consolidated-clips-dir", blender_clips,
         "--output", config.final_blend_file,
         "--base-level", str(config.base_level),
         "--target-level", str(config.target_fine_level),
     ]
 
-    # Optional stages: walls (7a manual > 7 auto) and game objects (8a manual > 8 auto)
-    walls_json = config.manual_walls_json
-    if not os.path.isfile(walls_json):
-        walls_json = config.walls_json
+    # Walls from 07_result junction
+    walls_result = config.walls_result_dir
+    if not os.path.isdir(walls_result):
+        walls_result = os.path.dirname(config.walls_json)  # fallback
+    walls_json = os.path.join(walls_result, "walls.json")
     if os.path.isfile(walls_json):
         cmd.extend(["--walls-json", walls_json])
         logger.info("Using walls: %s", walls_json)
 
-    go_json = config.manual_game_objects_json
-    if not os.path.isfile(go_json):
-        go_json = config.game_objects_json
+    # Game objects from 08_result junction
+    go_result = config.game_objects_result_dir
+    if not os.path.isdir(go_result):
+        go_result = os.path.dirname(config.game_objects_json)  # fallback
+    go_json = os.path.join(go_result, "game_objects.json")
     if os.path.isfile(go_json):
         cmd.extend(["--game-objects-json", go_json])
         logger.info("Using game objects: %s", go_json)

@@ -1,4 +1,5 @@
 import argparse
+import atexit
 import json
 import math
 import os
@@ -44,6 +45,7 @@ def find_free_port(host: str, start_port: int, max_tries: int) -> int:
 # so all data paths must be absolute.
 # ---------------------------------------------------------------------------
 _REPO_ROOT = repo_root_from_here()
+# --- Direct stage output directories ---
 _WALLS_JSON = os.path.join(_REPO_ROOT, "output", "07_ai_walls", "walls.json")
 _MANUAL_WALLS_JSON = os.path.join(_REPO_ROOT, "output", "07a_manual_walls", "walls.json")
 _MANUAL_WALLS_DIR = os.path.join(_REPO_ROOT, "output", "07a_manual_walls")
@@ -57,9 +59,21 @@ _MASK_FULL_MAP_DIR = os.path.join(_REPO_ROOT, "output", "02_mask_full_map")
 _GAME_OBJECTS_DIR = os.path.join(_REPO_ROOT, "output", "08_ai_game_objects")
 _MANUAL_GAME_OBJECTS_DIR = os.path.join(_REPO_ROOT, "output", "08a_manual_game_objects")
 _MANUAL_SURFACE_MASKS_DIR = os.path.join(_REPO_ROOT, "output", "05a_manual_surface_masks")
+_MANUAL_SURFACE_MASKS_EDIT_DIR = os.path.join(_REPO_ROOT, "output", "05a_manual_surface_masks", "masks")
 _STAGE5_PREVIEW_DIR = os.path.join(_REPO_ROOT, "output", "05_convert_to_blender", "merge_preview")
 _TILES_DIR = os.path.join(_REPO_ROOT, "test_images_shajing", "map")
 _CONFIG_JSON = os.path.join(_REPO_ROOT, "output", "webtools_config.json")
+
+# --- Result junction directories (downstream stages read from these) ---
+_02_RESULT_DIR = os.path.join(_REPO_ROOT, "output", "02_result")
+_05_RESULT_DIR = os.path.join(_REPO_ROOT, "output", "05_result")
+_07_RESULT_DIR = os.path.join(_REPO_ROOT, "output", "07_result")
+_08_RESULT_DIR = os.path.join(_REPO_ROOT, "output", "08_result")
+
+
+def _result_or_fallback(result_dir: str, fallback_dir: str) -> str:
+    """Return the result junction dir if it exists, otherwise fallback."""
+    return result_dir if os.path.isdir(result_dir) else fallback_dir
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +87,7 @@ _cache_lock = threading.Lock()
 def _get_surface_meta():
     global _surface_meta_cache
     if _surface_meta_cache is None:
-        p = os.path.join(_MANUAL_SURFACE_MASKS_DIR, "surface_masks.json")
+        p = os.path.join(_MANUAL_SURFACE_MASKS_EDIT_DIR, "surface_masks.json")
         if os.path.isfile(p):
             with open(p, "r", encoding="utf-8") as f:
                 _surface_meta_cache = json.load(f)
@@ -86,7 +100,7 @@ def _get_surface_mask(tag):
         if tag in _surface_mask_cache:
             return _surface_mask_cache[tag]
     import cv2
-    manual = os.path.join(_MANUAL_SURFACE_MASKS_DIR, f"{tag}_mask.png")
+    manual = os.path.join(_MANUAL_SURFACE_MASKS_EDIT_DIR, f"{tag}_mask.png")
     stage5 = os.path.join(_STAGE5_PREVIEW_DIR, f"{tag}_merged.png")
     path = manual if os.path.isfile(manual) else stage5
     if not os.path.isfile(path):
@@ -125,11 +139,11 @@ def _patch_surface_tile(tag, col, row, tile_png_bytes):
 def _flush_surface_masks():
     """Write all cached masks to disk."""
     import cv2
-    os.makedirs(_MANUAL_SURFACE_MASKS_DIR, exist_ok=True)
+    os.makedirs(_MANUAL_SURFACE_MASKS_EDIT_DIR, exist_ok=True)
     with _cache_lock:
         tags = list(_surface_mask_cache.keys())
         for tag in tags:
-            path = os.path.join(_MANUAL_SURFACE_MASKS_DIR, f"{tag}_mask.png")
+            path = os.path.join(_MANUAL_SURFACE_MASKS_EDIT_DIR, f"{tag}_mask.png")
             cv2.imwrite(path, _surface_mask_cache[tag])
     return len(tags)
 
@@ -140,8 +154,13 @@ def _safe_layout_name(name: str) -> str:
 
 
 def _layout_read_path(layout_name: str, filename: str) -> str:
-    """Read priority: 8a > 8."""
+    """Read from 08_result junction (points to 08 or 08a)."""
     safe = _safe_layout_name(layout_name)
+    result_dir = _result_or_fallback(_08_RESULT_DIR, _GAME_OBJECTS_DIR)
+    p = os.path.join(result_dir, safe, filename)
+    if os.path.isfile(p):
+        return p
+    # Fallback: try direct directories
     for base in [_MANUAL_GAME_OBJECTS_DIR, _GAME_OBJECTS_DIR]:
         p = os.path.join(base, safe, filename)
         if os.path.isfile(p):
@@ -186,11 +205,12 @@ def _auto_merge_manual() -> None:
 
 
 def _modelscale_image_path() -> str:
-    """Find modelscale image in stage 2 output."""
-    if os.path.isdir(_MASK_FULL_MAP_DIR):
-        for f in os.listdir(_MASK_FULL_MAP_DIR):
+    """Find modelscale image in 02_result (or stage 2 output)."""
+    search_dir = _result_or_fallback(_02_RESULT_DIR, _MASK_FULL_MAP_DIR)
+    if os.path.isdir(search_dir):
+        for f in os.listdir(search_dir):
             if f.endswith("_modelscale.png"):
-                return os.path.join(_MASK_FULL_MAP_DIR, f)
+                return os.path.join(search_dir, f)
     return ""
 
 
@@ -251,7 +271,13 @@ _STAGE_ID_TO_PIPELINE = {
 # PipelineRunner — background pipeline execution with SSE streaming
 # ---------------------------------------------------------------------------
 class PipelineRunner:
-    """Manages background execution of pipeline stages."""
+    """Manages background execution of pipeline stages.
+
+    Uses a LOG FILE instead of stdout pipe to capture subprocess output.
+    This eliminates the Windows pipe-buffer deadlock entirely: the subprocess
+    writes to a file (never blocks), and a tail-reader thread reads the file
+    and broadcasts to SSE clients.
+    """
 
     def __init__(self):
         self.process = None
@@ -261,6 +287,8 @@ class PipelineRunner:
         self.sse_clients = []          # list of queue.Queue
         self._lock = threading.Lock()
         self._stage_status = {}        # stage_id -> "not_started" | "running" | "completed" | "error"
+        self._log_file_handle = None   # file handle for subprocess stdout
+        self._stop_event = threading.Event()
 
     def run_stages(self, stage_ids, config_dict):
         """Launch pipeline stages in a background process."""
@@ -268,11 +296,13 @@ class PipelineRunner:
             if self.process and self.process.poll() is None:
                 raise RuntimeError("Pipeline already running")
 
+        output_base = config_dict.get("output_dir", os.path.join(_REPO_ROOT, "output"))
+
         # Map stage_ids to pipeline stage names
         pipeline_stages = []
         for sid in stage_ids:
             mapped = _STAGE_ID_TO_PIPELINE.get(sid)
-            if mapped:
+            if mapped and mapped not in pipeline_stages:
                 pipeline_stages.append(mapped)
 
         if not pipeline_stages:
@@ -286,47 +316,178 @@ class PipelineRunner:
             cmd.extend(["--geotiff", config_dict["geotiff_path"]])
         if config_dict.get("tiles_dir"):
             cmd.extend(["--tiles-dir", config_dict["tiles_dir"]])
+        if config_dict.get("inpaint_model"):
+            cmd.extend(["--inpaint-model", config_dict["inpaint_model"]])
+
+        # Set up result junctions before running
+        try:
+            script_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            if script_dir not in sys.path:
+                sys.path.insert(0, script_dir)
+            from pipeline_config import PipelineConfig, _is_junction, _remove_junction_safe
+            pc = PipelineConfig(
+                geotiff_path=config_dict.get("geotiff_path", ""),
+                tiles_dir=config_dict.get("tiles_dir", ""),
+                output_dir=config_dict.get("output_dir", os.path.join(_REPO_ROOT, "output")),
+            ).resolve()
+            manual_cfg = config_dict.get("manual_stages", {})
+            # Also load from webtools_config.json
+            wt_cfg = _load_webtools_config()
+            saved_manual = wt_cfg.get("manual_stages", {})
+            saved_manual.update(manual_cfg)
+            pc.setup_result_junctions(saved_manual)
+        except Exception as e:
+            print(f"[pipeline] WARNING: Failed to set up junctions: {e}")
+
+        # Clean output directories for stages being re-run (best-effort)
+        for sid in stage_ids:
+            meta = next((m for m in PIPELINE_STAGE_META if m["id"] == sid), None)
+            if meta and meta.get("output_dir"):
+                stage_out = os.path.join(output_base, meta["output_dir"])
+                # Check if it's a junction — never rmtree a junction
+                try:
+                    from pipeline_config import _is_junction, _remove_junction_safe
+                    if _is_junction(stage_out):
+                        continue  # don't clean junction targets
+                except ImportError:
+                    pass
+                if os.path.isdir(stage_out):
+                    try:
+                        shutil.rmtree(stage_out)
+                    except Exception:
+                        # Directory locked — clear contents best-effort
+                        for root, dirs, files in os.walk(stage_out, topdown=False):
+                            for f in files:
+                                try:
+                                    os.remove(os.path.join(root, f))
+                                except Exception:
+                                    pass
+                            for d in dirs:
+                                try:
+                                    os.rmdir(os.path.join(root, d))
+                                except Exception:
+                                    pass
+                os.makedirs(stage_out, exist_ok=True)
+
+        # Build stage ID list for status tracking
+        all_stage_ids = []
+        for ps in pipeline_stages:
+            # Reverse-map pipeline name to stage_id (they happen to be the same)
+            sid = next((k for k, v in _STAGE_ID_TO_PIPELINE.items() if v == ps), ps)
+            if sid not in all_stage_ids:
+                all_stage_ids.append(sid)
 
         with self._lock:
             self.log_lines = []
-            self.stages_requested = stage_ids
-            for sid in stage_ids:
+            self.stages_requested = all_stage_ids
+            for sid in all_stage_ids:
                 self._stage_status[sid] = "pending"
 
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUNBUFFERED"] = "1"
+
+        # On Windows, prevent child process from opening a console window
+        kwargs = {}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
+        # Write subprocess output to a LOG FILE instead of a pipe.
+        # This eliminates the Windows pipe-buffer deadlock entirely:
+        # the subprocess writes to a file (never blocks), and a tail-reader
+        # thread reads the file and broadcasts to SSE clients.
+        log_path = os.path.join(output_base, "pipeline.log")
+        self._log_file_handle = open(log_path, "w", encoding="utf-8")
+        self._stop_event.clear()
 
         self.process = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, cwd=_REPO_ROOT, env=env, bufsize=1,
+            cmd, stdout=self._log_file_handle, stderr=subprocess.STDOUT,
+            cwd=_REPO_ROOT, env=env, **kwargs,
         )
-        threading.Thread(target=self._stream_output, daemon=True).start()
+        # Mark first stage as "running" immediately (initialization phase)
+        with self._lock:
+            if stage_ids:
+                self.current_stage = stage_ids[0]
+                self._stage_status[stage_ids[0]] = "running"
+        threading.Thread(target=self._tail_log, args=(log_path,), daemon=True).start()
         self._broadcast("pipeline_start", {"stages": stage_ids})
 
-    def _stream_output(self):
+    def _tail_log(self, log_path):
+        """Tail the log file and broadcast new lines to SSE clients.
+
+        The subprocess writes to this file directly (no pipe involved).
+        This thread reads new lines and broadcasts them.  Even if this
+        thread crashes, the subprocess is completely unaffected.
+        """
+        import time
+
+        proc = self.process
+        log_batch = []
+        last_flush = time.monotonic()
+        FLUSH_INTERVAL = 0.1
+
         try:
-            for line in self.process.stdout:
-                line = line.rstrip()
-                with self._lock:
-                    self.log_lines.append(line)
-                self._broadcast("log", line)
-                # Detect stage transitions: "=== Stage N: stage_name ==="
-                if "=== Stage" in line:
-                    # Mark previous stage as completed
-                    if self.current_stage:
-                        self._stage_status[self.current_stage] = "completed"
-                        self._broadcast("stage_complete", {"stage": self.current_stage})
-                    # Find which stage started
-                    for sid, pname in _STAGE_ID_TO_PIPELINE.items():
-                        if pname in line:
-                            self.current_stage = sid
-                            self._stage_status[sid] = "running"
-                            self._broadcast("stage_start", {"stage": sid})
+            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                while not self._stop_event.is_set():
+                    line = f.readline()
+                    if line:
+                        line = line.rstrip()
+                        if not line:
+                            continue
+                        with self._lock:
+                            self.log_lines.append(line)
+
+                        is_stage_line = "=== Stage" in line
+
+                        if is_stage_line:
+                            if log_batch:
+                                self._safe_broadcast("log", "\n".join(log_batch))
+                                log_batch = []
+                                last_flush = time.monotonic()
+                            self._safe_broadcast("log", line)
+                            for sid, pname in _STAGE_ID_TO_PIPELINE.items():
+                                if pname in line:
+                                    if self.current_stage and self.current_stage != sid:
+                                        self._stage_status[self.current_stage] = "completed"
+                                        self._safe_broadcast("stage_complete", {"stage": self.current_stage})
+                                    self.current_stage = sid
+                                    self._stage_status[sid] = "running"
+                                    self._safe_broadcast("stage_start", {"stage": sid})
+                                    break
+                        else:
+                            log_batch.append(line)
+                            now = time.monotonic()
+                            if now - last_flush >= FLUSH_INTERVAL or len(log_batch) >= 100:
+                                self._safe_broadcast("log", "\n".join(log_batch))
+                                log_batch = []
+                                last_flush = now
+                    else:
+                        # No new content — check if process is still alive
+                        if proc.poll() is not None:
+                            # Process exited; do one final read pass
+                            remaining = f.read()
+                            if remaining:
+                                for rline in remaining.splitlines():
+                                    rline = rline.rstrip()
+                                    if rline:
+                                        log_batch.append(rline)
                             break
+                        time.sleep(0.05)  # brief sleep, then retry
+
+            # Flush remaining batch
+            if log_batch:
+                self._safe_broadcast("log", "\n".join(log_batch))
         except Exception:
             pass
         finally:
-            rc = self.process.wait()
+            rc = proc.wait()
+            # Close the log file handle
+            try:
+                if self._log_file_handle:
+                    self._log_file_handle.close()
+                    self._log_file_handle = None
+            except Exception:
+                pass
             with self._lock:
                 if self.current_stage and self._stage_status.get(self.current_stage) == "running":
                     self._stage_status[self.current_stage] = "completed" if rc == 0 else "error"
@@ -334,14 +495,35 @@ class PipelineRunner:
                     for sid in self.stages_requested:
                         if self._stage_status.get(sid) == "pending":
                             self._stage_status[sid] = "completed"
-            self._broadcast("pipeline_done", {"returncode": rc})
+            self._safe_broadcast("pipeline_done", {"returncode": rc})
             self.current_stage = None
-            self.process = None
+            if self.process is proc:
+                self.process = None
+
+    def _safe_broadcast(self, event_type, data):
+        """Broadcast that never raises."""
+        try:
+            self._broadcast(event_type, data)
+        except Exception:
+            pass
 
     def stop(self):
-        if self.process and self.process.poll() is None:
-            self.process.terminate()
-            self._broadcast("pipeline_stop", {})
+        self._stop_event.set()
+        proc = self.process
+        if proc and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                proc.kill()
+            self._safe_broadcast("pipeline_stop", {})
+        # Close log file handle
+        try:
+            if self._log_file_handle:
+                self._log_file_handle.close()
+                self._log_file_handle = None
+        except Exception:
+            pass
 
     def is_running(self):
         return self.process is not None and self.process.poll() is None
@@ -392,6 +574,7 @@ class PipelineRunner:
 
 # Global runner instance
 _pipeline_runner = PipelineRunner()
+atexit.register(_pipeline_runner.stop)  # kill subprocess on server exit
 
 
 # ---------------------------------------------------------------------------
@@ -408,6 +591,7 @@ def _load_webtools_config():
         "output_dir": os.path.join(_REPO_ROOT, "output"),
         "blender_exe": r"C:\Program Files\Blender Foundation\Blender 5.0\blender.exe",
         "track_direction": "clockwise",
+        "inpaint_model": "gemini-2.5-flash-image",
         "gemini_api_key": "***REDACTED_GEMINI_KEY***",
     }
 
@@ -421,53 +605,76 @@ def _save_webtools_config(cfg):
 class ApiHandler(SimpleHTTPRequestHandler):
     """Extends static file serving with JSON API endpoints for editors."""
 
+    def send_error(self, code, message=None, explain=None):
+        """Override to handle non-ASCII error messages (Windows CJK errors)."""
+        if message:
+            message = message.encode("ascii", "replace").decode("ascii")
+        if explain:
+            explain = explain.encode("ascii", "replace").decode("ascii")
+        super().send_error(code, message, explain)
+
     def do_GET(self):
         # --- Existing endpoints ---
         if self.path == "/api/walls":
-            # 7a manual > 7 auto
-            if os.path.isfile(_MANUAL_WALLS_JSON):
-                self._serve_json_file(_MANUAL_WALLS_JSON)
-            else:
-                self._serve_json_file(_WALLS_JSON)
+            # Read from 07_result junction
+            result_walls = os.path.join(_result_or_fallback(_07_RESULT_DIR, os.path.dirname(_WALLS_JSON)), "walls.json")
+            self._serve_json_file(result_walls)
         elif self.path == "/api/geo_metadata":
-            self._serve_json_file(_GEO_META_JSON)
+            # Read from 07_result or fallback
+            result_meta = os.path.join(_result_or_fallback(_07_RESULT_DIR, os.path.dirname(_GEO_META_JSON)), "geo_metadata.json")
+            self._serve_json_file(result_meta)
         elif self.path == "/api/game_objects":
-            self._serve_json_file(_GAME_OBJECTS_JSON)
+            # Read from 08_result junction
+            result_go = os.path.join(_result_or_fallback(_08_RESULT_DIR, _GAME_OBJECTS_DIR), "game_objects.json")
+            self._serve_json_file(result_go)
         elif self.path == "/api/game_objects/geo_metadata":
-            # 8a > 8 > stage 7
-            manual_meta = os.path.join(_MANUAL_GAME_OBJECTS_DIR, "geo_metadata.json")
-            if os.path.isfile(manual_meta):
-                self._serve_json_file(manual_meta)
-            elif os.path.isfile(_GAME_OBJECTS_GEO_META_JSON):
-                self._serve_json_file(_GAME_OBJECTS_GEO_META_JSON)
+            # Read from 08_result, then 07_result
+            result_go_dir = _result_or_fallback(_08_RESULT_DIR, _GAME_OBJECTS_DIR)
+            go_meta = os.path.join(result_go_dir, "geo_metadata.json")
+            if os.path.isfile(go_meta):
+                self._serve_json_file(go_meta)
             else:
-                self._serve_json_file(_GEO_META_JSON)
+                result_w_dir = _result_or_fallback(_07_RESULT_DIR, os.path.dirname(_GEO_META_JSON))
+                self._serve_json_file(os.path.join(result_w_dir, "geo_metadata.json"))
         elif self.path == "/api/centerline":
-            self._serve_json_file(_CENTERLINE_JSON)
+            # Read from 08_result
+            result_go_dir = _result_or_fallback(_08_RESULT_DIR, _GAME_OBJECTS_DIR)
+            self._serve_json_file(os.path.join(result_go_dir, "centerline.json"))
 
-        # --- Track layouts ---
+        # --- Track layouts (read from 02_result) ---
         elif self.path == "/api/track_layouts":
-            self._serve_json_file(_LAYOUTS_JSON)
+            result_dir = _result_or_fallback(_02_RESULT_DIR, _MASK_FULL_MAP_DIR)
+            layouts_path = os.path.join(result_dir, "layouts.json")
+            # Fallback to old location for backward compat
+            if not os.path.isfile(layouts_path):
+                layouts_path = _LAYOUTS_JSON
+            self._serve_json_file(layouts_path)
 
         elif self.path.startswith("/api/layout_mask/"):
             name = self.path[len("/api/layout_mask/"):]
             name = _safe_layout_name(name)
-            mask_path = os.path.join(_LAYOUTS_DIR, f"{name}.png")
+            # Read from 02_result, fallback to 02a
+            result_dir = _result_or_fallback(_02_RESULT_DIR, _LAYOUTS_DIR)
+            mask_path = os.path.join(result_dir, f"{name}.png")
+            if not os.path.isfile(mask_path):
+                mask_path = os.path.join(_LAYOUTS_DIR, f"{name}.png")
             self._serve_binary_file(mask_path, "image/png")
 
         elif self.path.startswith("/api/mask_overlay/"):
             tag = self.path[len("/api/mask_overlay/"):]
             tag = re.sub(r'[^\w]', '', tag)
-            mask_path = os.path.join(_MASK_FULL_MAP_DIR, f"{tag}_mask.png")
+            result_dir = _result_or_fallback(_02_RESULT_DIR, _MASK_FULL_MAP_DIR)
+            mask_path = os.path.join(result_dir, f"{tag}_mask.png")
             self._serve_binary_file(mask_path, "image/png")
 
         elif self.path == "/api/modelscale_image":
-            # Find modelscale image in stage 2 output
+            # Find modelscale image in 02_result or stage 2 output
+            search_dir = _result_or_fallback(_02_RESULT_DIR, _MASK_FULL_MAP_DIR)
             found = None
-            if os.path.isdir(_MASK_FULL_MAP_DIR):
-                for f in os.listdir(_MASK_FULL_MAP_DIR):
+            if os.path.isdir(search_dir):
+                for f in os.listdir(search_dir):
                     if f.endswith("_modelscale.png"):
-                        found = os.path.join(_MASK_FULL_MAP_DIR, f)
+                        found = os.path.join(search_dir, f)
                         break
             if found:
                 self._serve_binary_file(found, "image/png")
@@ -476,14 +683,14 @@ class ApiHandler(SimpleHTTPRequestHandler):
 
         # --- Surface masks (5a manual editing) ---
         elif self.path == "/api/surface_masks":
-            sf_json = os.path.join(_MANUAL_SURFACE_MASKS_DIR, "surface_masks.json")
+            sf_json = os.path.join(_MANUAL_SURFACE_MASKS_EDIT_DIR, "surface_masks.json")
             self._serve_json_file(sf_json)
 
         elif self.path.startswith("/api/surface_mask/"):
             tag = self.path[len("/api/surface_mask/"):]
             tag = re.sub(r'[^\w]', '', tag)
-            # Priority: 5a manual > Stage 5 merge_preview
-            manual_path = os.path.join(_MANUAL_SURFACE_MASKS_DIR, f"{tag}_mask.png")
+            # Priority: 5a masks/ > Stage 5 merge_preview
+            manual_path = os.path.join(_MANUAL_SURFACE_MASKS_EDIT_DIR, f"{tag}_mask.png")
             stage5_path = os.path.join(_STAGE5_PREVIEW_DIR, f"{tag}_merged.png")
             if os.path.isfile(manual_path):
                 self._serve_binary_file(manual_path, "image/png")
@@ -776,8 +983,8 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 self.send_error(400, "Empty or too small PNG data")
                 return
 
-            os.makedirs(_MANUAL_SURFACE_MASKS_DIR, exist_ok=True)
-            mask_path = os.path.join(_MANUAL_SURFACE_MASKS_DIR, f"{tag}_mask.png")
+            os.makedirs(_MANUAL_SURFACE_MASKS_EDIT_DIR, exist_ok=True)
+            mask_path = os.path.join(_MANUAL_SURFACE_MASKS_EDIT_DIR, f"{tag}_mask.png")
 
             with open(mask_path, "wb") as f:
                 f.write(body)
@@ -829,10 +1036,41 @@ class ApiHandler(SimpleHTTPRequestHandler):
             self.send_error(500, str(e))
 
     def _handle_surface_flush(self):
-        """Flush all cached surface masks to disk."""
+        """Flush all cached surface masks to disk, then reconvert to blender JSON."""
         try:
             count = _flush_surface_masks()
-            self._send_json_ok({"flushed": count})
+
+            # After flushing masks, reconvert to blender JSON
+            reconvert_ok = False
+            try:
+                script_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                if script_dir not in sys.path:
+                    sys.path.insert(0, script_dir)
+                from stages.s05a_manual_surface_masks import reconvert_masks
+                from pipeline_config import PipelineConfig
+                cfg = _load_webtools_config()
+                pc = PipelineConfig(
+                    geotiff_path=cfg.get("geotiff_path", ""),
+                    tiles_dir=cfg.get("tiles_dir", ""),
+                    output_dir=cfg.get("output_dir", os.path.join(_REPO_ROOT, "output")),
+                ).resolve()
+                reconvert_masks(pc)
+                reconvert_ok = True
+                # Invalidate mask cache — reconvert wrote composited masks
+                # back to disk, so the cache (holding raw pre-composite data)
+                # is now stale.
+                with _cache_lock:
+                    _surface_mask_cache.clear()
+            except Exception as e:
+                print(f"[surface_flush] WARNING: reconvert failed: {e}")
+                import traceback
+                traceback.print_exc()
+
+            self._send_json_ok({
+                "flushed": count,
+                "reconverted": reconvert_ok,
+                "composited": reconvert_ok,
+            })
         except Exception as e:
             self.send_error(500, str(e))
 
@@ -874,9 +1112,12 @@ class ApiHandler(SimpleHTTPRequestHandler):
             import numpy as np
             mask = None
 
+            result_02 = _result_or_fallback(_02_RESULT_DIR, _MASK_FULL_MAP_DIR)
             if layout_name:
                 safe = _safe_layout_name(layout_name)
-                mask_path = os.path.join(_LAYOUTS_DIR, f"{safe}.png")
+                mask_path = os.path.join(result_02, f"{safe}.png")
+                if not os.path.isfile(mask_path):
+                    mask_path = os.path.join(_LAYOUTS_DIR, f"{safe}.png")
                 if os.path.isfile(mask_path):
                     from PIL import Image
                     mask_img = Image.open(mask_path).convert("L")
@@ -885,8 +1126,8 @@ class ApiHandler(SimpleHTTPRequestHandler):
             if mask is None:
                 # Fall back to road mask or merged mask
                 for candidate in [
-                    os.path.join(_MASK_FULL_MAP_DIR, "road_mask.png"),
-                    os.path.join(_MASK_FULL_MAP_DIR, "merged_mask.png"),
+                    os.path.join(result_02, "road_mask.png"),
+                    os.path.join(result_02, "merged_mask.png"),
                 ]:
                     if os.path.isfile(candidate):
                         from PIL import Image
@@ -912,7 +1153,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
 
             # Compute pixel_size_m from geo metadata
             pixel_size_m = 0.3  # default
-            geo_meta_path = os.path.join(_MASK_FULL_MAP_DIR, "result_masks.json")
+            geo_meta_path = os.path.join(result_02, "result_masks.json")
             if os.path.isfile(geo_meta_path):
                 try:
                     from ai_game_objects import _compute_pixel_size_m
@@ -970,10 +1211,13 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 self.send_error(400, "No modelscale image found in stage 2 output")
                 return
 
+            result_02 = _result_or_fallback(_02_RESULT_DIR, _MASK_FULL_MAP_DIR)
             mask_path = None
             if layout_name:
                 safe = _safe_layout_name(layout_name)
-                candidate = os.path.join(_LAYOUTS_DIR, f"{safe}.png")
+                candidate = os.path.join(result_02, f"{safe}.png")
+                if not os.path.isfile(candidate):
+                    candidate = os.path.join(_LAYOUTS_DIR, f"{safe}.png")
                 if os.path.isfile(candidate):
                     mask_path = candidate
 
@@ -987,11 +1231,11 @@ class ApiHandler(SimpleHTTPRequestHandler):
 
             # Load validation masks
             from ai_game_objects import ValidationMasks, generate_single_type_vlm, generate_all_vlm_sequential
-            geo_meta_path = os.path.join(_MASK_FULL_MAP_DIR, "result_masks.json")
+            geo_meta_path = os.path.join(result_02, "result_masks.json")
             masks = None
             if mask_path and os.path.isfile(geo_meta_path):
                 try:
-                    masks = ValidationMasks.load(mask_path, _MASK_FULL_MAP_DIR, geo_meta_path)
+                    masks = ValidationMasks.load(mask_path, result_02, geo_meta_path)
                 except Exception:
                     pass
 
@@ -1095,9 +1339,12 @@ class ApiHandler(SimpleHTTPRequestHandler):
 
         # Load layout mask for track width measurement
         mask = None
+        result_02 = _result_or_fallback(_02_RESULT_DIR, _MASK_FULL_MAP_DIR)
         if layout_name:
             safe = _safe_layout_name(layout_name)
-            mask_file = os.path.join(_LAYOUTS_DIR, f"{safe}.png")
+            mask_file = os.path.join(result_02, f"{safe}.png")
+            if not os.path.isfile(mask_file):
+                mask_file = os.path.join(_LAYOUTS_DIR, f"{safe}.png")
             if os.path.isfile(mask_file):
                 from PIL import Image
                 mask = np.array(Image.open(mask_file).convert("L"))
@@ -1182,6 +1429,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
             _pipeline_runner.run_stages(stages, cfg)
             self._send_json_ok()
         except Exception as e:
+            import traceback; traceback.print_exc()
             self.send_error(500, str(e))
 
     def _handle_pipeline_stop(self):
@@ -1244,6 +1492,12 @@ class ApiHandler(SimpleHTTPRequestHandler):
             # Reset: remove all files in the manual output directory
             if reset and os.path.isdir(full):
                 shutil.rmtree(full)
+                # Clear in-memory caches for surface masks
+                if sid == "manual_surface_masks":
+                    global _surface_mask_cache, _surface_meta_cache
+                    with _cache_lock:
+                        _surface_mask_cache.clear()
+                    _surface_meta_cache = None
 
             cfg = _load_webtools_config()
             if "manual_stages" not in cfg:
@@ -1255,9 +1509,68 @@ class ApiHandler(SimpleHTTPRequestHandler):
             if enabled:
                 os.makedirs(full, exist_ok=True)
 
+            # After reset, re-initialise from upstream stage data
+            if reset:
+                self._reinit_manual_stage(sid, cfg)
+
+            # Update result junctions to reflect the change
+            try:
+                script_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                if script_dir not in sys.path:
+                    sys.path.insert(0, script_dir)
+                from pipeline_config import PipelineConfig
+                pc = PipelineConfig(
+                    output_dir=cfg.get("output_dir", os.path.join(_REPO_ROOT, "output")),
+                ).resolve()
+                pc.setup_result_junctions(cfg.get("manual_stages", {}))
+            except Exception as e:
+                print(f"[pipeline] WARNING: Failed to update junctions: {e}")
+
             self._send_json_ok({"stage_id": sid, "enabled": enabled, "reset": reset})
         except Exception as e:
             self.send_error(500, str(e))
+
+    def _reinit_manual_stage(self, sid, cfg):
+        """Re-initialise a manual stage directory from its upstream stage data."""
+        try:
+            script_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            if script_dir not in sys.path:
+                sys.path.insert(0, script_dir)
+
+            from pipeline_config import PipelineConfig
+            pc = PipelineConfig(
+                geotiff_path=cfg.get("geotiff_path", ""),
+                tiles_dir=cfg.get("tiles_dir", ""),
+                output_dir=cfg.get("output_dir", os.path.join(_REPO_ROOT, "output")),
+            ).resolve()
+
+            if sid == "manual_surface_masks":
+                from stages.s05a_manual_surface_masks import run as run_s05a
+                run_s05a(pc)
+                print("[pipeline] Re-initialised manual_surface_masks from stage 5")
+            elif sid == "track_layouts":
+                from stages.s02a_track_layouts import run as run_s02a
+                run_s02a(pc)
+                print("[pipeline] Re-initialised track_layouts from stage 2")
+            elif sid == "manual_walls":
+                # Create 07a dir and copy from 07
+                src = pc.stage_dir("ai_walls")
+                dst = pc.stage_dir("manual_walls")
+                if os.path.isdir(src):
+                    os.makedirs(dst, exist_ok=True)
+                    for f in ["walls.json", "geo_metadata.json"]:
+                        s = os.path.join(src, f)
+                        d = os.path.join(dst, f)
+                        if os.path.isfile(s) and not os.path.isfile(d):
+                            import shutil as _sh
+                            _sh.copy2(s, d)
+                    print("[pipeline] Re-initialised manual_walls from stage 7")
+            elif sid == "manual_game_objects":
+                from stages.s08a_manual_game_objects import run as run_s08a
+                run_s08a(pc)
+                print("[pipeline] Re-initialised manual_game_objects from stage 8")
+        except Exception as e:
+            print(f"[pipeline] WARNING: Failed to re-init {sid}: {e}")
 
     def _serve_file_list(self):
         """GET /api/files/list?path=relative/path — list files in output dir."""
@@ -1276,15 +1589,24 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 self.send_error(404, f"Directory not found: {rel}")
                 return
             items = []
-            for name in sorted(os.listdir(target)):
+            names = sorted(os.listdir(target))
+            # Directories first (unlimited), then files (capped at 200)
+            dirs_list = []
+            files_list = []
+            for name in names:
                 full = os.path.join(target, name)
-                entry = {"name": name, "is_dir": os.path.isdir(full)}
-                if not entry["is_dir"]:
+                if os.path.isdir(full):
+                    dirs_list.append({"name": name, "is_dir": True})
+                else:
+                    sz = 0
                     try:
-                        entry["size"] = os.path.getsize(full)
+                        sz = os.path.getsize(full)
                     except OSError:
-                        entry["size"] = 0
-                items.append(entry)
+                        pass
+                    files_list.append({"name": name, "is_dir": False, "size": sz})
+            items = dirs_list + files_list[:200]
+            if len(files_list) > 200:
+                items.append({"name": f"... ({len(files_list)} files total)", "is_dir": False, "size": 0, "_truncated": True})
             resp = json.dumps(items).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -1345,9 +1667,10 @@ class ApiHandler(SimpleHTTPRequestHandler):
 
         q = _pipeline_runner.add_sse_client()
         try:
-            # Send buffered log lines first
+            # Send buffered log lines (last 200 only to avoid flooding)
             with _pipeline_runner._lock:
-                for line in _pipeline_runner.log_lines:
+                tail = _pipeline_runner.log_lines[-200:]
+                for line in tail:
                     msg = json.dumps({"type": "log", "data": line})
                     self.wfile.write(f"data: {msg}\n\n".encode("utf-8"))
                 self.wfile.flush()
@@ -1356,6 +1679,13 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 try:
                     msg = q.get(timeout=30)
                     self.wfile.write(f"data: {msg}\n\n".encode("utf-8"))
+                    # Drain any additional queued messages before flushing
+                    while not q.empty():
+                        try:
+                            msg = q.get_nowait()
+                            self.wfile.write(f"data: {msg}\n\n".encode("utf-8"))
+                        except queue.Empty:
+                            break
                     self.wfile.flush()
                 except queue.Empty:
                     # Send keepalive
@@ -1416,6 +1746,9 @@ def main() -> int:
     except KeyboardInterrupt:
         print("\nStopping...")
     finally:
+        # Terminate any running pipeline subprocess to avoid orphan processes
+        # that hold Windows file locks and prevent future re-runs.
+        _pipeline_runner.stop()
         try:
             httpd.server_close()
         except Exception:

@@ -36,19 +36,25 @@ def run(config: PipelineConfig) -> None:
     out_dir = config.stage_dir("ai_game_objects")
     os.makedirs(out_dir, exist_ok=True)
 
+    # Read from 02_result junction (points to 02 or 02a)
+    result_dir = config.mask_full_map_result
+    if not os.path.isdir(result_dir):
+        result_dir = config.mask_full_map_dir  # fallback
+
     # Resolve image path (prefer vlmscale > modelscale > raw geotiff)
     basename = os.path.splitext(os.path.basename(config.geotiff_path))[0]
-    vlmscale_img = os.path.join(config.mask_full_map_dir, f"{basename}_vlmscale.png")
-    modelscale_img = os.path.join(config.mask_full_map_dir, f"{basename}_modelscale.png")
+    vlmscale_img = os.path.join(result_dir, f"{basename}_vlmscale.png")
+    modelscale_img = os.path.join(result_dir, f"{basename}_modelscale.png")
     image_path = vlmscale_img if os.path.isfile(vlmscale_img) else \
                  (modelscale_img if os.path.isfile(modelscale_img) else config.geotiff_path)
 
-    # Multi-layout mode
-    if os.path.isfile(config.track_layouts_json):
-        layouts = _load_layouts(config.track_layouts_json)
+    # Multi-layout mode — layouts.json lives in 02_result
+    layouts_json = os.path.join(result_dir, "layouts.json")
+    if os.path.isfile(layouts_json):
+        layouts = _load_layouts(layouts_json)
         if layouts:
             logger.info("Multi-layout mode: %d layout(s)", len(layouts))
-            layouts_dir = config.stage_dir("track_layouts")
+            layouts_dir = result_dir  # layout mask PNGs are in the same dir
             for layout in layouts:
                 _generate_for_layout(config, layout, layouts_dir, out_dir, image_path,
                                      modelscale_img=modelscale_img)
@@ -132,11 +138,14 @@ def _generate_for_layout(config, layout, layouts_dir, out_dir, image_path,
         bends = []
 
     # Load validation masks (with geo metadata for pixel_size_m)
-    geo_meta_path = os.path.join(config.mask_full_map_dir, "result_masks.json")
+    result_dir = config.mask_full_map_result
+    if not os.path.isdir(result_dir):
+        result_dir = config.mask_full_map_dir
+    geo_meta_path = os.path.join(result_dir, "result_masks.json")
     masks = None
     if os.path.isfile(geo_meta_path):
         try:
-            masks = ValidationMasks.load(mask_path, config.mask_full_map_dir, geo_meta_path)
+            masks = ValidationMasks.load(mask_path, result_dir, geo_meta_path)
             logger.info("Validation masks loaded (pixel_size_m=%.4f)", masks.pixel_size_m)
         except Exception as e:
             logger.warning("Failed to load validation masks: %s", e)
@@ -154,6 +163,29 @@ def _generate_for_layout(config, layout, layouts_dir, out_dir, image_path,
         logger.info("VLM validation: %s", json.dumps(vlm_result.get("validation", {})))
     except Exception as e:
         logger.warning("VLM generation failed for '%s': %s", name, e)
+
+    # Snap hotlap_start to centerline for precise position + heading
+    if len(centerline) >= 10 and vlm_result.get("hotlap"):
+        hotlap = vlm_result["hotlap"][0]
+        vlm_pos = hotlap["position"]
+        idx, snapped = snap_to_centerline(vlm_pos, centerline)
+        # Compute tangent direction from centerline neighbors
+        n = len(centerline)
+        fwd = 1 if direction == "CW" else -1  # index advance direction
+        i_next = (idx + fwd) % n
+        i_prev = (idx - fwd) % n
+        tangent = centerline[i_next] - centerline[i_prev]
+        norm = float(np.linalg.norm(tangent))
+        if norm > 0:
+            tangent = tangent / norm
+        hotlap["position"] = snapped
+        hotlap["orientation_z"] = tangent.tolist()
+        logger.info(
+            "HOTLAP_START snapped to centerline: VLM %s → [%.1f, %.1f], "
+            "heading [%.3f, %.3f] (idx %d)",
+            vlm_pos, snapped[0], snapped[1],
+            tangent[0], tangent[1], idx,
+        )
 
     # Snap TIME_0 to centerline and generate timing points
     timing_objs = []
@@ -257,10 +289,15 @@ def _generate_single(config, out_dir, image_path, modelscale_img: str = ""):
     from ai_game_objects import generate_game_objects
     from ai_visualizer import visualize_game_objects
 
-    mask_path = config.mask_image_path if os.path.isfile(config.mask_image_path) else None
+    result_dir = config.mask_full_map_result
+    if not os.path.isdir(result_dir):
+        result_dir = config.mask_full_map_dir
+
+    merged_mask = os.path.join(result_dir, "merged_mask.png")
+    mask_path = merged_mask if os.path.isfile(merged_mask) else None
 
     road_mask_path = None
-    road_mask_candidate = os.path.join(config.mask_full_map_dir, "road_mask.png")
+    road_mask_candidate = os.path.join(result_dir, "road_mask.png")
     if os.path.isfile(road_mask_candidate):
         road_mask_path = road_mask_candidate
     elif mask_path:
@@ -303,7 +340,10 @@ def _generate_single(config, out_dir, image_path, modelscale_img: str = ""):
 
 def _write_geo_metadata(config: PipelineConfig, out_dir: str) -> None:
     """Write geo_metadata.json from result_masks.json for the object editor."""
-    masks_json = os.path.join(config.mask_full_map_dir, "result_masks.json")
+    result_dir = config.mask_full_map_result
+    if not os.path.isdir(result_dir):
+        result_dir = config.mask_full_map_dir
+    masks_json = os.path.join(result_dir, "result_masks.json")
     if not os.path.isfile(masks_json):
         stage7_meta = os.path.join(config.stage_dir("ai_walls"), "geo_metadata.json")
         if os.path.isfile(stage7_meta):

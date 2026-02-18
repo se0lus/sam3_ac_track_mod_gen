@@ -269,7 +269,7 @@ function selectStage(stageId) {
   }
 }
 
-function showStageInfo(stage) {
+async function showStageInfo(stage) {
   const pane = $("tab-info");
   const status = pipelineStatus[stage.id] || "not_started";
   const statusLabels = {
@@ -280,6 +280,32 @@ function showStageInfo(stage) {
     error: "出错",
   };
   const typeLabel = stage.type === "auto" ? "自动" : stage.type === "manual" ? "手动" : "配置";
+
+  // Build per-stage config section
+  let stageConfigHtml = "";
+  let cfg = {};
+  if (stage.id === "mask_full_map") {
+    try {
+      const resp = await fetch("/api/pipeline/config");
+      cfg = await resp.json();
+    } catch { cfg = {}; }
+    const model = cfg.inpaint_model || "gemini-2.5-flash-image";
+    stageConfigHtml = `
+      <div class="db-config db-config--stage">
+        <h4>阶段配置</h4>
+        <div class="config-field">
+          <label>中心补洞模型 (Inpainting)</label>
+          <select id="cfgInpaintModel">
+            <option value="gemini-2.5-flash-image" ${model === "gemini-2.5-flash-image" ? "selected" : ""}>Gemini 2.5 Flash Image</option>
+            <option value="gemini-3-pro-image-preview" ${model === "gemini-3-pro-image-preview" ? "selected" : ""}>Gemini 3 Pro Image Preview</option>
+            <option value="disabled" ${model === "disabled" ? "selected" : ""}>跳过补洞 (Skip inpainting)</option>
+          </select>
+        </div>
+        <div class="config-actions">
+          <button class="btn btn--primary" id="btnSaveStageConfig">保存</button>
+        </div>
+      </div>`;
+  }
 
   pane.innerHTML = `
     <div class="db-stage-info">
@@ -301,8 +327,27 @@ function showStageInfo(stage) {
           <span class="info-value"><a href="${stage.editor}" target="_blank">${stage.editor}</a></span>
         </div>` : ""}
       </div>
+      ${stageConfigHtml}
     </div>
   `;
+
+  // Wire up per-stage config save
+  if (stage.id === "mask_full_map") {
+    $("btnSaveStageConfig").addEventListener("click", async () => {
+      const val = $("cfgInpaintModel").value;
+      try {
+        await fetch("/api/pipeline/config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...cfg, inpaint_model: val }),
+        });
+        $("btnSaveStageConfig").textContent = "已保存";
+        setTimeout(() => { $("btnSaveStageConfig").textContent = "保存"; }, 1500);
+      } catch (e) {
+        alert("保存失败: " + e.message);
+      }
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -392,7 +437,15 @@ async function showConfigPanel() {
 }
 
 async function saveConfig() {
+  // Load existing config to preserve fields managed by per-stage panels
+  let existing = {};
+  try {
+    const resp = await fetch("/api/pipeline/config");
+    existing = await resp.json();
+  } catch { /* ignore */ }
+
   const cfg = {
+    ...existing,
     geotiff_path: $("cfgGeotiff").value.trim(),
     tiles_dir: $("cfgTilesDir").value.trim(),
     map_tiles_dir: $("cfgMapTilesDir").value.trim(),
@@ -538,7 +591,10 @@ async function buildTreeNode(dirPath, depth, autoExpand) {
     }
   }
 
-  for (const file of files) {
+  const maxFiles = 100;
+  const visibleFiles = files.slice(0, maxFiles);
+
+  for (const file of visibleFiles) {
     const row = document.createElement("div");
     row.className = "tree-row";
     row.style.paddingLeft = depth * 16 + 8 + "px";
@@ -574,6 +630,14 @@ async function buildTreeNode(dirPath, depth, autoExpand) {
     });
 
     frag.appendChild(row);
+  }
+
+  if (files.length > maxFiles) {
+    const moreRow = document.createElement("div");
+    moreRow.className = "tree-row";
+    moreRow.style.paddingLeft = depth * 16 + 8 + "px";
+    moreRow.innerHTML = `<span class="tree-arrow"></span><span class="tree-label" style="color:#667;font-style:italic;">... 还有 ${files.length - maxFiles} 个文件</span>`;
+    frag.appendChild(moreRow);
   }
 
   return frag;
@@ -615,12 +679,18 @@ function previewFile(relPath) {
 // ---------------------------------------------------------------------------
 async function runStage(stageId) {
   try {
+    selectStage(stageId);
     expandConsole();
-    await fetch("/api/pipeline/run", {
+    const resp = await fetch("/api/pipeline/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ stages: [stageId] }),
     });
+    if (!resp.ok) {
+      const text = await resp.text();
+      appendLog(`[ERROR] Server ${resp.status}: ${text}`);
+      return;
+    }
     $("btnStop").disabled = false;
     loadStatus();
   } catch (e) {
@@ -632,11 +702,16 @@ async function runAllAuto() {
   const autoStages = stages.filter((s) => s.type === "auto").map((s) => s.id);
   try {
     expandConsole();
-    await fetch("/api/pipeline/run", {
+    const resp = await fetch("/api/pipeline/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ stages: autoStages }),
     });
+    if (!resp.ok) {
+      const text = await resp.text();
+      appendLog(`[ERROR] Server ${resp.status}: ${text}`);
+      return;
+    }
     $("btnStop").disabled = false;
     loadStatus();
   } catch (e) {
@@ -671,13 +746,16 @@ function connectSSE() {
         appendLog(`\n=== Stage ${msg.data.stage} started ===`);
       } else if (msg.type === "stage_complete") {
         loadStatus();
+        refreshFiles();
       } else if (msg.type === "pipeline_done") {
         loadStatus();
+        refreshFiles();
         const rc = msg.data.returncode;
         appendLog(rc === 0 ? "\n=== Pipeline completed ===" : `\n=== Pipeline failed (rc=${rc}) ===`);
       } else if (msg.type === "pipeline_stop") {
         appendLog("\n=== Pipeline stopped ===");
         loadStatus();
+        refreshFiles();
       }
     } catch {
       // ignore parse errors
@@ -694,9 +772,29 @@ function connectSSE() {
 // ---------------------------------------------------------------------------
 // Console
 // ---------------------------------------------------------------------------
+let _logBuffer = [];
+let _logRafPending = false;
+
 function appendLog(text) {
-  consoleOutput.textContent += text + "\n";
-  // Auto-scroll
+  _logBuffer.push(text);
+  if (!_logRafPending) {
+    _logRafPending = true;
+    requestAnimationFrame(flushLog);
+  }
+}
+
+function flushLog() {
+  _logRafPending = false;
+  if (_logBuffer.length === 0) return;
+  // Batch append — avoid O(n^2) textContent rewrite
+  const chunk = _logBuffer.join("\n") + "\n";
+  _logBuffer.length = 0;
+  consoleOutput.appendChild(document.createTextNode(chunk));
+  // Cap total lines to prevent DOM bloat
+  const maxLen = 50000;
+  if (consoleOutput.textContent.length > maxLen) {
+    consoleOutput.textContent = consoleOutput.textContent.slice(-maxLen);
+  }
   consoleBody.scrollTop = consoleBody.scrollHeight;
 }
 
