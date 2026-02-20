@@ -229,22 +229,22 @@ def compute_tiles_need_load_for_min_level(root: CTile, min_level: int = 0, selec
 
     return tiles_need_load
 
-def import_fullscene_with_ctile(root:CTile, path, min_level = 0, select_file_list_path = ""):
+def import_fullscene_with_ctile(root:CTile, path, min_level = 0, select_file_list_path = "", on_tile_loaded=None):
     #get file list
     print("start loading glb tiles in:{0}, min_level:{1}".format(path, min_level))
-    
+
     if not root:
         print("root tile = null")
         return
 
     tiles_need_load = compute_tiles_need_load_for_min_level(root, min_level=min_level, select_file_list_path=select_file_list_path)
-    
+
     for level in tiles_need_load:
         print("need to load level {0}:{1} tiles".format(level, len(tiles_need_load[level])))
-        
-    load_glb_tiles_by_dic_level_array(path, tiles_need_load)
 
-def load_glb_tiles_by_dic_level_array(path, tiles_need_load):        
+    load_glb_tiles_by_dic_level_array(path, tiles_need_load, on_tile_loaded=on_tile_loaded)
+
+def load_glb_tiles_by_dic_level_array(path, tiles_need_load, on_tile_loaded=None):
     # make load order stable (e.g. 0 -> 17)
     for current_level in sorted(tiles_need_load.keys()):
         
@@ -304,7 +304,13 @@ def load_glb_tiles_by_dic_level_array(path, tiles_need_load):
                 objects_imported.append(name)
                 #node_name_map[object_key] = name
 
-    
+            # Notify caller after each tile (e.g. to redraw viewport)
+            if on_tile_loaded is not None:
+                try:
+                    on_tile_loaded()
+                except Exception:
+                    pass
+
         if len(objects_imported) == 0:
             continue
         print("imported objects in level{0}:{1}".format(current_level, str(objects_imported)))
@@ -461,6 +467,7 @@ def refine_by_mask_sync(
     glb_dir: str,
     target_level: int,
     max_steps: int = 5000,
+    on_tile_loaded=None,
 ) -> None:
     """
     Synchronous version of refine-by-mask-to-target-level.
@@ -541,7 +548,7 @@ def refine_by_mask_sync(
                 continue
 
             print(f"[refine_by_mask_sync]   [{i+1}/{len(need_refine)}] refine tile={tile_to_refine.content}")
-            load_glb_tiles_by_dic_level_array(glb_dir, plan)
+            load_glb_tiles_by_dic_level_array(glb_dir, plan, on_tile_loaded=on_tile_loaded)
             clear_scene_by_tile(tile_to_refine)
 
     print(f"[refine_by_mask_sync] Complete. Total steps: {step}")

@@ -35,6 +35,7 @@ import logging
 import math
 import os
 import sys
+import time
 
 # ---------------------------------------------------------------------------
 # sys.path setup -- must happen BEFORE any project imports
@@ -79,6 +80,100 @@ def _pixel_to_geo(px: float, py: float, geo_meta: dict) -> list:
     lon = bounds["west"] + float(px) * (bounds["east"] - bounds["west"]) / w
     lat = bounds["north"] - float(py) * (bounds["north"] - bounds["south"]) / h
     return [lon, lat]
+
+
+def _setup_viewport_topdown() -> None:
+    """Set up 3D viewport for visual monitoring (non-background mode only).
+
+    - Orthographic top-down view (looking along -Y onto the XZ track plane)
+    - Far clip plane at 10 000 m to avoid clipping
+    - Frames all objects
+    """
+    screen = bpy.context.screen
+    if screen is None:
+        return
+
+    from mathutils import Quaternion as Quat
+
+    # Find the first 3D viewport
+    area_3d = None
+    for area in screen.areas:
+        if area.type == "VIEW_3D":
+            area_3d = area
+            break
+    if area_3d is None:
+        log.warning("No 3D viewport found, skipping viewport setup")
+        return
+
+    space = area_3d.spaces.active
+    r3d = space.region_3d
+
+    # Far clip
+    space.clip_end = 10000.0
+
+    # Orthographic, looking down from +Y onto XZ plane
+    # Rotation: +90° around X  →  view -Z maps to world +Y (camera above, looking down)
+    r3d.view_perspective = "ORTHO"
+    r3d.view_rotation = Quat((0.7071068, 0.7071068, 0.0, 0.0))
+
+    # Frame all objects in viewport
+    region = None
+    for r in area_3d.regions:
+        if r.type == "WINDOW":
+            region = r
+            break
+    if region is not None:
+        with bpy.context.temp_override(area=area_3d, region=region):
+            bpy.ops.view3d.view_all()
+
+    log.info("Viewport set to orthographic top-down (clip_end=10000)")
+
+
+def _force_redraw() -> None:
+    """Force a viewport redraw and pump Windows messages.
+
+    The DRAW_WIN_SWAP redraws the viewport but does NOT process the
+    Windows message queue, so the OS still marks Blender as 'Not Responding'.
+    We explicitly pump pending messages via PeekMessageW to prevent that.
+    """
+    if bpy.app.background:
+        return
+    try:
+        bpy.ops.wm.redraw_timer(type="DRAW_WIN_SWAP", iterations=1)
+    except Exception:
+        pass
+    # Pump Windows message queue to prevent "Not Responding"
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+            _user32 = ctypes.windll.user32
+            _msg = wintypes.MSG()
+            _PM_REMOVE = 0x0001
+            for _ in range(20):
+                if not _user32.PeekMessageW(ctypes.byref(_msg), None, 0, 0, _PM_REMOVE):
+                    break
+                _user32.TranslateMessage(ctypes.byref(_msg))
+                _user32.DispatchMessageW(ctypes.byref(_msg))
+        except Exception:
+            pass
+
+
+def _make_throttled_redraw(interval: float = 1.0):
+    """Create a callback that redraws at most once per *interval* seconds.
+
+    As the scene grows heavier, per-tile redraws get expensive.  Throttling
+    keeps visual feedback smooth without accumulating redraw overhead.
+    """
+    state = {"last": 0.0}
+
+    def _cb():
+        now = time.monotonic()
+        if now - state["last"] >= interval:
+            _force_redraw()
+            state["last"] = now
+
+    return _cb
 
 
 def _get_terrain_y_bounds() -> tuple:
@@ -486,155 +581,193 @@ def main() -> None:
     blender_helpers.register()
 
     # ------------------------------------------------------------------
-    # Step 3: Load base tiles (synchronous -- modal operator unusable in bg)
+    # Steps 3-8: the heavy pipeline work.
+    # In non-background mode, defer via timer so Blender's GUI is ready
+    # and the user can watch objects appear in the viewport.
     # ------------------------------------------------------------------
-    log.info("Step 3/8: Loading base tiles (level=%d)...", args.base_level)
-    from sam3_actions.c_tiles import CTile
-    from sam3_actions.load_base_tiles import import_fullscene_with_ctile
+    def _continue_pipeline() -> None:
+        nonlocal tf_info
 
-    tileset_path = os.path.join(tiles_dir, "tileset.json")
-    root_tile = CTile()
-    root_tile.loadFromRootJson(tileset_path)
-    import_fullscene_with_ctile(root_tile, glb_dir, min_level=args.base_level)
-    log.info("Base tiles loaded.")
+        # Viewport setup (only effective in GUI mode, after event loop starts)
+        _setup_viewport_topdown()
+        _force_redraw()
 
-    # ------------------------------------------------------------------
-    # Step 4: Refine tiles by mask to target level (synchronous)
-    # ------------------------------------------------------------------
-    log.info("Step 4/8: Refining tiles by mask to level %d...", args.target_level)
-    from sam3_actions.load_base_tiles import refine_by_mask_sync
+        # Throttled redraw: at most once per second to avoid expensive
+        # redraws piling up as the scene gets heavier with more tiles.
+        _tile_redraw = _make_throttled_redraw(interval=1.0)
 
-    # Collect mask objects filtered by refine-tags
-    refine_tags = [t.strip() for t in args.refine_tags.split(",") if t.strip()]
-    mask_col = bpy.data.collections.get(config.ROOT_POLYGON_COLLECTION_NAME)
-    masks = []
-    if mask_col is not None:
-        for tag in refine_tags:
-            sub_col = mask_col.children.get(f"mask_polygon_{tag}")
-            if sub_col is not None:
-                masks.extend(list(sub_col.all_objects))
-    log.info("Refinement mask tags: %s (%d objects)", refine_tags, len(masks))
+        # --------------------------------------------------------------
+        # Step 3: Load base tiles
+        # --------------------------------------------------------------
+        log.info("Step 3/8: Loading base tiles (level=%d)...", args.base_level)
+        from sam3_actions.c_tiles import CTile
+        from sam3_actions.load_base_tiles import import_fullscene_with_ctile
 
-    if masks:
-        # Reload tileset (may have been modified during load)
-        root_tile2 = CTile()
-        root_tile2.loadFromRootJson(tileset_path)
-        refine_by_mask_sync(
-            context=bpy.context,
-            masks=masks,
-            root_tile=root_tile2,
-            glb_dir=glb_dir,
-            target_level=args.target_level,
-        )
-        log.info("Tile refinement complete.")
-    else:
-        log.warning("No mask objects found in '%s', skipping refinement.",
-                     config.ROOT_POLYGON_COLLECTION_NAME)
+        tileset_path = os.path.join(tiles_dir, "tileset.json")
+        root_tile = CTile()
+        root_tile.loadFromRootJson(tileset_path)
+        import_fullscene_with_ctile(root_tile, glb_dir, min_level=args.base_level,
+                                    on_tile_loaded=_tile_redraw)
+        log.info("Base tiles loaded.")
+        _force_redraw()
 
-    # ------------------------------------------------------------------
-    # Prepare geo-transform and terrain bounds (for walls and game objects)
-    # ------------------------------------------------------------------
-    if geo_meta is not None:
-        from geo_sam3_blender_utils import get_tileset_transform
-        bounds = geo_meta.get("bounds", {})
-        center_lon = (bounds.get("west", 0) + bounds.get("east", 0)) / 2
-        center_lat = (bounds.get("north", 0) + bounds.get("south", 0)) / 2
-        tf_info = get_tileset_transform(tiles_dir, sample_geo_xy=(center_lon, center_lat))
-        log.info("Tileset transform: mode=%s, source=%s",
-                 tf_info.effective_mode, tf_info.tf_source)
+        # Hide mask polygons so tiles are clearly visible
+        mask_root = bpy.data.collections.get(config.ROOT_POLYGON_COLLECTION_NAME)
+        if mask_root is not None:
+            mask_root.hide_viewport = True
+            log.info("Mask polygons hidden for better visibility.")
+            _force_redraw()
 
-    terrain_min_y, terrain_max_y = _get_terrain_y_bounds()
-    log.info("Terrain Y bounds: min=%.2f, max=%.2f", terrain_min_y, terrain_max_y)
+        # --------------------------------------------------------------
+        # Step 4: Refine tiles by mask to target level
+        # --------------------------------------------------------------
+        log.info("Step 4/8: Refining tiles by mask to level %d...", args.target_level)
+        from sam3_actions.load_base_tiles import refine_by_mask_sync
 
-    # ------------------------------------------------------------------
-    # Step 5: Extract collision surfaces
-    # ------------------------------------------------------------------
-    if not args.skip_surfaces:
-        log.info("Step 5/8: Extracting collision surfaces...")
+        refine_tags = [t.strip() for t in args.refine_tags.split(",") if t.strip()]
+        mask_col = bpy.data.collections.get(config.ROOT_POLYGON_COLLECTION_NAME)
+        masks = []
+        if mask_col is not None:
+            for tag in refine_tags:
+                sub_col = mask_col.children.get(f"mask_polygon_{tag}")
+                if sub_col is not None:
+                    masks.extend(list(sub_col.all_objects))
+        log.info("Refinement mask tags: %s (%d objects)", refine_tags, len(masks))
 
-        # Tool A: road + kerb (terrain face extraction)
-        log.info("  Step 5a: Terrain extraction (road + kerb)...")
-        result_a = bpy.ops.sam3.extract_terrain_surfaces()
-        log.info("  Terrain extraction result: %s", result_a)
-
-        # Optional: simplify terrain meshes (weld + decimate)
-        if args.mesh_simplify:
-            log.info("  Step 5a+: Simplifying terrain meshes...")
-            _simplify_terrain_meshes(args.mesh_weld_distance, args.mesh_decimate_ratio)
-
-        # Tool B: grass + sand + road2 (boolean grid)
-        log.info("  Step 5b: Boolean surfaces (grass/sand/road2)...")
-        result_b = bpy.ops.sam3.generate_boolean_surfaces()
-        log.info("  Boolean surfaces result: %s", result_b)
-    else:
-        log.info("Step 5/8: Skipped (--skip-surfaces)")
-
-    # ------------------------------------------------------------------
-    # Step 6: Import virtual walls (optional)
-    # ------------------------------------------------------------------
-    if not args.skip_walls and walls_json and os.path.isfile(walls_json):
-        log.info("Step 6/8: Importing walls from %s...", walls_json)
-        if geo_meta is not None and tf_info is not None:
-            wall_bottom = terrain_min_y
-            wall_top = terrain_max_y + 20.0
-            created = _import_walls_geo(walls_json, geo_meta, tf_info,
-                                        wall_bottom, wall_top)
-            log.info("Created %d wall objects (geo-converted, Y: %.1f to %.1f)",
-                     created, wall_bottom, wall_top)
-        else:
-            log.warning("No geo metadata -- falling back to operator-based wall import")
-            result = bpy.ops.sam3.import_walls(
-                'EXEC_DEFAULT',
-                filepath=walls_json,
+        if masks:
+            root_tile2 = CTile()
+            root_tile2.loadFromRootJson(tileset_path)
+            refine_by_mask_sync(
+                context=bpy.context,
+                masks=masks,
+                root_tile=root_tile2,
+                glb_dir=glb_dir,
+                target_level=args.target_level,
+                on_tile_loaded=_tile_redraw,
             )
-            log.info("Import walls result: %s", result)
-    else:
-        log.info("Step 6/8: Skipped%s.", " (--skip-walls)" if args.skip_walls else " (no walls JSON)")
-
-    # ------------------------------------------------------------------
-    # Step 7: Import game objects (optional)
-    # ------------------------------------------------------------------
-    if not args.skip_game_objects and go_json and os.path.isfile(go_json):
-        log.info("Step 7/8: Importing game objects from %s...", go_json)
-        if geo_meta is not None and tf_info is not None:
-            created = _import_game_objects_geo(go_json, geo_meta, tf_info)
-            log.info("Created %d game objects (geo-converted)", created)
+            log.info("Tile refinement complete.")
         else:
-            log.warning("No geo metadata -- falling back to operator-based import")
-            result = bpy.ops.sam3.import_game_objects(
-                'EXEC_DEFAULT',
-                filepath=go_json,
-            )
-            log.info("Import game objects result: %s", result)
+            log.warning("No mask objects found in '%s', skipping refinement.",
+                         config.ROOT_POLYGON_COLLECTION_NAME)
+        _force_redraw()
+
+        # --------------------------------------------------------------
+        # Prepare geo-transform and terrain bounds
+        # --------------------------------------------------------------
+        if geo_meta is not None:
+            from geo_sam3_blender_utils import get_tileset_transform
+            bounds = geo_meta.get("bounds", {})
+            center_lon = (bounds.get("west", 0) + bounds.get("east", 0)) / 2
+            center_lat = (bounds.get("north", 0) + bounds.get("south", 0)) / 2
+            tf_info = get_tileset_transform(tiles_dir, sample_geo_xy=(center_lon, center_lat))
+            log.info("Tileset transform: mode=%s, source=%s",
+                     tf_info.effective_mode, tf_info.tf_source)
+
+        terrain_min_y, terrain_max_y = _get_terrain_y_bounds()
+        log.info("Terrain Y bounds: min=%.2f, max=%.2f", terrain_min_y, terrain_max_y)
+
+        # --------------------------------------------------------------
+        # Step 5: Extract collision surfaces
+        # --------------------------------------------------------------
+        if not args.skip_surfaces:
+            log.info("Step 5/8: Extracting collision surfaces...")
+
+            log.info("  Step 5a: Terrain extraction (road + kerb)...")
+            result_a = bpy.ops.sam3.extract_terrain_surfaces()
+            log.info("  Terrain extraction result: %s", result_a)
+
+            if args.mesh_simplify:
+                log.info("  Step 5a+: Simplifying terrain meshes...")
+                _simplify_terrain_meshes(args.mesh_weld_distance, args.mesh_decimate_ratio)
+
+            log.info("  Step 5b: Boolean surfaces (grass/sand/road2)...")
+            result_b = bpy.ops.sam3.generate_boolean_surfaces()
+            log.info("  Boolean surfaces result: %s", result_b)
+        else:
+            log.info("Step 5/8: Skipped (--skip-surfaces)")
+        _force_redraw()
+
+        # --------------------------------------------------------------
+        # Step 6: Import virtual walls (optional)
+        # --------------------------------------------------------------
+        if not args.skip_walls and walls_json and os.path.isfile(walls_json):
+            log.info("Step 6/8: Importing walls from %s...", walls_json)
+            if geo_meta is not None and tf_info is not None:
+                wall_bottom = terrain_min_y
+                wall_top = terrain_max_y + 20.0
+                created = _import_walls_geo(walls_json, geo_meta, tf_info,
+                                            wall_bottom, wall_top)
+                log.info("Created %d wall objects (geo-converted, Y: %.1f to %.1f)",
+                         created, wall_bottom, wall_top)
+            else:
+                log.warning("No geo metadata -- falling back to operator-based wall import")
+                result = bpy.ops.sam3.import_walls(
+                    'EXEC_DEFAULT',
+                    filepath=walls_json,
+                )
+                log.info("Import walls result: %s", result)
+        else:
+            log.info("Step 6/8: Skipped%s.", " (--skip-walls)" if args.skip_walls else " (no walls JSON)")
+        _force_redraw()
+
+        # --------------------------------------------------------------
+        # Step 7: Import game objects (optional)
+        # --------------------------------------------------------------
+        if not args.skip_game_objects and go_json and os.path.isfile(go_json):
+            log.info("Step 7/8: Importing game objects from %s...", go_json)
+            if geo_meta is not None and tf_info is not None:
+                created = _import_game_objects_geo(go_json, geo_meta, tf_info)
+                log.info("Created %d game objects (geo-converted)", created)
+            else:
+                log.warning("No geo metadata -- falling back to operator-based import")
+                result = bpy.ops.sam3.import_game_objects(
+                    'EXEC_DEFAULT',
+                    filepath=go_json,
+                )
+                log.info("Import game objects result: %s", result)
+        else:
+            log.info("Step 7/8: Skipped%s.", " (--skip-game-objects)" if args.skip_game_objects else " (no game objects JSON)")
+
+        # --------------------------------------------------------------
+        # Assign 'hidden' material to all collision mesh objects
+        # --------------------------------------------------------------
+        hidden_count = _assign_hidden_material_to_collision()
+        if hidden_count > 0:
+            log.info("Assigned 'hidden' material to %d collision objects", hidden_count)
+
+        # --------------------------------------------------------------
+        # Step 8: Texture processing + final save
+        # --------------------------------------------------------------
+        log.info("Step 8/8: Processing textures and saving...")
+
+        os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
+        bpy.ops.wm.save_as_mainfile(filepath=output)
+
+        if not args.skip_textures:
+            bpy.ops.sam3.unpack_textures()
+            bpy.ops.sam3.convert_textures_png()
+            bpy.ops.sam3.convert_materials_bsdf()
+        else:
+            log.info("Texture processing skipped (--skip-textures)")
+
+        # Final save
+        bpy.ops.wm.save_as_mainfile(filepath=output)
+        log.info("Done! Output saved to: %s", output)
+
+    # ------------------------------------------------------------------
+    # Dispatch: background → synchronous, GUI → deferred via timer
+    # ------------------------------------------------------------------
+    if bpy.app.background:
+        _continue_pipeline()
     else:
-        log.info("Step 7/8: Skipped%s.", " (--skip-game-objects)" if args.skip_game_objects else " (no game objects JSON)")
-
-    # ------------------------------------------------------------------
-    # Assign 'hidden' material to all collision mesh objects
-    # ------------------------------------------------------------------
-    hidden_count = _assign_hidden_material_to_collision()
-    if hidden_count > 0:
-        log.info("Assigned 'hidden' material to %d collision objects", hidden_count)
-
-    # ------------------------------------------------------------------
-    # Step 8: Texture processing + final save
-    # ------------------------------------------------------------------
-    log.info("Step 8/8: Processing textures and saving...")
-
-    # Save first to establish the blend directory (needed by unpack_textures)
-    os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
-    bpy.ops.wm.save_as_mainfile(filepath=output)
-
-    if not args.skip_textures:
-        bpy.ops.sam3.unpack_textures()
-        bpy.ops.sam3.convert_textures_png()
-        bpy.ops.sam3.convert_materials_bsdf()
-    else:
-        log.info("Texture processing skipped (--skip-textures)")
-
-    # Final save
-    bpy.ops.wm.save_as_mainfile(filepath=output)
-    log.info("Done! Output saved to: %s", output)
+        def _timer_wrapper():
+            try:
+                _continue_pipeline()
+            except Exception:
+                log.exception("Pipeline failed in GUI mode")
+            return None  # one-shot, do not repeat
+        bpy.app.timers.register(_timer_wrapper, first_interval=5.0)
+        log.info("GUI mode: pipeline deferred 5s for viewport init...")
 
 
 if __name__ == "__main__":
