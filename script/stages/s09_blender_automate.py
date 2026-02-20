@@ -73,6 +73,21 @@ def run(config: PipelineConfig) -> None:
     if config.s9_refine_tags:
         cmd.extend(["--refine-tags", ",".join(config.s9_refine_tags)])
 
+    # Surface extraction parameters
+    if config.surface_edge_simplify > 0:
+        cmd.extend(["--edge-simplify", str(config.surface_edge_simplify)])
+    cmd.extend(["--density-road", str(config.surface_density_road)])
+    cmd.extend(["--density-kerb", str(config.surface_density_kerb)])
+    cmd.extend(["--density-grass", str(config.surface_density_grass)])
+    cmd.extend(["--density-sand", str(config.surface_density_sand)])
+    cmd.extend(["--density-road2", str(config.surface_density_road2)])
+
+    # Mesh simplification
+    if config.s9_mesh_simplify:
+        cmd.append("--mesh-simplify")
+        cmd.extend(["--mesh-weld-distance", str(config.s9_mesh_weld_distance)])
+        cmd.extend(["--mesh-decimate-ratio", str(config.s9_mesh_decimate_ratio)])
+
     # Walls from 06_result junction
     walls_result = config.walls_result_dir
     if not os.path.isdir(walls_result):

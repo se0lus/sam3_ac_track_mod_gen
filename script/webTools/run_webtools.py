@@ -251,6 +251,12 @@ PIPELINE_STAGE_META = [
     {"id": "blender_automate",   "num": "9",  "name": "Blender集成", "type": "auto",
      "desc": "Blender 无头自动化（加载瓦片 → 精炼 → 表面提取 → 导入 → 保存）",
      "output_dir": "09_blender_automate"},
+    {"id": "manual_blender",    "num": "9a", "name": "Blender编辑", "type": "manual",
+     "desc": "手动编辑 Blender 文件（在 Blender 中直接打开编辑）",
+     "output_dir": "09a_manual_blender"},
+    {"id": "model_export",      "num": "10", "name": "模型导出",     "type": "auto",
+     "desc": "从 Blender 文件拆分并导出模型（框架，待实现）",
+     "output_dir": "10_model_export"},
 ]
 
 # Map auto stage ids to sam3_track_gen stage names
@@ -264,6 +270,7 @@ _STAGE_ID_TO_PIPELINE = {
     "ai_walls": "ai_walls",
     "ai_game_objects": "ai_game_objects",
     "blender_automate": "blender_automate",
+    "model_export": "model_export",
 }
 
 
@@ -347,6 +354,18 @@ class PipelineRunner:
         refine_tags = config_dict.get("s9_refine_tags", ["road"])
         if refine_tags:
             cmd.extend(["--refine-tags", ",".join(refine_tags)])
+        if config_dict.get("s9_edge_simplify"):
+            cmd.extend(["--edge-simplify", str(config_dict["s9_edge_simplify"])])
+        if config_dict.get("s9_mesh_simplify"):
+            cmd.append("--mesh-simplify")
+            if config_dict.get("s9_mesh_weld_distance"):
+                cmd.extend(["--mesh-weld-distance", str(config_dict["s9_mesh_weld_distance"])])
+            if config_dict.get("s9_mesh_decimate_ratio"):
+                cmd.extend(["--mesh-decimate-ratio", str(config_dict["s9_mesh_decimate_ratio"])])
+        for dtag in ["road", "kerb", "grass", "sand", "road2"]:
+            val = config_dict.get(f"s9_density_{dtag}")
+            if val:
+                cmd.extend([f"--density-{dtag}", str(val)])
 
         # Set up result junctions before running
         try:
@@ -1474,6 +1493,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
         "manual_surface_masks": "05a_manual_surface_masks",
         "manual_walls":       "06a_manual_walls",
         "manual_game_objects": "07a_manual_game_objects",
+        "manual_blender":     "09a_manual_blender",
     }
 
     def _serve_manual_stages(self):
@@ -1598,6 +1618,10 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 from stages.s07a_manual_game_objects import run as run_s07a
                 run_s07a(pc)
                 print("[pipeline] Re-initialised manual_game_objects from stage 7")
+            elif sid == "manual_blender":
+                from stages.s09a_manual_blender import run as run_s09a
+                run_s09a(pc)
+                print("[pipeline] Re-initialised manual_blender from stage 9")
         except Exception as e:
             print(f"[pipeline] WARNING: Failed to re-init {sid}: {e}")
 

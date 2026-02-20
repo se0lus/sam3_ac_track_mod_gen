@@ -90,9 +90,8 @@ def _get_terrain_y_bounds() -> tuple:
     import config as blender_config
 
     excluded_objs: set = set()
-    for col_name in ("collision", "game_objects"):
-        col = bpy.data.collections.get(col_name)
-        if col:
+    for col in bpy.data.collections:
+        if col.name in ("collision", "game_objects") or col.name.startswith("collision_"):
             for obj in col.all_objects:
                 excluded_objs.add(obj.name)
     mask_col = bpy.data.collections.get(blender_config.ROOT_POLYGON_COLLECTION_NAME)
@@ -138,17 +137,20 @@ def _ensure_hidden_material():
 
 
 def _assign_hidden_material_to_collision() -> int:
-    """Assign 'hidden' material to all mesh objects in 'collision' collection."""
+    """Assign 'hidden' material to all mesh objects in collision collections.
+
+    Covers the legacy ``collision`` collection as well as per-tag collections
+    like ``collision_road``, ``collision_grass``, etc.
+    """
     mat = _ensure_hidden_material()
-    col = bpy.data.collections.get("collision")
-    if col is None:
-        return 0
     count = 0
-    for obj in col.all_objects:
-        if obj.type == "MESH":
-            obj.data.materials.clear()
-            obj.data.materials.append(mat)
-            count += 1
+    for col in bpy.data.collections:
+        if col.name == "collision" or col.name.startswith("collision_"):
+            for obj in col.all_objects:
+                if obj.type == "MESH":
+                    obj.data.materials.clear()
+                    obj.data.materials.append(mat)
+                    count += 1
     return count
 
 
@@ -173,7 +175,7 @@ def _import_walls_geo(
         log.warning("No walls found in %s", walls_json_path)
         return 0
 
-    col = _ensure_collection("collision")
+    col = _ensure_collection("collision_walls")
     created = 0
 
     for wall in walls:
@@ -204,6 +206,7 @@ def _import_walls_geo(
             v3 = bm.verts.new((p0[0], wall_top, p0[2]))
             bm.faces.new((v0, v1, v2, v3))
 
+        bmesh.ops.triangulate(bm, faces=bm.faces[:])
         bm.to_mesh(mesh)
         bm.free()
         mesh.update()
@@ -336,7 +339,81 @@ def _parse_args() -> argparse.Namespace:
                     help="Skip texture processing")
     p.add_argument("--refine-tags", default="road",
                     help="Comma-separated mask tags for refinement (default: road)")
+    p.add_argument("--edge-simplify", type=float, default=0.0,
+                    help="Edge simplification epsilon in metres (0 = no simplification)")
+    p.add_argument("--density-road", type=float, default=0.1,
+                    help="Sampling density for road surfaces in metres")
+    p.add_argument("--density-kerb", type=float, default=0.1,
+                    help="Sampling density for kerb surfaces in metres")
+    p.add_argument("--density-grass", type=float, default=2.0,
+                    help="Sampling density for grass surfaces in metres")
+    p.add_argument("--density-sand", type=float, default=2.0,
+                    help="Sampling density for sand surfaces in metres")
+    p.add_argument("--density-road2", type=float, default=2.0,
+                    help="Sampling density for road2 surfaces in metres")
+    p.add_argument("--mesh-simplify", action="store_true",
+                    help="Enable mesh weld + decimate for terrain collision meshes")
+    p.add_argument("--mesh-weld-distance", type=float, default=0.01,
+                    help="Weld distance in metres (default: 0.01)")
+    p.add_argument("--mesh-decimate-ratio", type=float, default=0.5,
+                    help="Decimate ratio 0-1 (default: 0.5)")
     return p.parse_args(_get_script_argv())
+
+
+# ---------------------------------------------------------------------------
+# Mesh simplification (terrain extraction post-processing)
+# ---------------------------------------------------------------------------
+
+def _simplify_terrain_meshes(weld_distance: float, decimate_ratio: float) -> None:
+    """Weld nearby vertices and decimate terrain collision meshes.
+
+    Only processes MESH objects in ``collision_road`` and ``collision_kerb``.
+    """
+    target_collections = ["collision_road", "collision_kerb"]
+    for col_name in target_collections:
+        col = bpy.data.collections.get(col_name)
+        if col is None:
+            continue
+        for obj in list(col.all_objects):
+            if obj.type != "MESH":
+                continue
+            mesh = obj.data
+            verts_before = len(mesh.vertices)
+            faces_before = len(mesh.polygons)
+
+            # Step 1: Weld (merge by distance)
+            bm = bmesh.new()
+            bm.from_mesh(mesh)
+            bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=weld_distance)
+            bm.to_mesh(mesh)
+            bm.free()
+            mesh.update()
+
+            verts_after_weld = len(mesh.vertices)
+
+            # Step 2: Decimate via modifier
+            try:
+                bpy.ops.object.select_all(action="DESELECT")
+                obj.select_set(True)
+                bpy.context.view_layer.objects.active = obj
+                mod = obj.modifiers.new(name="Simplify", type="DECIMATE")
+                mod.decimate_type = "COLLAPSE"
+                mod.ratio = decimate_ratio
+                bpy.ops.object.modifier_apply(modifier=mod.name)
+            except Exception as e:
+                log.warning("  %s: decimate failed: %s", obj.name, e)
+                # Clean up modifier if apply failed
+                if obj.modifiers.get("Simplify"):
+                    obj.modifiers.remove(obj.modifiers["Simplify"])
+                continue
+
+            verts_final = len(mesh.vertices)
+            faces_final = len(mesh.polygons)
+            log.info("  %s: %d→%d verts (weld), %d→%d faces (decimate)",
+                     obj.name, verts_before, verts_after_weld, faces_before, faces_final)
+
+    log.info("Terrain mesh simplification complete (weld=%.4fm, ratio=%.2f)",
+             weld_distance, decimate_ratio)
 
 
 # ---------------------------------------------------------------------------
@@ -345,6 +422,17 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_args()
+
+    # Force line-buffered stdout/stderr so that log output from Blender's
+    # embedded Python appears immediately in the pipeline log file, instead
+    # of being held in a full 8 KB C-stdio buffer until it fills.
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(line_buffering=True)
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(line_buffering=True)
+    except Exception:
+        pass  # best-effort; older Blender builds may not support this
 
     # Resolve all paths to absolute
     blend_input = os.path.abspath(args.blend_input)
@@ -374,6 +462,15 @@ def main() -> None:
     config.BASE_LEVEL = args.base_level
     config.TARGET_FINE_LEVEL = args.target_level
     config.CONSOLIDATED_CLIPS_DIR = clips_dir
+    config.SURFACE_EDGE_SIMPLIFY = args.edge_simplify
+    config.SURFACE_SAMPLING_DENSITY_ROAD = args.density_road
+    config.SURFACE_SAMPLING_DENSITY_KERB = args.density_kerb
+    config.SURFACE_SAMPLING_DENSITY_GRASS = args.density_grass
+    config.SURFACE_SAMPLING_DENSITY_SAND = args.density_sand
+    config.SURFACE_SAMPLING_DENSITY_ROAD2 = args.density_road2
+    config.MESH_SIMPLIFY = args.mesh_simplify
+    config.MESH_WELD_DISTANCE = args.mesh_weld_distance
+    config.MESH_DECIMATE_RATIO = args.mesh_decimate_ratio
 
     # ------------------------------------------------------------------
     # Step 1: Open the input .blend file
@@ -454,8 +551,21 @@ def main() -> None:
     # ------------------------------------------------------------------
     if not args.skip_surfaces:
         log.info("Step 5/8: Extracting collision surfaces...")
-        result = bpy.ops.sam3.extract_surfaces()
-        log.info("Extract surfaces result: %s", result)
+
+        # Tool A: road + kerb (terrain face extraction)
+        log.info("  Step 5a: Terrain extraction (road + kerb)...")
+        result_a = bpy.ops.sam3.extract_terrain_surfaces()
+        log.info("  Terrain extraction result: %s", result_a)
+
+        # Optional: simplify terrain meshes (weld + decimate)
+        if args.mesh_simplify:
+            log.info("  Step 5a+: Simplifying terrain meshes...")
+            _simplify_terrain_meshes(args.mesh_weld_distance, args.mesh_decimate_ratio)
+
+        # Tool B: grass + sand + road2 (boolean grid)
+        log.info("  Step 5b: Boolean surfaces (grass/sand/road2)...")
+        result_b = bpy.ops.sam3.generate_boolean_surfaces()
+        log.info("  Boolean surfaces result: %s", result_b)
     else:
         log.info("Step 5/8: Skipped (--skip-surfaces)")
 

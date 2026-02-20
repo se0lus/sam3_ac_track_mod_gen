@@ -354,6 +354,14 @@ async function showStageInfo(stage) {
   } else if (stage.id === "blender_automate") {
     const baseLevel = cfg.s9_base_level || 17;
     const targetLevel = cfg.s9_target_level || 22;
+    const edgeSimplify = cfg.s9_edge_simplify || 0;
+    const meshWeldDist = cfg.s9_mesh_weld_distance || 0.01;
+    const meshDecimateRatio = cfg.s9_mesh_decimate_ratio || 0.5;
+    const densityRoad = cfg.s9_density_road || 0.1;
+    const densityKerb = cfg.s9_density_kerb || 0.1;
+    const densityGrass = cfg.s9_density_grass || 2.0;
+    const densitySand = cfg.s9_density_sand || 2.0;
+    const densityRoad2 = cfg.s9_density_road2 || 2.0;
     const refineTags = cfg.s9_refine_tags || ["road"];
     const allTags = ["road", "grass", "sand", "kerb", "road2"];
     const tagPills = allTags.map(tag =>
@@ -363,6 +371,7 @@ async function showStageInfo(stage) {
       { key: "s9_import_walls",       label: "导入围墙",        desc: "从 Stage 7 导入虚拟碰撞墙", def: true },
       { key: "s9_import_game_objects", label: "导入游戏对象",    desc: "从 Stage 8 导入发车格、计时点等", def: true },
       { key: "s9_extract_surfaces",   label: "生成碰撞表面",    desc: "从 mask 多边形提取驾驶表面网格", def: true },
+      { key: "s9_mesh_simplify",      label: "网格简化",        desc: "对 road/kerb 地形网格执行焊接 + Decimate 简化", def: false },
       { key: "s9_convert_textures",   label: "转换纹理",        desc: "解包纹理并转换为 PNG + BSDF 材质", def: true },
       { key: "s9_background",         label: "Blender 后台运行", desc: "以 --background 无界面模式执行", def: true },
     ];
@@ -388,6 +397,47 @@ async function showStageInfo(stage) {
           <div class="config-field">
             <label>目标层级 (Target Level)</label>
             <input type="number" id="s9TargetLevel" value="${targetLevel}" min="15" max="25" />
+          </div>
+        </div>
+        <div class="config-field">
+          <label>碰撞表面采样密度 (米, 值越小精度越高)</label>
+          <div class="s9-density-grid">
+            <div class="s9-density-item">
+              <span>Road</span>
+              <input type="number" id="s9DensityRoad" value="${densityRoad}" min="0.05" max="5.0" step="0.1" />
+            </div>
+            <div class="s9-density-item">
+              <span>Kerb</span>
+              <input type="number" id="s9DensityKerb" value="${densityKerb}" min="0.05" max="5.0" step="0.1" />
+            </div>
+            <div class="s9-density-item">
+              <span>Road2</span>
+              <input type="number" id="s9DensityRoad2" value="${densityRoad2}" min="0.1" max="5.0" step="0.1" />
+            </div>
+            <div class="s9-density-item">
+              <span>Grass</span>
+              <input type="number" id="s9DensityGrass" value="${densityGrass}" min="0.1" max="5.0" step="0.1" />
+            </div>
+            <div class="s9-density-item">
+              <span>Sand</span>
+              <input type="number" id="s9DensitySand" value="${densitySand}" min="0.1" max="5.0" step="0.1" />
+            </div>
+          </div>
+        </div>
+        <div class="s9-level-row">
+          <div class="config-field">
+            <label>碰撞表面边缘简化 (米, 0=不简化)</label>
+            <input type="number" id="s9EdgeSimplify" value="${edgeSimplify}" min="0" max="5.0" step="0.1" />
+          </div>
+        </div>
+        <div class="s9-level-row">
+          <div class="config-field">
+            <label>网格焊接距离 (米)</label>
+            <input type="number" id="s9MeshWeldDist" value="${meshWeldDist}" min="0.001" max="1.0" step="0.001" />
+          </div>
+          <div class="config-field">
+            <label>网格简化率 (0-1, 越小面数越少)</label>
+            <input type="number" id="s9MeshDecimateRatio" value="${meshDecimateRatio}" min="0.05" max="1.0" step="0.05" />
           </div>
         </div>
         <div class="config-field">
@@ -492,6 +542,14 @@ async function showStageInfo(stage) {
       const updated = { ...cfg };
       updated.s9_base_level = parseInt($("s9BaseLevel").value) || 17;
       updated.s9_target_level = parseInt($("s9TargetLevel").value) || 22;
+      updated.s9_edge_simplify = parseFloat($("s9EdgeSimplify").value) || 0;
+      updated.s9_mesh_weld_distance = parseFloat($("s9MeshWeldDist").value) || 0.01;
+      updated.s9_mesh_decimate_ratio = parseFloat($("s9MeshDecimateRatio").value) || 0.5;
+      updated.s9_density_road = parseFloat($("s9DensityRoad").value) || 0.1;
+      updated.s9_density_kerb = parseFloat($("s9DensityKerb").value) || 0.1;
+      updated.s9_density_grass = parseFloat($("s9DensityGrass").value) || 2.0;
+      updated.s9_density_sand = parseFloat($("s9DensitySand").value) || 2.0;
+      updated.s9_density_road2 = parseFloat($("s9DensityRoad2").value) || 2.0;
       updated.s9_refine_tags = tags.length > 0 ? tags : ["road"];
       document.querySelectorAll(".s9-toggle").forEach(row => {
         const key = row.dataset.key;

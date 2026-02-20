@@ -43,6 +43,7 @@ from stages import (
     s07_ai_game_objects,
     s08_blender_polygons,
     s09_blender_automate,
+    s10_model_export,
 )
 
 # ---------------------------------------------------------------------------
@@ -68,6 +69,7 @@ STAGE_FUNCTIONS: Dict[str, Callable[[PipelineConfig], None]] = {
     "ai_game_objects": s07_ai_game_objects.run,
     "blender_polygons": s08_blender_polygons.run,
     "blender_automate": s09_blender_automate.run,
+    "model_export": s10_model_export.run,
 }
 
 
@@ -193,6 +195,28 @@ Available stages: """ + ", ".join(PIPELINE_STAGES)
     p.add_argument("--refine-tags", default="",
                     help="Comma-separated mask tags for tile refinement (default: road)")
 
+    # --- Surface extraction options ---
+    p.add_argument("--edge-simplify", type=float, default=0.0,
+                    help="Edge simplification epsilon in metres (0 = no simplification)")
+    p.add_argument("--density-road", type=float, default=0.0,
+                    help="Sampling density for road surfaces in metres (0 = use config default)")
+    p.add_argument("--density-kerb", type=float, default=0.0,
+                    help="Sampling density for kerb surfaces in metres (0 = use config default)")
+    p.add_argument("--density-grass", type=float, default=0.0,
+                    help="Sampling density for grass surfaces in metres (0 = use config default)")
+    p.add_argument("--density-sand", type=float, default=0.0,
+                    help="Sampling density for sand surfaces in metres (0 = use config default)")
+    p.add_argument("--density-road2", type=float, default=0.0,
+                    help="Sampling density for road2 surfaces in metres (0 = use config default)")
+
+    # --- Mesh simplification options ---
+    p.add_argument("--mesh-simplify", action="store_true",
+                    help="Enable weld + decimate for terrain collision meshes (road/kerb)")
+    p.add_argument("--mesh-weld-distance", type=float, default=0.0,
+                    help="Weld distance in metres (0 = use config default 0.01)")
+    p.add_argument("--mesh-decimate-ratio", type=float, default=0.0,
+                    help="Decimate ratio 0-1 (0 = use config default 0.5)")
+
     return p
 
 
@@ -234,6 +258,28 @@ def config_from_args(args: argparse.Namespace) -> PipelineConfig:
     config.s9_no_background = args.no_background
     if args.refine_tags:
         config.s9_refine_tags = [t.strip() for t in args.refine_tags.split(",") if t.strip()]
+
+    # Surface extraction options
+    if args.edge_simplify > 0:
+        config.surface_edge_simplify = args.edge_simplify
+    if args.density_road > 0:
+        config.surface_density_road = args.density_road
+    if args.density_kerb > 0:
+        config.surface_density_kerb = args.density_kerb
+    if args.density_grass > 0:
+        config.surface_density_grass = args.density_grass
+    if args.density_sand > 0:
+        config.surface_density_sand = args.density_sand
+    if args.density_road2 > 0:
+        config.surface_density_road2 = args.density_road2
+
+    # Mesh simplification options
+    if args.mesh_simplify:
+        config.s9_mesh_simplify = True
+    if args.mesh_weld_distance > 0:
+        config.s9_mesh_weld_distance = args.mesh_weld_distance
+    if args.mesh_decimate_ratio > 0:
+        config.s9_mesh_decimate_ratio = args.mesh_decimate_ratio
 
     return config.resolve()
 

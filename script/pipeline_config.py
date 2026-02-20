@@ -37,6 +37,7 @@ STAGE_ORDER: Dict[str, int] = {
     "ai_game_objects": 7,
     "blender_polygons": 8,
     "blender_automate": 9,
+    "model_export": 10,
 }
 
 PIPELINE_STAGES: List[str] = [
@@ -49,6 +50,7 @@ PIPELINE_STAGES: List[str] = [
     "ai_game_objects",
     "blender_polygons",
     "blender_automate",
+    "model_export",
 ]
 
 # ---------------------------------------------------------------------------
@@ -59,6 +61,7 @@ MANUAL_STAGE_PAIRS: Dict[str, str] = {
     "convert_to_blender": "manual_surface_masks",
     "ai_walls": "manual_walls",
     "ai_game_objects": "manual_game_objects",
+    "blender_automate": "manual_blender",  # 09 → 09a
 }
 
 
@@ -152,12 +155,15 @@ class PipelineConfig:
     collision_collection_name: str = "collision"
 
     # --- Surface sampling densities (metres between grid samples) ---
-    surface_density_road: float = 0.5
+    surface_density_road: float = 0.1
     surface_density_grass: float = 2.0
-    surface_density_kerb: float = 0.5
+    surface_density_kerb: float = 0.1
     surface_density_sand: float = 2.0
-    surface_density_road2: float = 1.0
+    surface_density_road2: float = 2.0
     surface_density_default: float = 1.0
+
+    # --- Surface extraction edge simplification (metres, 0 = no simplification) ---
+    surface_edge_simplify: float = 0.0
 
     # --- SAM3 segmentation prompts ---
     sam3_prompts: List[Dict[str, Any]] = field(default_factory=lambda: [
@@ -190,6 +196,9 @@ class PipelineConfig:
     s9_no_textures: bool = False
     s9_no_background: bool = False
     s9_refine_tags: List[str] = field(default_factory=lambda: ["road"])
+    s9_mesh_simplify: bool = False          # Enable post-processing simplification for terrain meshes
+    s9_mesh_weld_distance: float = 0.01     # Weld distance in metres (default 0.01)
+    s9_mesh_decimate_ratio: float = 0.5     # Decimate ratio 0-1 (default 0.5)
 
     # --- Derived paths (populated by resolve()) ---
     glb_dir: str = ""
@@ -226,6 +235,8 @@ class PipelineConfig:
             return os.path.join(self.output_dir, "06a_manual_walls")
         if stage_name == "manual_game_objects":
             return os.path.join(self.output_dir, "07a_manual_game_objects")
+        if stage_name == "manual_blender":
+            return os.path.join(self.output_dir, "09a_manual_blender")
         idx = STAGE_ORDER.get(stage_name, 0)
         return os.path.join(self.output_dir, f"{idx:02d}_{stage_name}")
 
@@ -353,5 +364,10 @@ class PipelineConfig:
         self.blender_clips_result = self.result_dir("convert_to_blender")  # 05_result
         self.walls_result_dir = self.result_dir("ai_walls")                # 06_result
         self.game_objects_result_dir = self.result_dir("ai_game_objects")   # 07_result
+        self.manual_blend_file = os.path.join(
+            self.stage_dir("manual_blender"), "final_track.blend"
+        )
+        self.blender_result_dir = self.result_dir("blender_automate")     # 09_result
+        self.export_dir = self.stage_dir("model_export")                # 10_model_export
 
         return self

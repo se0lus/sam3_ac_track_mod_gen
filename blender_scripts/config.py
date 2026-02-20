@@ -57,13 +57,21 @@ ROOT_POLYGON_COLLECTION_NAME: str = _defaults.root_polygon_collection_name if _d
 # ---------------------------------------------------------------------------
 # Surface extraction / collision mesh
 # ---------------------------------------------------------------------------
-SURFACE_SAMPLING_DENSITY_ROAD: float = _defaults.surface_density_road if _defaults else 0.5
+SURFACE_SAMPLING_DENSITY_ROAD: float = _defaults.surface_density_road if _defaults else 0.1
 SURFACE_SAMPLING_DENSITY_GRASS: float = _defaults.surface_density_grass if _defaults else 2.0
-SURFACE_SAMPLING_DENSITY_KERB: float = _defaults.surface_density_kerb if _defaults else 0.5
+SURFACE_SAMPLING_DENSITY_KERB: float = _defaults.surface_density_kerb if _defaults else 0.1
 SURFACE_SAMPLING_DENSITY_SAND: float = _defaults.surface_density_sand if _defaults else 2.0
+SURFACE_SAMPLING_DENSITY_ROAD2: float = _defaults.surface_density_road2 if _defaults else 2.0
 SURFACE_SAMPLING_DENSITY_DEFAULT: float = _defaults.surface_density_default if _defaults else 1.0
 
+SURFACE_EDGE_SIMPLIFY: float = _defaults.surface_edge_simplify if _defaults else 0.0
+
 COLLISION_COLLECTION_NAME: str = _defaults.collision_collection_name if _defaults else "collision"
+
+# Mesh simplification (terrain extraction post-processing)
+MESH_SIMPLIFY: bool = _defaults.s9_mesh_simplify if _defaults else False
+MESH_WELD_DISTANCE: float = _defaults.s9_mesh_weld_distance if _defaults else 0.01
+MESH_DECIMATE_RATIO: float = _defaults.s9_mesh_decimate_ratio if _defaults else 0.5
 
 # ---------------------------------------------------------------------------
 # Consolidated clips directory (overridden at runtime by blender_automate.py)
