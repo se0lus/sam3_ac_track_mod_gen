@@ -28,13 +28,13 @@
 5. **测试位置**: 测试文件放 `tests/`，镜像源代码结构。
 6. **Blender Action**: 新 Action 放 `blender_scripts/sam3_actions/`，导出 `ACTION_SPECS` 列表，由 `blender_helpers.py` 自动发现注册。
 7. **碰撞命名**: `1WALL_N`, `1ROAD_N`, `1SAND_N`, `1KERB_N`, `1GRASS_N`, `2ROAD_N`。使用 `surface_extraction.generate_collision_name()`。
-8. **先计划后编码**: 每个模块编码前需完成计划并经 review。
+8. **先计划后编码**: 每个模块编码前需完成计划并经 teamleader 自动 review。
 9. **先测试后集成**: 模块测试通过后才可集成。
 10. **物理空间优先**: 算法参数用物理单位（米、度），运行时按 GeoTIFF 分辨率转像素。
 
 ## 关键约定
 
-- **碰撞 Collection**: 按 tag 分 — `collision_road`, `collision_kerb`, `collision_grass`, `collision_sand`, `collision_road2`；围墙用 `collision`。映射在 `surface_extraction.COLLISION_COLLECTION_MAP`。
+- **碰撞 Collection**: 按 tag 分 — `collision_road`, `collision_kerb`, `collision_grass`, `collision_sand`, `collision_road2`；围墙用 `collision_walls`。映射在 `surface_extraction.COLLISION_COLLECTION_MAP`。
 - **Mask Collection**: 根 `mask_polygon_collection`，子 `mask_polygon_{tag}`。名称在 `config.ROOT_POLYGON_COLLECTION_NAME`。
 - **采样密度**: road/kerb 0.1m, grass/sand/road2 2.0m。配置在 `config.SURFACE_SAMPLING_DENSITY_*`。
 - **地形瓦片**: 在 `L{digits}` collection 中（如 L17, L18 ...）。

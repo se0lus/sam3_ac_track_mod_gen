@@ -485,6 +485,25 @@ def generate_boolean_surface(
         result_obj, scene, depsgraph, excluded_local, ray_origin_y,
     )
 
+    # 5b. Clean up degenerate faces created by projection
+    #     (vertices collapsed to same location → zero-area triangles)
+    me = result_obj.data
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    bmesh.ops.dissolve_degenerate(bm, dist=0.001, edges=bm.edges)
+    n_before = len(bm.faces)
+    # Also remove loose vertices left behind
+    loose = [v for v in bm.verts if not v.link_faces]
+    if loose:
+        bmesh.ops.delete(bm, geom=loose, context="VERTS")
+    bmesh.ops.triangulate(bm, faces=bm.faces[:])
+    bm.to_mesh(me)
+    bm.free()
+    me.update()
+    n_after = len(me.polygons)
+    if n_before != n_after:
+        _log(f"  {label}: cleaned {n_before - n_after} degenerate faces")
+
     # Check if enough vertices survived
     n_verts = len(result_obj.data.vertices)
     n_faces = len(result_obj.data.polygons)

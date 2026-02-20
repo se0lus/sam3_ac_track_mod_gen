@@ -70,6 +70,7 @@ def _create_wall_mesh(
         v3 = bm.verts.new((x0, wall_height, z0))
         bm.faces.new((v0, v1, v2, v3))
 
+    bmesh.ops.triangulate(bm, faces=bm.faces[:])
     bm.to_mesh(mesh)
     bm.free()
     mesh.update()
@@ -130,7 +131,7 @@ class SAM3_OT_import_walls(bpy.types.Operator):
             self.report({"ERROR"}, "No walls found in JSON")
             return {"CANCELLED"}
 
-        col = _ensure_collection("collision")
+        col = _ensure_collection("collision_walls")
         img_h = int(self.image_height)
         created = 0
 
@@ -151,7 +152,7 @@ class SAM3_OT_import_walls(bpy.types.Operator):
             )
             created += 1
 
-        self.report({"INFO"}, f"Created {created} wall objects in 'collision' collection")
+        self.report({"INFO"}, f"Created {created} wall objects in 'collision_walls' collection")
         return {"FINISHED"}
 
 
