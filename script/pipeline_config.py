@@ -204,6 +204,10 @@ class PipelineConfig:
     s10_max_vertices: int = 21000           # Max vertices per MESH object
     s10_max_batch_mb: int = 100             # Max FBX file size (MB, geometry only)
     s10_fbx_scale: float = 0.01            # FBX export global scale
+    s10_ks_ambient: float = 0.5            # ksAmbient FLOAT1 for visible materials
+    s10_ks_diffuse: float = 0.1            # ksDiffuse FLOAT1 for visible materials
+    s10_ks_emissive: float = 0.1           # ksEmissive FLOAT3 (same value x3)
+    s10_kseditor_exe: str = ""             # Path to ksEditorAT.exe (auto-detected if empty)
 
     # --- Derived paths (populated by resolve()) ---
     glb_dir: str = ""

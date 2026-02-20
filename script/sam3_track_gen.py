@@ -224,6 +224,14 @@ Available stages: """ + ", ".join(PIPELINE_STAGES)
                     help="Max FBX file size in MB (0 = use config default 100)")
     p.add_argument("--fbx-scale", type=float, default=0.0,
                     help="FBX export global scale (0 = use config default 0.01)")
+    p.add_argument("--ks-ambient", type=float, default=-1.0,
+                    help="ksAmbient for visible materials (-1 = use config default)")
+    p.add_argument("--ks-diffuse", type=float, default=-1.0,
+                    help="ksDiffuse for visible materials (-1 = use config default)")
+    p.add_argument("--ks-emissive", type=float, default=-1.0,
+                    help="ksEmissive for visible materials (-1 = use config default)")
+    p.add_argument("--kseditor-exe", default="",
+                    help="Path to ksEditorAT.exe for FBX→KN5 conversion")
 
     return p
 
@@ -296,6 +304,14 @@ def config_from_args(args: argparse.Namespace) -> PipelineConfig:
         config.s10_max_batch_mb = args.max_batch_mb
     if args.fbx_scale > 0:
         config.s10_fbx_scale = args.fbx_scale
+    if args.ks_ambient >= 0:
+        config.s10_ks_ambient = args.ks_ambient
+    if args.ks_diffuse >= 0:
+        config.s10_ks_diffuse = args.ks_diffuse
+    if args.ks_emissive >= 0:
+        config.s10_ks_emissive = args.ks_emissive
+    if args.kseditor_exe:
+        config.s10_kseditor_exe = args.kseditor_exe
 
     return config.resolve()
 

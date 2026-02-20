@@ -313,6 +313,69 @@ def _import_walls_geo(
     return created
 
 
+def _create_game_object_empty(
+    obj_data: dict,
+    blender_name: str,
+    geo_meta: dict,
+    tf_info,
+    height_offset: float,
+) -> "bpy.types.Object | None":
+    """Create a single game-object Empty from *obj_data*.
+
+    Returns the new Empty, or ``None`` if the position is invalid.
+    Helper shared by both single-layout and multi-layout paths.
+    """
+    from geo_sam3_blender_utils import geo_points_to_blender_xyz
+
+    pos = obj_data.get("position")
+    if not pos or len(pos) < 2:
+        return None
+
+    px, py = float(pos[0]), float(pos[1])
+
+    # Position: pixel -> WGS84 -> Blender
+    pos_geo = [_pixel_to_geo(px, py, geo_meta)]
+    pos_blender = geo_points_to_blender_xyz(pos_geo, tf_info, z_mode="zero")
+    if not pos_blender:
+        return None
+    bpos = pos_blender[0]
+
+    # Orientation: convert direction vector by transforming a nearby point
+    forward_blender = None
+    orient = obj_data.get("orientation_z")
+    if orient and len(orient) >= 2:
+        dx, dy = float(orient[0]), float(orient[1])
+        ahead_geo = [_pixel_to_geo(px + dx * 10, py + dy * 10, geo_meta)]
+        ahead_blender = geo_points_to_blender_xyz(ahead_geo, tf_info, z_mode="zero")
+        if ahead_blender:
+            apt = ahead_blender[0]
+            fdx = apt[0] - bpos[0]
+            fdz = apt[2] - bpos[2]
+            length = math.sqrt(fdx * fdx + fdz * fdz)
+            if length > 1e-9:
+                forward_blender = (fdx / length, fdz / length)
+
+    empty = bpy.data.objects.new(blender_name, None)
+    empty.empty_display_type = "PLAIN_AXES"
+    empty.empty_display_size = 1.0
+    empty.location = (bpos[0], bpos[1] + height_offset, bpos[2])
+
+    if forward_blender is not None:
+        fdx, fdz = forward_blender
+        forward = Vector((fdx, 0.0, fdz)).normalized()
+        up = Vector((0.0, 1.0, 0.0))
+        right = up.cross(forward).normalized()
+        up = forward.cross(right).normalized()
+        rot = Matrix((
+            (right.x, up.x, forward.x),
+            (right.y, up.y, forward.y),
+            (right.z, up.z, forward.z),
+        )).transposed()
+        empty.rotation_euler = rot.to_euler()
+
+    return empty
+
+
 def _import_game_objects_geo(
     go_json_path: str,
     geo_meta: dict,
@@ -323,68 +386,76 @@ def _import_game_objects_geo(
 
     Converts pixel positions and orientations from the game objects JSON to
     Blender 3D coordinates.  Objects are created as Empty markers.
-    """
-    from geo_sam3_blender_utils import geo_points_to_blender_xyz
 
+    **Multi-layout support**: when the JSON contains a ``layouts`` list with
+    more than one entry, objects are grouped into sub-collections
+    ``game_objects_{LayoutName}`` under a root ``game_objects`` collection.
+    Each object's Blender name is prefixed ``{LayoutName}__`` to avoid
+    duplicates (e.g. ``LayoutCW__AC_HOTLAP_START_0``).  A custom property
+    ``_layout`` stores the layout name for downstream use.
+
+    Single-layout (no ``layouts`` key or only one layout): behaviour is
+    unchanged — all objects go directly into ``game_objects``.
+    """
     data = _read_json(go_json_path)
     objects_list = data.get("objects", [])
     if not objects_list:
         log.warning("No objects found in %s", go_json_path)
         return 0
 
-    col = _ensure_collection("game_objects")
+    layout_names = data.get("layouts", [])
+    is_multi = len(layout_names) > 1
+
+    root_col = _ensure_collection("game_objects")
     created = 0
 
-    for obj_data in objects_list:
-        name = obj_data.get("name", f"OBJECT_{created}")
-        pos = obj_data.get("position")
-        if not pos or len(pos) < 2:
-            continue
+    if is_multi:
+        log.info("Multi-layout mode: %s", layout_names)
 
-        px, py = float(pos[0]), float(pos[1])
+        # Group objects by _layout
+        by_layout: dict[str, list] = {}
+        for obj_data in objects_list:
+            layout = obj_data.get("_layout", "Default")
+            by_layout.setdefault(layout, []).append(obj_data)
 
-        # Position: pixel -> WGS84 -> Blender
-        pos_geo = [_pixel_to_geo(px, py, geo_meta)]
-        pos_blender = geo_points_to_blender_xyz(pos_geo, tf_info, z_mode="zero")
-        if not pos_blender:
-            continue
-        bpos = pos_blender[0]
+        for layout_name, layout_objs in by_layout.items():
+            sub_col_name = f"game_objects_{layout_name}"
+            sub_col = bpy.data.collections.get(sub_col_name)
+            if sub_col is None:
+                sub_col = bpy.data.collections.new(sub_col_name)
+            # Link sub_col under root_col (not scene root)
+            if sub_col.name not in [c.name for c in root_col.children]:
+                root_col.children.link(sub_col)
 
-        # Orientation: convert direction vector by transforming a nearby point
-        forward_blender = None
-        orient = obj_data.get("orientation_z")
-        if orient and len(orient) >= 2:
-            dx, dy = float(orient[0]), float(orient[1])
-            ahead_geo = [_pixel_to_geo(px + dx * 10, py + dy * 10, geo_meta)]
-            ahead_blender = geo_points_to_blender_xyz(ahead_geo, tf_info, z_mode="zero")
-            if ahead_blender:
-                apt = ahead_blender[0]
-                fdx = apt[0] - bpos[0]
-                fdz = apt[2] - bpos[2]
-                length = math.sqrt(fdx * fdx + fdz * fdz)
-                if length > 1e-9:
-                    forward_blender = (fdx / length, fdz / length)
+            for obj_data in layout_objs:
+                original_name = obj_data.get("name", f"OBJECT_{created}")
+                blender_name = f"{layout_name}__{original_name}"
 
-        empty = bpy.data.objects.new(name, None)
-        empty.empty_display_type = "PLAIN_AXES"
-        empty.empty_display_size = 1.0
-        empty.location = (bpos[0], bpos[1] + height_offset, bpos[2])
+                empty = _create_game_object_empty(
+                    obj_data, blender_name, geo_meta, tf_info, height_offset,
+                )
+                if empty is None:
+                    continue
 
-        if forward_blender is not None:
-            fdx, fdz = forward_blender
-            forward = Vector((fdx, 0.0, fdz)).normalized()
-            up = Vector((0.0, 1.0, 0.0))
-            right = up.cross(forward).normalized()
-            up = forward.cross(right).normalized()
-            rot = Matrix((
-                (right.x, up.x, forward.x),
-                (right.y, up.y, forward.y),
-                (right.z, up.z, forward.z),
-            )).transposed()
-            empty.rotation_euler = rot.to_euler()
+                empty["_layout"] = layout_name
+                sub_col.objects.link(empty)
+                created += 1
 
-        col.objects.link(empty)
-        created += 1
+            log.info("  Layout '%s': %d objects in '%s'",
+                     layout_name, len(layout_objs), sub_col_name)
+    else:
+        # Single-layout: original behaviour
+        for obj_data in objects_list:
+            name = obj_data.get("name", f"OBJECT_{created}")
+
+            empty = _create_game_object_empty(
+                obj_data, name, geo_meta, tf_info, height_offset,
+            )
+            if empty is None:
+                continue
+
+            root_col.objects.link(empty)
+            created += 1
 
     return created
 

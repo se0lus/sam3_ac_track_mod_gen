@@ -374,6 +374,14 @@ class PipelineRunner:
             cmd.extend(["--max-batch-mb", str(config_dict["s10_max_batch_mb"])])
         if config_dict.get("s10_fbx_scale"):
             cmd.extend(["--fbx-scale", str(config_dict["s10_fbx_scale"])])
+        if config_dict.get("s10_ks_ambient") is not None:
+            cmd.extend(["--ks-ambient", str(config_dict["s10_ks_ambient"])])
+        if config_dict.get("s10_ks_diffuse") is not None:
+            cmd.extend(["--ks-diffuse", str(config_dict["s10_ks_diffuse"])])
+        if config_dict.get("s10_ks_emissive") is not None:
+            cmd.extend(["--ks-emissive", str(config_dict["s10_ks_emissive"])])
+        if config_dict.get("s10_kseditor_exe"):
+            cmd.extend(["--kseditor-exe", config_dict["s10_kseditor_exe"]])
 
         # Set up result junctions before running
         try:

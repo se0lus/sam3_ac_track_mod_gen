@@ -50,6 +50,9 @@ test_session_record/
 Thumbs.db
 desktop.ini
 
+# 外部克隆的第三方工具
+ac_toolbox/ac_tools_cmd/ackn5/
+
 # 临时文件
 *.tmp
 *.log

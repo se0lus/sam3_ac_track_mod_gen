@@ -68,6 +68,11 @@ from surface_extraction import (
 # Reverse map: collection_name -> material_tag
 _COLLECTION_TO_TAG: Dict[str, str] = {v: k for k, v in COLLISION_COLLECTION_MAP.items()}
 
+# KN5 format uses 16-bit vertex indices → hard limit of 65535 per mesh.
+# Game engines typically don't share vertices across triangles, so the worst-
+# case KN5 vertex count = triangle_count × 3 (no vertex reuse at all).
+_KN5_MAX_VERTICES = 65535
+
 # Mask collection names to delete
 _MASK_COLLECTIONS = ["mask_polygon_collection", "mask_curve2D_collection"]
 
@@ -135,6 +140,21 @@ def _mesh_vertex_count(obj: bpy.types.Object) -> int:
     if obj.type != "MESH" or obj.data is None:
         return 0
     return len(obj.data.vertices)
+
+
+def _mesh_kn5_vertex_estimate(obj: bpy.types.Object) -> int:
+    """Worst-case KN5 vertex count: ``triangles × 3`` (no vertex sharing).
+
+    Game engines / KN5 may treat every triangle corner as a unique vertex
+    (no index reuse).  Blender quads become 2 triangles on export, so for
+    each polygon with *N* vertices we get ``(N − 2)`` triangles × 3 corners.
+    This is always ≥ ``len(obj.data.loops)``.
+    """
+    if obj.type != "MESH" or obj.data is None:
+        return 0
+    mesh = obj.data
+    tri_count = sum(p.loop_total - 2 for p in mesh.polygons)
+    return tri_count * 3
 
 
 def _detect_tile_levels() -> Tuple[List[int], Optional[int]]:
@@ -518,38 +538,76 @@ def step2_split_meshes(
     max_vertices: int,
     centerline: Optional[List[Tuple[float, float, float]]] = None,
 ) -> None:
-    """Split all oversized MESH objects."""
-    log.info("Step 2/6: Mesh splitting (max %d vertices per object)", max_vertices)
+    """Split all oversized MESH objects.
 
-    to_split: List[Tuple[bpy.types.Object, bool]] = []
+    Checks both the Blender vertex count (against *max_vertices*) and the
+    worst-case KN5 vertex count (against ``_KN5_MAX_VERTICES``, 65535).
+
+    KN5 / game engines may treat every triangle corner as a unique vertex
+    (no index reuse), so the effective vertex count = ``triangles × 3``.
+    Blender quads fan-out into 2 triangles on FBX export, further inflating
+    the count.  A mesh that looks fine in Blender may still exceed the KN5
+    limit after triangulation and vertex expansion.
+    """
+    log.info("Step 2/6: Mesh splitting (max %d verts, KN5 limit %d tri-verts)",
+             max_vertices, _KN5_MAX_VERTICES)
+
+    to_split: List[Tuple[bpy.types.Object, bool, int]] = []
     for obj in list(bpy.data.objects):
         if obj.type != "MESH":
             continue
-        if _mesh_vertex_count(obj) <= max_vertices:
+        verts = _mesh_vertex_count(obj)
+        kn5_verts = _mesh_kn5_vertex_estimate(obj)
+        exceeds_user = verts > max_vertices
+        exceeds_kn5 = kn5_verts > _KN5_MAX_VERTICES
+        if not exceeds_user and not exceeds_kn5:
             continue
         is_road = any(c.name == "collision_road" for c in _get_object_collections(obj))
-        to_split.append((obj, is_road))
+        to_split.append((obj, is_road, kn5_verts))
 
     if not to_split:
-        log.info("  No meshes exceed %d vertices, skipping", max_vertices)
+        log.info("  No meshes exceed limits, skipping")
         return
 
     log.info("  Found %d meshes to split", len(to_split))
 
     total_pieces = 0
-    for obj, is_road in to_split:
+    for obj, is_road, kn5_verts in to_split:
         verts_before = _mesh_vertex_count(obj)
         name = obj.name
 
+        # Compute effective max_vertices that also satisfies the KN5 limit.
+        # KN5 vertex estimate = triangles × 3 (no sharing).
+        # inflation = kn5_verts / blender_verts → how many KN5 verts per Blender vert.
+        # effective_max = KN5_MAX / inflation
+        effective_max = max_vertices
+        if kn5_verts > _KN5_MAX_VERTICES:
+            inflation = kn5_verts / max(verts_before, 1)
+            kn5_safe = int(_KN5_MAX_VERTICES / inflation)
+            # Extra 10% safety margin to account for splitting imprecision
+            kn5_safe = int(kn5_safe * 0.9)
+            effective_max = min(max_vertices, max(kn5_safe, 100))
+            log.info("  '%s': %d blender-verts, %d kn5-verts (%.1fx inflation) -> "
+                     "effective max %d blender-verts for KN5 safety",
+                     name, verts_before, kn5_verts, inflation, effective_max)
+
         if is_road and centerline is not None and len(centerline) >= 2:
-            pieces = _split_road_by_arc_proximity(obj, centerline, max_vertices)
+            pieces = _split_road_by_arc_proximity(obj, centerline, effective_max)
         else:
-            pieces = _split_recursive(obj, max_vertices)
+            pieces = _split_recursive(obj, effective_max)
 
         total_pieces += len(pieces)
         verts_after = sum(_mesh_vertex_count(p) for p in pieces)
-        log.info("  '%s': %d verts -> %d pieces (%d total verts)",
-                 name, verts_before, len(pieces), verts_after)
+        kn5_after = sum(_mesh_kn5_vertex_estimate(p) for p in pieces)
+        log.info("  '%s': %d verts/%d kn5-verts -> %d pieces (%d verts, %d kn5-verts)",
+                 name, verts_before, kn5_verts, len(pieces), verts_after, kn5_after)
+
+        # Verify no piece exceeds KN5 limit
+        for p in pieces:
+            p_kn5 = _mesh_kn5_vertex_estimate(p)
+            if p_kn5 > _KN5_MAX_VERTICES:
+                log.warning("  WARNING: '%s' has %d kn5-verts (> %d KN5 limit)!",
+                            p.name, p_kn5, _KN5_MAX_VERTICES)
 
     log.info("  Split complete: %d objects -> %d pieces", len(to_split), total_pieces)
 
@@ -602,10 +660,11 @@ def step4_batch_organise(max_batch_mb: int) -> List[str]:
     Auto-detects tile levels from ``L{N}`` collections in the scene.
 
     Priority groups:
-      1. Road collision + game objects
-      2. Other collision (kerb, grass, sand, road2, walls)
-      3. Fine terrain tiles (all L{N} except the lowest level)
-      4. Base terrain tiles (lowest L{N} level)
+      1. Road collision (track_core)
+      2. Game objects — per-layout (``go_{LayoutName}``) or single (``game_objects``)
+      3. Other collision (kerb, grass, sand, road2, walls)
+      4. Fine terrain tiles (all L{N} except the lowest level)
+      5. Base terrain tiles (lowest L{N} level)
     """
     log.info("Step 4/6: Batch organisation (max %d MB per batch)", max_batch_mb)
 
@@ -620,16 +679,33 @@ def step4_batch_organise(max_batch_mb: int) -> List[str]:
 
     groups: List[Tuple[str, List[bpy.types.Object]]] = []
 
-    # Group 1: Road collision + game objects
+    # Group 1: Road collision only (no game objects)
     g1: List[bpy.types.Object] = []
     road_col = _find_collection("collision_road")
     if road_col:
         g1.extend(o for o in road_col.objects if o.type == "MESH")
-    go_col = _find_collection("game_objects")
-    if go_col:
-        g1.extend(list(go_col.objects))
     if g1:
         groups.append(("track_core", g1))
+
+    # Game objects — per-layout or single
+    go_root = _find_collection("game_objects")
+    if go_root:
+        layout_cols = [c for c in go_root.children
+                       if c.name.startswith("game_objects_")]
+        if layout_cols:
+            # Multi-layout: one group per layout
+            for lc in sorted(layout_cols, key=lambda c: c.name):
+                layout_name = lc.name.replace("game_objects_", "", 1)
+                objs = list(lc.all_objects)
+                if objs:
+                    groups.append((f"go_{layout_name}", objs))
+                    log.info("  Game objects layout '%s': %d objects",
+                             layout_name, len(objs))
+        else:
+            # Single layout: all game objects as one group
+            objs = list(go_root.objects)
+            if objs:
+                groups.append(("game_objects", objs))
 
     # Group 2: Other collision
     g2: List[bpy.types.Object] = []
@@ -763,6 +839,213 @@ def step5_final_cleanup(batch_names: List[str]) -> None:
 
 
 # ===================================================================
+# FBX INI generation — called per-batch from step6
+# ===================================================================
+
+def _classify_batch(batch_name: str) -> str:
+    """Classify batch type: 'collision', 'game_objects', or 'terrain'."""
+    suffix = batch_name.split("_", 3)[-1] if "_" in batch_name else batch_name
+    if "collision" in suffix or suffix == "track_core":
+        return "collision"
+    if suffix.startswith("go_") or suffix == "game_objects":
+        return "game_objects"
+    return "terrain"
+
+
+def _collect_materials_terrain(
+    objects: List[bpy.types.Object],
+) -> List[Dict[str, str]]:
+    """Collect unique materials from terrain objects.
+
+    Returns list of dicts: {"name": material_name, "texture": filename}.
+    """
+    seen: Dict[str, str] = {}  # mat_name -> texture_filename
+    for obj in objects:
+        if obj.type != "MESH" or not obj.data:
+            continue
+        for slot in obj.material_slots:
+            mat = slot.material
+            if mat is None or mat.name in seen:
+                continue
+            texture = "NULL.dds"
+            if mat.use_nodes and mat.node_tree:
+                for node in mat.node_tree.nodes:
+                    if node.type == "TEX_IMAGE" and node.image:
+                        texture = os.path.basename(node.image.filepath)
+                        break
+            seen[mat.name] = texture
+    return [{"name": n, "texture": t} for n, t in seen.items()]
+
+
+def _write_material_section(
+    lines: List[str],
+    idx: int,
+    name: str,
+    texture: str,
+    ks_ambient: float,
+    ks_diffuse: float,
+    ks_emissive: float,
+) -> None:
+    """Append a [MATERIAL_N] section to lines."""
+    em = f"{ks_emissive},{ks_emissive},{ks_emissive}"
+    lines.append(f"[MATERIAL_{idx}]")
+    lines.append(f"NAME={name}")
+    lines.append("SHADER=ksPerPixel")
+    lines.append("ALPHABLEND=0")
+    lines.append("ALPHATEST=0")
+    lines.append("DEPTHMODE=0")
+    lines.append("VARCOUNT=6")
+    lines.append("VAR_0_NAME=ksAmbient")
+    lines.append(f"VAR_0_FLOAT1={ks_ambient}")
+    lines.append("VAR_0_FLOAT2=0,0")
+    lines.append("VAR_0_FLOAT3=0,0,0")
+    lines.append("VAR_0_FLOAT4=0,0,0,0")
+    lines.append("VAR_1_NAME=ksDiffuse")
+    lines.append(f"VAR_1_FLOAT1={ks_diffuse}")
+    lines.append("VAR_1_FLOAT2=0,0")
+    lines.append("VAR_1_FLOAT3=0,0,0")
+    lines.append("VAR_1_FLOAT4=0,0,0,0")
+    lines.append("VAR_2_NAME=ksSpecular")
+    lines.append("VAR_2_FLOAT1=0")
+    lines.append("VAR_2_FLOAT2=0,0")
+    lines.append("VAR_2_FLOAT3=0,0,0")
+    lines.append("VAR_2_FLOAT4=0,0,0,0")
+    lines.append("VAR_3_NAME=ksSpecularEXP")
+    lines.append("VAR_3_FLOAT1=0")
+    lines.append("VAR_3_FLOAT2=0,0")
+    lines.append("VAR_3_FLOAT3=0,0,0")
+    lines.append("VAR_3_FLOAT4=0,0,0,0")
+    lines.append("VAR_4_NAME=ksEmissive")
+    lines.append("VAR_4_FLOAT1=0")
+    lines.append("VAR_4_FLOAT2=0,0")
+    lines.append(f"VAR_4_FLOAT3={em}")
+    lines.append("VAR_4_FLOAT4=0,0,0,0")
+    lines.append("VAR_5_NAME=ksAlphaRef")
+    lines.append("VAR_5_FLOAT1=0")
+    lines.append("VAR_5_FLOAT2=0,0")
+    lines.append("VAR_5_FLOAT3=0,0,0")
+    lines.append("VAR_5_FLOAT4=0,0,0,0")
+    lines.append("RESCOUNT=1")
+    lines.append("RES_0_NAME=txDiffuse")
+    lines.append("RES_0_SLOT=0")
+    lines.append(f"RES_0_TEXTURE={texture}")
+    lines.append("")
+
+
+def _generate_fbx_ini(
+    fbx_path: str,
+    batch_name: str,
+    objects: List[bpy.types.Object],
+    ks_ambient: float,
+    ks_diffuse: float,
+    ks_emissive: float,
+) -> str:
+    """Generate a .fbx.ini config file for ksEditor FBX→KN5 conversion.
+
+    Returns the path to the written INI file.
+    """
+    from datetime import datetime
+
+    ini_path = fbx_path + ".ini"
+    fbx_filename = os.path.basename(fbx_path)
+    batch_type = _classify_batch(batch_name)
+
+    lines: List[str] = []
+
+    # Header
+    lines.append("[HEADER]")
+    lines.append("VERSION=4")
+    lines.append("DLC_KEY=0")
+    lines.append("USERNAME=")
+    now = datetime.now()
+    if sys.platform == "win32":
+        date_str = now.strftime("%#m/%#d/%Y %#I:%M:%S %p")
+    else:
+        date_str = now.strftime("%-m/%-d/%Y %-I:%M:%S %p")
+    lines.append(f"DATE={date_str}")
+    lines.append("MD5_HASH=00000000000000000000000000000000")
+    lines.append("")
+
+    # Material list
+    if batch_type == "collision":
+        # Collect unique collision materials (hidden, NULL.dds)
+        mat_names: Set[str] = set()
+        for obj in objects:
+            if obj.type != "MESH" or not obj.data:
+                continue
+            for slot in obj.material_slots:
+                if slot.material:
+                    mat_names.add(slot.material.name)
+        if not mat_names:
+            mat_names.add("hidden")
+        mat_list = sorted(mat_names)
+        lines.append("[MATERIAL_LIST]")
+        lines.append(f"COUNT={len(mat_list)}")
+        lines.append("")
+        for i, mname in enumerate(mat_list):
+            _write_material_section(
+                lines, i, mname, "NULL.dds",
+                ks_ambient=0.0509, ks_diffuse=0.0782, ks_emissive=0.0,
+            )
+    elif batch_type == "terrain":
+        # Collect real materials with textures
+        mats = _collect_materials_terrain(objects)
+        lines.append("[MATERIAL_LIST]")
+        lines.append(f"COUNT={len(mats)}")
+        lines.append("")
+        for i, m in enumerate(mats):
+            _write_material_section(
+                lines, i, m["name"], m["texture"],
+                ks_ambient=ks_ambient,
+                ks_diffuse=ks_diffuse,
+                ks_emissive=ks_emissive,
+            )
+    else:
+        # game_objects — no materials
+        lines.append("[MATERIAL_LIST]")
+        lines.append("COUNT=0")
+        lines.append("")
+
+    # Node entries
+    # Root node
+    lines.append(f"[model_FBX: {fbx_filename}]")
+    lines.append("ACTIVE=1")
+    lines.append("PRIORITY=0")
+    lines.append("")
+
+    renderable = 0 if batch_type == "collision" else 1
+
+    for obj in sorted(objects, key=lambda o: o.name):
+        # Object node
+        lines.append(f"[model_FBX: {fbx_filename}_{obj.name}]")
+        lines.append("ACTIVE=1")
+        lines.append("PRIORITY=0")
+        lines.append("")
+
+        # Mesh data leaf node (only for MESH objects)
+        if obj.type == "MESH" and obj.data:
+            mesh_name = obj.data.name
+            lines.append(f"[model_FBX: {fbx_filename}_{obj.name}_{mesh_name}]")
+            lines.append("ACTIVE=1")
+            lines.append("PRIORITY=0")
+            lines.append("VISIBLE=1")
+            lines.append("TRANSPARENT=0")
+            lines.append("CAST_SHADOWS=1")
+            lines.append("LOD_IN=0")
+            lines.append("LOD_OUT=0")
+            lines.append(f"RENDERABLE={renderable}")
+            lines.append("")
+
+    with open(ini_path, "w", encoding="utf-8", newline="\r\n") as f:
+        f.write("\n".join(lines))
+
+    log.info("  INI: %s (%s, %d materials)",
+             os.path.basename(ini_path), batch_type,
+             len([l for l in lines if l.startswith("[MATERIAL_")]))
+    return ini_path
+
+
+# ===================================================================
 # Step 6: Save blend + export FBX
 # ===================================================================
 
@@ -770,6 +1053,9 @@ def step6_save_and_export(
     batch_names: List[str],
     output_dir: str,
     fbx_scale: float,
+    ks_ambient: float = 0.5,
+    ks_diffuse: float = 0.1,
+    ks_emissive: float = 0.1,
 ) -> List[str]:
     """Save intermediate .blend then export each batch as FBX (no textures)."""
     # Save intermediate blend
@@ -796,6 +1082,21 @@ def step6_save_and_export(
             log.info("  '%s': empty, skipping", batch_name)
             continue
 
+        # Strip layout prefix before FBX export for game objects batches.
+        # "go_" prefix = per-layout batch, "game_objects" = single-layout batch.
+        is_go_batch = batch_name.split("_", 3)[-1].startswith("go_") or \
+                      batch_name.endswith("game_objects")
+        renamed: Dict[bpy.types.Object, str] = {}
+        if is_go_batch:
+            for obj in col.objects:
+                if "__" in obj.name:
+                    original = obj.name.split("__", 1)[1]
+                    renamed[obj] = obj.name
+                    obj.name = original
+            if renamed:
+                log.info("  '%s': stripped layout prefix from %d objects",
+                         batch_name, len(renamed))
+
         fbx_path = os.path.join(output_dir, f"{batch_name}.fbx")
 
         bpy.ops.export_scene.fbx(
@@ -816,8 +1117,17 @@ def step6_save_and_export(
             log.info("  '%s': %d objects -> %.1f MB (%s)",
                      batch_name, obj_count, size_mb, fbx_path)
             exported.append(fbx_path)
+            # Generate companion .fbx.ini (before name restore — names must match FBX)
+            _generate_fbx_ini(
+                fbx_path, batch_name, list(col.objects),
+                ks_ambient, ks_diffuse, ks_emissive,
+            )
         else:
             log.warning("  '%s': FBX export failed", batch_name)
+
+        # Restore prefixed names after export + INI (blend file may be saved again)
+        for obj, old_name in renamed.items():
+            obj.name = old_name
 
     log.info("  Exported %d FBX files", len(exported))
     return exported
@@ -843,6 +1153,9 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--max-vertices", type=int, default=21000, help="Max vertices per mesh")
     p.add_argument("--max-batch-mb", type=int, default=100, help="Max FBX batch size MB")
     p.add_argument("--fbx-scale", type=float, default=0.01, help="FBX export scale")
+    p.add_argument("--ks-ambient", type=float, default=0.5, help="ksAmbient for visible materials")
+    p.add_argument("--ks-diffuse", type=float, default=0.1, help="ksDiffuse for visible materials")
+    p.add_argument("--ks-emissive", type=float, default=0.1, help="ksEmissive for visible materials")
     return p.parse_args(argv)
 
 
@@ -880,8 +1193,13 @@ def main() -> None:
     # Step 5: Remove all non-export data
     step5_final_cleanup(batch_names)
 
-    # Step 6: Save + export FBX
-    exported = step6_save_and_export(batch_names, args.output_dir, args.fbx_scale)
+    # Step 6: Save + export FBX (with INI generation)
+    exported = step6_save_and_export(
+        batch_names, args.output_dir, args.fbx_scale,
+        ks_ambient=args.ks_ambient,
+        ks_diffuse=args.ks_diffuse,
+        ks_emissive=args.ks_emissive,
+    )
 
     log.info("=" * 60)
     log.info("Stage 10 complete: %d FBX files exported to %s", len(exported), args.output_dir)

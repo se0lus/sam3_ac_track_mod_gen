@@ -1,0 +1,27 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "C:/Users/Ai.Chuyue/.claude"
+		}
+	],
+	"settings": {
+		"terminal.integrated.profiles.windows": {
+			"PowerShell": {
+				"source": "PowerShell",
+				"args": [
+					"-NoExit",
+					"-ExecutionPolicy",
+					"Bypass",
+					"-Command",
+					"$condaPath = 'C:\\Users\\Ai.Chuyue\\miniconda3'; $envPath = 'C:\\Users\\Ai.Chuyue\\miniconda3\\envs\\sam3'; $env:Path = \"$envPath;$envPath\\Scripts;$envPath\\Library\\bin;$envPath\\Library\\mingw-w64\\bin;$condaPath;$condaPath\\Scripts;$condaPath\\Library\\bin;$env:Path\"; $env:CONDA_DEFAULT_ENV = 'sam3'; $env:CONDA_PREFIX = $envPath; $env:CONDA_PROMPT_MODIFIER = '(sam3) '; Write-Host '(sam3) ' -NoNewline -ForegroundColor Green"
+				]
+			}
+		},
+		"terminal.integrated.defaultProfile.windows": "PowerShell",
+		"python-envs.defaultEnvManager": "ms-python.python:conda",
+		"python-envs.defaultPackageManager": "ms-python.python:conda"
+	}
+}

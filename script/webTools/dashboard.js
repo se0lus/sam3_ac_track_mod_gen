@@ -456,6 +456,10 @@ async function showStageInfo(stage) {
     const maxVerts = cfg.s10_max_vertices || 21000;
     const maxBatchMb = cfg.s10_max_batch_mb || 100;
     const fbxScale = cfg.s10_fbx_scale || 0.01;
+    const ksAmbient = cfg.s10_ks_ambient ?? 0.5;
+    const ksDiffuse = cfg.s10_ks_diffuse ?? 0.1;
+    const ksEmissive = cfg.s10_ks_emissive ?? 0.1;
+    const ksEditorExe = cfg.s10_kseditor_exe || "";
     stageConfigHtml = `
       <div class="db-config db-config--stage">
         <h4>导出参数</h4>
@@ -474,6 +478,26 @@ async function showStageInfo(stage) {
             <label>FBX 导出缩放</label>
             <input type="number" id="s10FbxScale" value="${fbxScale}" min="0.001" max="1.0" step="0.001" />
           </div>
+        </div>
+        <h4>材质参数 (可见物体)</h4>
+        <div class="s9-level-row">
+          <div class="config-field">
+            <label>ksAmbient</label>
+            <input type="number" id="s10KsAmbient" value="${ksAmbient}" min="0" max="1" step="0.05" />
+          </div>
+          <div class="config-field">
+            <label>ksDiffuse</label>
+            <input type="number" id="s10KsDiffuse" value="${ksDiffuse}" min="0" max="1" step="0.05" />
+          </div>
+          <div class="config-field">
+            <label>ksEmissive</label>
+            <input type="number" id="s10KsEmissive" value="${ksEmissive}" min="0" max="1" step="0.05" />
+          </div>
+        </div>
+        <h4>KN5 转换</h4>
+        <div class="config-field">
+          <label>ksEditorAT 路径 (留空自动检测/下载)</label>
+          <input type="text" id="s10KsEditorExe" value="${ksEditorExe}" placeholder="ac_toolbox/ac_tools_cmd/ksEditorAT.exe" />
         </div>
         <div class="config-actions">
           <button class="btn btn--primary" id="btnSaveStageConfig">保存</button>
@@ -601,6 +625,10 @@ async function showStageInfo(stage) {
       updated.s10_max_vertices = parseInt($("s10MaxVertices").value) || 21000;
       updated.s10_max_batch_mb = parseInt($("s10MaxBatchMb").value) || 100;
       updated.s10_fbx_scale = parseFloat($("s10FbxScale").value) || 0.01;
+      updated.s10_ks_ambient = parseFloat($("s10KsAmbient").value) ?? 0.5;
+      updated.s10_ks_diffuse = parseFloat($("s10KsDiffuse").value) ?? 0.1;
+      updated.s10_ks_emissive = parseFloat($("s10KsEmissive").value) ?? 0.1;
+      updated.s10_kseditor_exe = $("s10KsEditorExe").value.trim();
       try {
         await fetch("/api/pipeline/config", {
           method: "POST",
