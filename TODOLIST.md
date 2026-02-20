@@ -11,11 +11,14 @@
 
 ## 待办
 
+-[ ] 为stage10生成的fbx同时也生成一份用于赛道编辑器配置的ini文件，文件的案例在E:\sam3_track_seg\test_images_shajing\kn5_example中有体现；其中需要注意的是，对于不可见物体，以及gameobject的特殊材质配置，另外，对于所有可见物体，在webconfig中把ksAmbient FLOAT1，ksDiffuse FLOAT1，ksEmissive FLOAT3（三个数填一样的）；这三个参数暴露出来，在webconfig中统一设置，默认值则用example中的值；另外纹理也需要从stage9中拷贝到stage10的目录下
+
 
 ## 进行中
 
 
 ## 已完成
+- [x] Stage 10 KN5 转换路径修复 ✓ (ksEditorAt.exe 需要绝对路径，改用 kn5_path/fbx_path 替代 basename)
 - [x] Stage 10 模型导出 ✓ (弧长近邻投影拆分 road + 顶点分布中位数递归拆分其他 + AC 碰撞命名 + 自动检测瓦片层级 + 分批 FBX 导出无纹理 + 导出前清理非批次数据 + Dashboard UI)
 - [x] Stage 9 非无头模式视口可视化 ✓ (正交俯视 + timer 延迟 5s + 瓦片逐步加载刷新 + 节流重绘 + Windows 消息泵送防冻结 + 基础瓦片后隐藏 mask)
 - [x] 在步骤9中为网格提取工具增加一个简化网格的配置 ✓ (s9_mesh_simplify 开关 + weld 0.01m + decimate 0.5, 含 Dashboard UI + CLI 全链路)
