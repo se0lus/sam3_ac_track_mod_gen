@@ -342,6 +342,32 @@ def _boolean_intersect(
 # Terrain projection
 # ---------------------------------------------------------------------------
 
+def _raycast_terrain(
+    scene, depsgraph, excluded: set[str],
+    x: float, z: float, ray_origin_y: float,
+    direction: Vector,
+) -> Vector | None:
+    """Single-point raycast, skipping excluded objects.  Returns hit location."""
+    origin = Vector((x, ray_origin_y, z))
+    for _ in range(5):
+        result, location, _nrm, _idx, hit_obj, _mtx = scene.ray_cast(
+            depsgraph, origin, direction,
+        )
+        if not result:
+            return None
+        if hit_obj is None or hit_obj.name not in excluded:
+            return location
+        origin = location + direction * 0.001
+    return None
+
+
+# Small XZ offsets for fallback jitter probes — catches tile seam gaps
+_JITTER_OFFSETS = [
+    (0.05, 0.0), (-0.05, 0.0), (0.0, 0.05), (0.0, -0.05),
+    (0.15, 0.0), (-0.15, 0.0), (0.0, 0.15), (0.0, -0.15),
+]
+
+
 def _project_to_terrain(
     obj: bpy.types.Object,
     scene: bpy.types.Scene,
@@ -351,7 +377,10 @@ def _project_to_terrain(
 ) -> int:
     """Raycast each vertex of *obj* downward onto the terrain.
 
-    Vertices that miss terrain are deleted.  Returns the number of hits.
+    Miss vertices are recovered via jittered raycasts and neighbour
+    interpolation instead of being deleted outright.  Only truly
+    unreachable vertices (no hit neighbours at all) are removed.
+    Returns the number of direct + recovered hits.
     """
     me = obj.data
     bm = bmesh.new()
@@ -360,11 +389,13 @@ def _project_to_terrain(
 
     direction = Vector((0.0, -1.0, 0.0))
     hit_count = 0
-    miss_verts: list = []
+    miss_indices: list[int] = []
+    hit_set: set[int] = set()          # indices of verts that got a hit
     total_v = len(bm.verts)
     t0 = time.monotonic()
     last_pct = -1
 
+    # --- Phase 1: standard raycast ---
     for vi, v in enumerate(bm.verts):
         pct = (vi * 100) // total_v if total_v else 100
         if pct >= last_pct + 10:
@@ -373,26 +404,83 @@ def _project_to_terrain(
             _log(f"  Projection: {pct}% ({vi:,}/{total_v:,}) "
                  f"elapsed {_fmt_time(elapsed)}")
 
-        origin = Vector((v.co.x, ray_origin_y, v.co.z))
-        hit = False
-        for _ in range(5):
-            result, location, _nrm, _idx, hit_obj, _mtx = scene.ray_cast(
-                depsgraph, origin, direction,
-            )
-            if not result:
-                break
-            if hit_obj is None or hit_obj.name not in excluded:
-                v.co = location
-                hit_count += 1
-                hit = True
-                break
-            origin = location + direction * 0.001
-        if not hit:
-            miss_verts.append(v)
+        loc = _raycast_terrain(
+            scene, depsgraph, excluded, v.co.x, v.co.z,
+            ray_origin_y, direction,
+        )
+        if loc is not None:
+            v.co = loc
+            hit_count += 1
+            hit_set.add(vi)
+        else:
+            miss_indices.append(vi)
 
-    if miss_verts:
-        _log(f"  Removing {len(miss_verts):,} verts with no terrain hit")
-        bmesh.ops.delete(bm, geom=miss_verts, context="VERTS")
+    # --- Phase 2: jittered fallback for misses (tile seam recovery) ---
+    still_miss: list[int] = []
+    jitter_recovered = 0
+    if miss_indices:
+        _log(f"  Phase 2: jitter probe for {len(miss_indices):,} miss verts")
+        for vi in miss_indices:
+            v = bm.verts[vi]
+            recovered = False
+            for dx, dz in _JITTER_OFFSETS:
+                loc = _raycast_terrain(
+                    scene, depsgraph, excluded,
+                    v.co.x + dx, v.co.z + dz,
+                    ray_origin_y, direction,
+                )
+                if loc is not None:
+                    # Use the hit Y but keep original XZ to avoid shifting
+                    v.co.y = loc.y
+                    hit_count += 1
+                    hit_set.add(vi)
+                    jitter_recovered += 1
+                    recovered = True
+                    break
+            if not recovered:
+                still_miss.append(vi)
+        if jitter_recovered:
+            _log(f"  Jitter recovered {jitter_recovered:,} verts")
+
+    # --- Phase 3: interpolate from connected hit neighbours ---
+    interp_recovered = 0
+    truly_orphan: list = []
+    if still_miss:
+        _log(f"  Phase 3: neighbour interpolation for "
+             f"{len(still_miss):,} remaining misses")
+        # May need multiple passes — a miss vert's neighbour might itself
+        # get interpolated in an earlier pass.
+        remaining = set(still_miss)
+        for _pass in range(3):
+            newly_resolved: list[int] = []
+            for vi in remaining:
+                v = bm.verts[vi]
+                y_sum = 0.0
+                y_cnt = 0
+                for edge in v.link_edges:
+                    other = edge.other_vert(v)
+                    if other.index in hit_set:
+                        y_sum += other.co.y
+                        y_cnt += 1
+                if y_cnt > 0:
+                    v.co.y = y_sum / y_cnt
+                    hit_set.add(vi)
+                    hit_count += 1
+                    interp_recovered += 1
+                    newly_resolved.append(vi)
+            for vi in newly_resolved:
+                remaining.discard(vi)
+            if not newly_resolved:
+                break
+        if interp_recovered:
+            _log(f"  Interpolation recovered {interp_recovered:,} verts")
+        truly_orphan = [bm.verts[vi] for vi in remaining]
+
+    # --- Phase 4: delete only truly orphaned verts ---
+    if truly_orphan:
+        _log(f"  Removing {len(truly_orphan):,} truly orphaned verts "
+             f"(no reachable neighbours)")
+        bmesh.ops.delete(bm, geom=truly_orphan, context="VERTS")
 
     bm.to_mesh(me)
     bm.free()
@@ -400,7 +488,8 @@ def _project_to_terrain(
 
     elapsed = time.monotonic() - t0
     _log(f"  Projection done: {hit_count:,}/{total_v:,} hits "
-         f"({_fmt_time(elapsed)})")
+         f"(jitter={jitter_recovered}, interp={interp_recovered}, "
+         f"orphan={len(truly_orphan)}) ({_fmt_time(elapsed)})")
     return hit_count
 
 
