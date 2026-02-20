@@ -284,7 +284,7 @@ async function showStageInfo(stage) {
   // Build per-stage config section
   let stageConfigHtml = "";
   let cfg = {};
-  if (stage.id === "mask_full_map" || stage.id === "blender_polygons" || stage.id === "blender_automate" || stage.id === "model_export") {
+  if (stage.id === "mask_full_map" || stage.id === "blender_polygons" || stage.id === "blender_automate" || stage.id === "model_export" || stage.id === "track_packaging") {
     try {
       const resp = await fetch("/api/pipeline/config");
       cfg = await resp.json();
@@ -503,6 +503,94 @@ async function showStageInfo(stage) {
           <button class="btn btn--primary" id="btnSaveStageConfig">保存</button>
         </div>
       </div>`;
+  } else if (stage.id === "track_packaging") {
+    const trackName = cfg.s11_track_name || "";
+    const trackAuthor = cfg.s11_track_author || "";
+    const trackCountry = cfg.s11_track_country || "";
+    const trackCity = cfg.s11_track_city || "";
+    const trackTags = (cfg.s11_track_tags || ["circuit", "original"]).join(", ");
+    const trackYear = cfg.s11_track_year || new Date().getFullYear();
+    const pitboxes = cfg.s11_pitboxes || 10;
+    const trackUrl = cfg.s11_track_url || "";
+    const trackDesc = cfg.track_description || "";
+    const layoutDisplayNames = cfg.s11_layout_display_names || "";
+    const llmDesc = cfg.s11_llm_description !== false;
+    const llmPreview = cfg.s11_llm_preview !== false;
+    stageConfigHtml = `
+      <div class="db-config db-config--stage">
+        <h4>赛道信息</h4>
+        <div class="s9-level-row">
+          <div class="config-field">
+            <label>赛道名称</label>
+            <input type="text" id="s11TrackName" value="${trackName}" placeholder="e.g. ShaJing Track" />
+          </div>
+          <div class="config-field">
+            <label>作者</label>
+            <input type="text" id="s11TrackAuthor" value="${trackAuthor}" placeholder="Author name" />
+          </div>
+        </div>
+        <div class="s9-level-row">
+          <div class="config-field">
+            <label>国家</label>
+            <input type="text" id="s11TrackCountry" value="${trackCountry}" placeholder="e.g. China" />
+          </div>
+          <div class="config-field">
+            <label>城市</label>
+            <input type="text" id="s11TrackCity" value="${trackCity}" placeholder="e.g. ShenZhen" />
+          </div>
+        </div>
+        <div class="s9-level-row">
+          <div class="config-field">
+            <label>标签 (逗号分隔)</label>
+            <input type="text" id="s11TrackTags" value="${trackTags}" placeholder="circuit, original" />
+          </div>
+          <div class="config-field">
+            <label>年份</label>
+            <input type="number" id="s11TrackYear" value="${trackYear}" min="2000" max="2099" />
+          </div>
+        </div>
+        <div class="config-field">
+          <label>布局显示名称 <span style="color:var(--muted);font-weight:normal">(格式: layout名:显示名，分号分隔)</span></label>
+          <input type="text" id="s11LayoutDisplayNames" value="${layoutDisplayNames}" placeholder="layoutcw:Clockwise;layoutccw:Counter-Clockwise" />
+        </div>
+        <div class="s9-level-row">
+          <div class="config-field">
+            <label>Pit 数量</label>
+            <input type="number" id="s11Pitboxes" value="${pitboxes}" min="1" max="100" />
+          </div>
+          <div class="config-field">
+            <label>赛道 URL (可选)</label>
+            <input type="text" id="s11TrackUrl" value="${trackUrl}" placeholder="https://..." />
+          </div>
+        </div>
+        <div class="config-field" style="margin-top:8px">
+          <label>赛道描述 <span style="color:var(--muted);font-weight:normal">(留空则由 LLM 生成或使用模板)</span></label>
+          <textarea id="s11TrackDesc" rows="3" placeholder="e.g. A thrilling karting circuit located in..."
+            style="width:100%;resize:vertical;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:13px">${trackDesc}</textarea>
+        </div>
+        <div class="config-field" style="margin-top:8px">
+          <label>LLM 生成</label>
+          <div class="s9-toggles" id="s11LlmToggles">
+            <div class="s9-toggle" data-key="s11_llm_description">
+              <div>
+                <div class="s9-toggle__label">LLM 生成赛道描述</div>
+                <div class="s9-toggle__desc">描述留空时调用 Gemini 自动撰写</div>
+              </div>
+              <div class="s9-toggle__track${llmDesc ? " active" : ""}"><div class="s9-toggle__thumb"></div></div>
+            </div>
+            <div class="s9-toggle" data-key="s11_llm_preview">
+              <div>
+                <div class="s9-toggle__label">LLM 生成预览图</div>
+                <div class="s9-toggle__desc">无用户预览图时调用 Gemini 图像生成</div>
+              </div>
+              <div class="s9-toggle__track${llmPreview ? " active" : ""}"><div class="s9-toggle__thumb"></div></div>
+            </div>
+          </div>
+        </div>
+        <div class="config-actions">
+          <button class="btn btn--primary" id="btnSaveStageConfig">保存</button>
+        </div>
+      </div>`;
   }
 
   pane.innerHTML = `
@@ -629,6 +717,44 @@ async function showStageInfo(stage) {
       updated.s10_ks_diffuse = parseFloat($("s10KsDiffuse").value) ?? 0.1;
       updated.s10_ks_emissive = parseFloat($("s10KsEmissive").value) ?? 0.1;
       updated.s10_kseditor_exe = $("s10KsEditorExe").value.trim();
+      try {
+        await fetch("/api/pipeline/config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(updated),
+        });
+        $("btnSaveStageConfig").textContent = "已保存";
+        setTimeout(() => { $("btnSaveStageConfig").textContent = "保存"; }, 1500);
+      } catch (e) {
+        alert("保存失败: " + e.message);
+      }
+    });
+  } else if (stage.id === "track_packaging") {
+    // Wire LLM toggle switches
+    document.querySelectorAll("#s11LlmToggles .s9-toggle").forEach(row => {
+      row.addEventListener("click", () => {
+        row.querySelector(".s9-toggle__track").classList.toggle("active");
+      });
+    });
+    $("btnSaveStageConfig").addEventListener("click", async () => {
+      const updated = { ...cfg };
+      updated.s11_track_name = $("s11TrackName").value.trim();
+      updated.s11_track_author = $("s11TrackAuthor").value.trim();
+      updated.s11_track_country = $("s11TrackCountry").value.trim();
+      updated.s11_track_city = $("s11TrackCity").value.trim();
+      const tagsStr = $("s11TrackTags").value.trim();
+      updated.s11_track_tags = tagsStr ? tagsStr.split(",").map(t => t.trim()).filter(Boolean) : ["circuit", "original"];
+      updated.s11_track_year = parseInt($("s11TrackYear").value) || new Date().getFullYear();
+      updated.s11_pitboxes = parseInt($("s11Pitboxes").value) || 10;
+      updated.s11_track_url = $("s11TrackUrl").value.trim();
+      updated.s11_layout_display_names = $("s11LayoutDisplayNames").value.trim();
+      updated.track_description = $("s11TrackDesc").value.trim();
+      // LLM toggles
+      document.querySelectorAll("#s11LlmToggles .s9-toggle").forEach(row => {
+        const key = row.dataset.key;
+        const on = row.querySelector(".s9-toggle__track").classList.contains("active");
+        updated[key] = on;
+      });
       try {
         await fetch("/api/pipeline/config", {
           method: "POST",
@@ -949,7 +1075,7 @@ function previewFile(relPath) {
     previewArea.innerHTML = `
       <div class="db-preview__filename">${escapeHtml(fileName)}</div>
       <img src="${url}" alt="${escapeHtml(relPath)}" />`;
-  } else if (["json", "txt", "csv"].includes(ext)) {
+  } else if (["json", "txt", "csv", "ini"].includes(ext)) {
     previewArea.innerHTML = `<div class="db-preview__filename">${escapeHtml(fileName)}</div><pre>加载中...</pre>`;
     fetch(url)
       .then((r) => r.text())
@@ -1163,6 +1289,7 @@ function fileIcon(name) {
     tif: "\uD83C\uDF0D",
     tiff: "\uD83C\uDF0D",
     py: "\uD83D\uDC0D",
+    ini: "\u2699\uFE0F",
     glb: "\uD83D\uDFE9",
   };
   return icons[ext] || "\uD83D\uDCC4";

@@ -257,6 +257,9 @@ PIPELINE_STAGE_META = [
     {"id": "model_export",      "num": "10", "name": "模型导出",     "type": "auto",
      "desc": "清理 → 拆分超大网格 → 碰撞命名 → 分批 FBX 导出（Assetto Corsa）",
      "output_dir": "10_model_export"},
+    {"id": "track_packaging",   "num": "11", "name": "赛道打包",    "type": "auto",
+     "desc": "组装最终 AC 赛道 Mod 文件夹（KN5 + INI + UI + 地图）",
+     "output_dir": "11_track_packaging"},
 ]
 
 # Map auto stage ids to sam3_track_gen stage names
@@ -271,6 +274,7 @@ _STAGE_ID_TO_PIPELINE = {
     "ai_game_objects": "ai_game_objects",
     "blender_automate": "blender_automate",
     "model_export": "model_export",
+    "track_packaging": "track_packaging",
 }
 
 
@@ -382,6 +386,35 @@ class PipelineRunner:
             cmd.extend(["--ks-emissive", str(config_dict["s10_ks_emissive"])])
         if config_dict.get("s10_kseditor_exe"):
             cmd.extend(["--kseditor-exe", config_dict["s10_kseditor_exe"]])
+
+        # Stage 11 options
+        if config_dict.get("s11_track_name"):
+            cmd.extend(["--track-name", config_dict["s11_track_name"]])
+        if config_dict.get("s11_track_author"):
+            cmd.extend(["--track-author", config_dict["s11_track_author"]])
+        if config_dict.get("s11_track_country"):
+            cmd.extend(["--track-country", config_dict["s11_track_country"]])
+        if config_dict.get("s11_track_city"):
+            cmd.extend(["--track-city", config_dict["s11_track_city"]])
+        if config_dict.get("s11_track_tags"):
+            tags = config_dict["s11_track_tags"]
+            if isinstance(tags, list):
+                tags = ",".join(tags)
+            cmd.extend(["--track-tags", tags])
+        if config_dict.get("s11_track_year"):
+            cmd.extend(["--track-year", str(config_dict["s11_track_year"])])
+        if config_dict.get("s11_pitboxes"):
+            cmd.extend(["--pitboxes", str(config_dict["s11_pitboxes"])])
+        if config_dict.get("track_description"):
+            cmd.extend(["--track-description", config_dict["track_description"]])
+        if config_dict.get("s11_track_url"):
+            cmd.extend(["--track-url", config_dict["s11_track_url"]])
+        if config_dict.get("s11_layout_display_names"):
+            cmd.extend(["--layout-display-names", config_dict["s11_layout_display_names"]])
+        if config_dict.get("s11_llm_description") is False:
+            cmd.append("--no-llm-description")
+        if config_dict.get("s11_llm_preview") is False:
+            cmd.append("--no-llm-preview")
 
         # Set up result junctions before running
         try:
@@ -1711,6 +1744,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 ".svg": "image/svg+xml",
                 ".txt": "text/plain; charset=utf-8",
                 ".csv": "text/csv; charset=utf-8",
+                ".ini": "text/plain; charset=utf-8",
                 ".blend": "application/octet-stream",
             }
             ct = ct_map.get(ext, "application/octet-stream")

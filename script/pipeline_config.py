@@ -38,6 +38,7 @@ STAGE_ORDER: Dict[str, int] = {
     "blender_polygons": 8,
     "blender_automate": 9,
     "model_export": 10,
+    "track_packaging": 11,
 }
 
 PIPELINE_STAGES: List[str] = [
@@ -51,6 +52,7 @@ PIPELINE_STAGES: List[str] = [
     "blender_polygons",
     "blender_automate",
     "model_export",
+    "track_packaging",
 ]
 
 # ---------------------------------------------------------------------------
@@ -208,6 +210,19 @@ class PipelineConfig:
     s10_ks_diffuse: float = 0.1            # ksDiffuse FLOAT1 for visible materials
     s10_ks_emissive: float = 0.1           # ksEmissive FLOAT3 (same value x3)
     s10_kseditor_exe: str = ""             # Path to ksEditorAT.exe (auto-detected if empty)
+
+    # --- Stage 11 options (track packaging) ---
+    s11_track_name: str = ""               # Track folder name for AC (default: derived from geotiff)
+    s11_track_author: str = ""             # Author name for ui_track.json
+    s11_track_country: str = ""            # Country for ui_track.json
+    s11_track_city: str = ""               # City for ui_track.json
+    s11_track_tags: List[str] = field(default_factory=lambda: ["circuit", "original"])
+    s11_track_year: int = 0                # Year for ui_track.json (0 = current year)
+    s11_track_url: str = ""                # Optional URL for track info
+    s11_pitboxes: int = 10                 # Number of pit boxes
+    s11_layout_display_names: str = ""     # "layoutcw:Clockwise;layoutccw:Counter-clockwise"
+    s11_llm_description: bool = True       # Use LLM to generate track description when empty
+    s11_llm_preview: bool = True           # Use LLM to generate preview image when missing
 
     # --- Derived paths (populated by resolve()) ---
     glb_dir: str = ""
@@ -378,5 +393,6 @@ class PipelineConfig:
         )
         self.blender_result_dir = self.result_dir("blender_automate")     # 09_result
         self.export_dir = self.stage_dir("model_export")                # 10_model_export
+        self.packaging_dir = self.stage_dir("track_packaging")            # 11_track_packaging
 
         return self

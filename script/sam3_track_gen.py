@@ -44,6 +44,7 @@ from stages import (
     s08_blender_polygons,
     s09_blender_automate,
     s10_model_export,
+    s11_track_packaging,
 )
 
 # ---------------------------------------------------------------------------
@@ -70,6 +71,7 @@ STAGE_FUNCTIONS: Dict[str, Callable[[PipelineConfig], None]] = {
     "blender_polygons": s08_blender_polygons.run,
     "blender_automate": s09_blender_automate.run,
     "model_export": s10_model_export.run,
+    "track_packaging": s11_track_packaging.run,
 }
 
 
@@ -233,6 +235,26 @@ Available stages: """ + ", ".join(PIPELINE_STAGES)
     p.add_argument("--kseditor-exe", default="",
                     help="Path to ksEditorAT.exe for FBX→KN5 conversion")
 
+    # --- Stage 11 options ---
+    p.add_argument("--track-name", default="",
+                    help="Track folder name for packaging (default: derived from geotiff)")
+    p.add_argument("--track-author", default="", help="Track author name")
+    p.add_argument("--track-country", default="", help="Track country")
+    p.add_argument("--track-city", default="", help="Track city")
+    p.add_argument("--track-tags", default="",
+                    help="Comma-separated track tags (default: circuit,original)")
+    p.add_argument("--track-year", type=int, default=0,
+                    help="Track year (0 = current year)")
+    p.add_argument("--pitboxes", type=int, default=0,
+                    help="Number of pit boxes (0 = auto-detect from game objects)")
+    p.add_argument("--track-url", default="", help="Optional URL for track info")
+    p.add_argument("--layout-display-names", default="",
+                    help="Layout display names (format: layoutcw:Clockwise;layoutccw:Counter-CW)")
+    p.add_argument("--no-llm-description", action="store_true",
+                    help="Disable LLM track description generation")
+    p.add_argument("--no-llm-preview", action="store_true",
+                    help="Disable LLM preview image generation")
+
     return p
 
 
@@ -312,6 +334,30 @@ def config_from_args(args: argparse.Namespace) -> PipelineConfig:
         config.s10_ks_emissive = args.ks_emissive
     if args.kseditor_exe:
         config.s10_kseditor_exe = args.kseditor_exe
+
+    # Stage 11 options
+    if args.track_name:
+        config.s11_track_name = args.track_name
+    if args.track_author:
+        config.s11_track_author = args.track_author
+    if args.track_country:
+        config.s11_track_country = args.track_country
+    if args.track_city:
+        config.s11_track_city = args.track_city
+    if args.track_tags:
+        config.s11_track_tags = [t.strip() for t in args.track_tags.split(",") if t.strip()]
+    if args.track_year > 0:
+        config.s11_track_year = args.track_year
+    if args.pitboxes > 0:
+        config.s11_pitboxes = args.pitboxes
+    if args.track_url:
+        config.s11_track_url = args.track_url
+    if args.layout_display_names:
+        config.s11_layout_display_names = args.layout_display_names
+    if args.no_llm_description:
+        config.s11_llm_description = False
+    if args.no_llm_preview:
+        config.s11_llm_preview = False
 
     return config.resolve()
 

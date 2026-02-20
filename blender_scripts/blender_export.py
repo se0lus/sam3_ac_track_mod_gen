@@ -617,7 +617,11 @@ def step2_split_meshes(
 # ===================================================================
 
 def step3_rename_collision() -> None:
-    """Rename collision objects to Assetto Corsa convention."""
+    """Rename collision objects to Assetto Corsa convention.
+
+    Uses a two-pass approach to avoid Blender's automatic ``.001`` suffix
+    when the target name is already taken by another object in the scene.
+    """
     log.info("Step 3/6: Renaming collision objects")
 
     renamed = 0
@@ -631,14 +635,21 @@ def step3_rename_collision() -> None:
             key=lambda o: o.name,
         )
 
+        # Pass 1: rename to temporary names to free all target names
+        for idx, obj in enumerate(mesh_objs):
+            tmp = f"__tmp_{tag}_{idx}"
+            obj.name = tmp
+            if obj.data:
+                obj.data.name = tmp
+
+        # Pass 2: rename to final collision names (no conflicts now)
         for idx, obj in enumerate(mesh_objs):
             new_name = generate_collision_name(tag, idx)
-            if obj.name != new_name:
-                log.info("  %s -> %s", obj.name, new_name)
-                obj.name = new_name
-                if obj.data:
-                    obj.data.name = new_name
-                renamed += 1
+            log.info("  %s -> %s", obj.name, new_name)
+            obj.name = new_name
+            if obj.data:
+                obj.data.name = new_name
+            renamed += 1
 
     log.info("  Renamed %d collision objects", renamed)
 
@@ -1096,6 +1107,13 @@ def step6_save_and_export(
             if renamed:
                 log.info("  '%s': stripped layout prefix from %d objects",
                          batch_name, len(renamed))
+
+        # Ensure mesh data names match object names for ksEditorAt INI matching.
+        # Some creators (boolean_mesh_generator) add _mesh suffix to data names,
+        # which causes RENDERABLE=0 to not be applied during FBX->KN5 conversion.
+        for obj in col.objects:
+            if obj.type == "MESH" and obj.data and obj.data.name != obj.name:
+                obj.data.name = obj.name
 
         fbx_path = os.path.join(output_dir, f"{batch_name}.fbx")
 
