@@ -217,6 +217,14 @@ Available stages: """ + ", ".join(PIPELINE_STAGES)
     p.add_argument("--mesh-decimate-ratio", type=float, default=0.0,
                     help="Decimate ratio 0-1 (0 = use config default 0.5)")
 
+    # --- Stage 10 options ---
+    p.add_argument("--max-vertices", type=int, default=0,
+                    help="Max vertices per exported mesh object (0 = use config default 21000)")
+    p.add_argument("--max-batch-mb", type=int, default=0,
+                    help="Max FBX file size in MB (0 = use config default 100)")
+    p.add_argument("--fbx-scale", type=float, default=0.0,
+                    help="FBX export global scale (0 = use config default 0.01)")
+
     return p
 
 
@@ -280,6 +288,14 @@ def config_from_args(args: argparse.Namespace) -> PipelineConfig:
         config.s9_mesh_weld_distance = args.mesh_weld_distance
     if args.mesh_decimate_ratio > 0:
         config.s9_mesh_decimate_ratio = args.mesh_decimate_ratio
+
+    # Stage 10 options
+    if args.max_vertices > 0:
+        config.s10_max_vertices = args.max_vertices
+    if args.max_batch_mb > 0:
+        config.s10_max_batch_mb = args.max_batch_mb
+    if args.fbx_scale > 0:
+        config.s10_fbx_scale = args.fbx_scale
 
     return config.resolve()
 

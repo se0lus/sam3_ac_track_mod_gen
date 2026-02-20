@@ -284,7 +284,7 @@ async function showStageInfo(stage) {
   // Build per-stage config section
   let stageConfigHtml = "";
   let cfg = {};
-  if (stage.id === "mask_full_map" || stage.id === "blender_polygons" || stage.id === "blender_automate") {
+  if (stage.id === "mask_full_map" || stage.id === "blender_polygons" || stage.id === "blender_automate" || stage.id === "model_export") {
     try {
       const resp = await fetch("/api/pipeline/config");
       cfg = await resp.json();
@@ -452,6 +452,33 @@ async function showStageInfo(stage) {
           <button class="btn btn--primary" id="btnSaveStageConfig">保存</button>
         </div>
       </div>`;
+  } else if (stage.id === "model_export") {
+    const maxVerts = cfg.s10_max_vertices || 21000;
+    const maxBatchMb = cfg.s10_max_batch_mb || 100;
+    const fbxScale = cfg.s10_fbx_scale || 0.01;
+    stageConfigHtml = `
+      <div class="db-config db-config--stage">
+        <h4>导出参数</h4>
+        <div class="s9-level-row">
+          <div class="config-field">
+            <label>单网格最大顶点数</label>
+            <input type="number" id="s10MaxVertices" value="${maxVerts}" min="1000" max="100000" step="1000" />
+          </div>
+          <div class="config-field">
+            <label>FBX 最大尺寸 (MB)</label>
+            <input type="number" id="s10MaxBatchMb" value="${maxBatchMb}" min="10" max="500" step="10" />
+          </div>
+        </div>
+        <div class="s9-level-row">
+          <div class="config-field">
+            <label>FBX 导出缩放</label>
+            <input type="number" id="s10FbxScale" value="${fbxScale}" min="0.001" max="1.0" step="0.001" />
+          </div>
+        </div>
+        <div class="config-actions">
+          <button class="btn btn--primary" id="btnSaveStageConfig">保存</button>
+        </div>
+      </div>`;
   }
 
   pane.innerHTML = `
@@ -556,6 +583,24 @@ async function showStageInfo(stage) {
         const on = row.querySelector(".s9-toggle__track").classList.contains("active");
         updated[key] = on;
       });
+      try {
+        await fetch("/api/pipeline/config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(updated),
+        });
+        $("btnSaveStageConfig").textContent = "已保存";
+        setTimeout(() => { $("btnSaveStageConfig").textContent = "保存"; }, 1500);
+      } catch (e) {
+        alert("保存失败: " + e.message);
+      }
+    });
+  } else if (stage.id === "model_export") {
+    $("btnSaveStageConfig").addEventListener("click", async () => {
+      const updated = { ...cfg };
+      updated.s10_max_vertices = parseInt($("s10MaxVertices").value) || 21000;
+      updated.s10_max_batch_mb = parseInt($("s10MaxBatchMb").value) || 100;
+      updated.s10_fbx_scale = parseFloat($("s10FbxScale").value) || 0.01;
       try {
         await fetch("/api/pipeline/config", {
           method: "POST",

@@ -255,7 +255,7 @@ PIPELINE_STAGE_META = [
      "desc": "手动编辑 Blender 文件（在 Blender 中直接打开编辑）",
      "output_dir": "09a_manual_blender"},
     {"id": "model_export",      "num": "10", "name": "模型导出",     "type": "auto",
-     "desc": "从 Blender 文件拆分并导出模型（框架，待实现）",
+     "desc": "清理 → 拆分超大网格 → 碰撞命名 → 分批 FBX 导出（Assetto Corsa）",
      "output_dir": "10_model_export"},
 ]
 
@@ -366,6 +366,14 @@ class PipelineRunner:
             val = config_dict.get(f"s9_density_{dtag}")
             if val:
                 cmd.extend([f"--density-{dtag}", str(val)])
+
+        # Stage 10 options
+        if config_dict.get("s10_max_vertices"):
+            cmd.extend(["--max-vertices", str(config_dict["s10_max_vertices"])])
+        if config_dict.get("s10_max_batch_mb"):
+            cmd.extend(["--max-batch-mb", str(config_dict["s10_max_batch_mb"])])
+        if config_dict.get("s10_fbx_scale"):
+            cmd.extend(["--fbx-scale", str(config_dict["s10_fbx_scale"])])
 
         # Set up result junctions before running
         try:

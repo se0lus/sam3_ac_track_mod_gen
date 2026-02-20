@@ -200,6 +200,11 @@ class PipelineConfig:
     s9_mesh_weld_distance: float = 0.01     # Weld distance in metres (default 0.01)
     s9_mesh_decimate_ratio: float = 0.5     # Decimate ratio 0-1 (default 0.5)
 
+    # --- Stage 10 options ---
+    s10_max_vertices: int = 21000           # Max vertices per MESH object
+    s10_max_batch_mb: int = 100             # Max FBX file size (MB, geometry only)
+    s10_fbx_scale: float = 0.01            # FBX export global scale
+
     # --- Derived paths (populated by resolve()) ---
     glb_dir: str = ""
     clips_dir: str = ""
