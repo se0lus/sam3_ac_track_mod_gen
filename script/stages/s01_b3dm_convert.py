@@ -27,7 +27,8 @@ def run(config: PipelineConfig) -> None:
         return
 
     os.makedirs(config.glb_dir, exist_ok=True)
-    converted = convert_directory(config.tiles_dir, config.glb_dir)
+    converted = convert_directory(config.tiles_dir, config.glb_dir,
+                                  max_workers=config.max_workers)
     logger.info("Converted %d B3DM files to GLB in %s", len(converted), config.glb_dir)
 
 

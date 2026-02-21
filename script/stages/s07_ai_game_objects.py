@@ -361,17 +361,22 @@ def _write_geo_metadata(config: PipelineConfig, out_dir: str) -> None:
 
         meta = masks_data.get("meta", {})
         model_scale = meta.get("model_scale_size", {})
-        geo_bounds = meta.get("geo", {}).get("bounds", {})
+        geo = meta.get("geo", {})
+        geo_bounds = geo.get("bounds", {})
+        crs_str = geo.get("crs", "EPSG:4326")
+
+        from pipeline_config import bounds_to_wgs84
+        wgs84 = bounds_to_wgs84(
+            crs_str,
+            geo_bounds.get("left", 0), geo_bounds.get("bottom", 0),
+            geo_bounds.get("right", 0), geo_bounds.get("top", 0),
+        )
 
         geo_metadata = {
             "image_width": model_scale.get("width", 0),
             "image_height": model_scale.get("height", 0),
-            "bounds": {
-                "north": geo_bounds.get("top", 0),
-                "south": geo_bounds.get("bottom", 0),
-                "east": geo_bounds.get("right", 0),
-                "west": geo_bounds.get("left", 0),
-            },
+            "bounds": {k: wgs84[k] for k in ("north", "south", "east", "west")},
+            "corners": wgs84.get("corners"),
         }
 
         out_path = os.path.join(out_dir, "geo_metadata.json")

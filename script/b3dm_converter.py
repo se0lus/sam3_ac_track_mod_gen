@@ -18,6 +18,7 @@ B3DM format (28-byte header):
 import os
 import struct
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logger = logging.getLogger(__name__)
 
@@ -97,12 +98,13 @@ def convert_file(b3dm_path: str, output_path: str) -> str:
     return output_path
 
 
-def convert_directory(input_dir: str, output_dir: str) -> list:
+def convert_directory(input_dir: str, output_dir: str, max_workers: int = 1) -> list:
     """Batch convert all .b3dm files in a directory (recursively) to GLB.
 
     Args:
         input_dir: Root directory containing .b3dm files.
         output_dir: Root directory for output .glb files (mirrors input structure).
+        max_workers: Number of threads for parallel conversion (1 = serial).
 
     Returns:
         List of (b3dm_path, glb_path) tuples for successfully converted files.
@@ -115,26 +117,51 @@ def convert_directory(input_dir: str, output_dir: str) -> list:
 
     os.makedirs(output_dir, exist_ok=True)
 
-    converted = []
-    errors = []
-
+    # Collect all tasks first
+    tasks = []
     for root, _dirs, files in os.walk(input_dir):
         for name in files:
             if not name.lower().endswith('.b3dm'):
                 continue
-
             b3dm_path = os.path.join(root, name)
-            # Preserve subdirectory structure
             rel_path = os.path.relpath(b3dm_path, input_dir)
             glb_name = os.path.splitext(rel_path)[0] + '.glb'
             glb_path = os.path.join(output_dir, glb_name)
+            tasks.append((b3dm_path, glb_path))
 
+    if not tasks:
+        logger.info("No .b3dm files found in %s", input_dir)
+        return []
+
+    converted = []
+    errors = []
+    total = len(tasks)
+    max_workers = max(1, max_workers)
+
+    if max_workers == 1:
+        # Serial path — no thread overhead
+        for i, (b3dm_path, glb_path) in enumerate(tasks):
             try:
                 convert_file(b3dm_path, glb_path)
                 converted.append((b3dm_path, glb_path))
             except (B3dmConversionError, FileNotFoundError) as e:
                 logger.error("Failed to convert %s: %s", b3dm_path, e)
                 errors.append((b3dm_path, str(e)))
+    else:
+        logger.info("Converting %d B3DM files with %d workers", total, max_workers)
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            future_map = {
+                pool.submit(convert_file, b3dm_path, glb_path): (b3dm_path, glb_path)
+                for b3dm_path, glb_path in tasks
+            }
+            for future in as_completed(future_map):
+                b3dm_path, glb_path = future_map[future]
+                try:
+                    future.result()
+                    converted.append((b3dm_path, glb_path))
+                except (B3dmConversionError, FileNotFoundError) as e:
+                    logger.error("Failed to convert %s: %s", b3dm_path, e)
+                    errors.append((b3dm_path, str(e)))
 
     logger.info(
         "Batch conversion complete: %d converted, %d errors",

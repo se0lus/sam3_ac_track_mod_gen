@@ -98,6 +98,10 @@
     </div>
 
     <script src="./map_rightdrag.js"></script>
-    <script src="./surface_editor.js"></script>
+    <script>
+      const s = document.createElement("script");
+      s.src = "./surface_editor.js?_t=" + Date.now();
+      document.body.appendChild(s);
+    </script>
   </body>
 </html>

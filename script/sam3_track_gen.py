@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import shutil
 import sys
 from typing import Callable, Dict, List, Optional
 
@@ -92,6 +93,20 @@ def _load_manual_stages_config(config: PipelineConfig) -> Dict[str, bool]:
     return {}
 
 
+def _clean_stage_output(config: PipelineConfig, stage_name: str) -> None:
+    """Remove and recreate a stage's output directory to avoid stale files.
+
+    Only auto-stage directories (``output/NN_stage_name/``) are cleaned.
+    Manual stages (2a, 5a, 6a, 7a) and result junctions are never touched.
+    """
+    stage_output = config.stage_dir(stage_name)
+    if not os.path.isdir(stage_output):
+        return
+    logger.info("Cleaning stage output: %s", stage_output)
+    shutil.rmtree(stage_output)
+    os.makedirs(stage_output, exist_ok=True)
+
+
 def run_pipeline(config: PipelineConfig, stages: Optional[List[str]] = None) -> None:
     """Run the pipeline, either all stages or a subset."""
     if stages is None:
@@ -112,6 +127,7 @@ def run_pipeline(config: PipelineConfig, stages: Optional[List[str]] = None) -> 
                 f"Available: {sorted(STAGE_FUNCTIONS.keys())}"
             )
         try:
+            _clean_stage_output(config, stage_name)
             func(config)
         except Exception as e:
             logger.error("Stage '%s' failed: %s", stage_name, e)
@@ -168,6 +184,10 @@ Available stages: """ + ", ".join(PIPELINE_STAGES)
         "--inpaint-model", default="",
         help='Inpainting model (default: gemini-2.5-flash-image). Use "disabled" to skip.',
     )
+    p.add_argument("--max-workers", type=int, default=0,
+                    help="Thread pool size for parallel stages (0 = use config default 4)")
+    p.add_argument("--road-mask-offset", type=int, default=None,
+                    help="Road mask offset in pixels (negative = erode/shrink, default: -2)")
 
     # --- Stage 8 options ---
     p.add_argument("--generate-curves", action="store_true",
@@ -178,6 +198,14 @@ Available stages: """ + ", ".join(PIPELINE_STAGES)
                     help="Gap fill threshold in metres (default: 0.20)")
     p.add_argument("--gap-fill-default-tag", default="road2",
                     help="Default fill tag for remaining voids (default: road2)")
+
+    # --- Stage 5 options ---
+    p.add_argument("--s5-road-gap-close", type=float, default=0.20,
+                    help="Close road edge gaps up to this width in metres (default: 0.20, 0=disable)")
+    p.add_argument("--s5-kerb-narrow-width", type=float, default=0.30,
+                    help="Max width for narrow kerb absorption in metres (default: 0.30)")
+    p.add_argument("--s5-kerb-narrow-adjacency", type=float, default=0.20,
+                    help="Adjacency threshold for narrow kerb absorption in metres (default: 0.20)")
 
     # --- Stage 9 options ---
     p.add_argument("--base-level", type=int, default=0,
@@ -277,6 +305,19 @@ def config_from_args(args: argparse.Namespace) -> PipelineConfig:
             config.inpaint_center_holes = False
         else:
             config.inpaint_model = args.inpaint_model
+
+    # Concurrency
+    if args.max_workers > 0:
+        config.max_workers = args.max_workers
+
+    # Road mask offset
+    if args.road_mask_offset is not None:
+        config.road_mask_offset_px = args.road_mask_offset
+
+    # Stage 5 options
+    config.s5_road_gap_close_m = args.s5_road_gap_close
+    config.s5_kerb_narrow_max_width_m = args.s5_kerb_narrow_width
+    config.s5_kerb_narrow_adjacency_m = args.s5_kerb_narrow_adjacency
 
     # Stage 8 options
     config.s8_generate_curves = args.generate_curves

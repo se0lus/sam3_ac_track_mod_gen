@@ -284,7 +284,7 @@ async function showStageInfo(stage) {
   // Build per-stage config section
   let stageConfigHtml = "";
   let cfg = {};
-  if (stage.id === "mask_full_map" || stage.id === "blender_polygons" || stage.id === "blender_automate" || stage.id === "model_export" || stage.id === "track_packaging") {
+  if (stage.id === "mask_full_map" || stage.id === "blender_polygons" || stage.id === "blender_automate" || stage.id === "model_export" || stage.id === "track_packaging" || stage.id === "convert_to_blender") {
     try {
       const resp = await fetch("/api/pipeline/config");
       cfg = await resp.json();
@@ -336,6 +336,7 @@ async function showStageInfo(stage) {
       </div>`;
   } else if (stage.id === "mask_full_map") {
     const model = cfg.inpaint_model || "gemini-2.5-flash-image";
+    const roadOffset = cfg.road_mask_offset_px !== undefined ? cfg.road_mask_offset_px : -2;
     stageConfigHtml = `
       <div class="db-config db-config--stage">
         <h4>阶段配置</h4>
@@ -346,6 +347,47 @@ async function showStageInfo(stage) {
             <option value="gemini-3-pro-image-preview" ${model === "gemini-3-pro-image-preview" ? "selected" : ""}>Gemini 3 Pro Image Preview</option>
             <option value="disabled" ${model === "disabled" ? "selected" : ""}>跳过补洞 (Skip inpainting)</option>
           </select>
+        </div>
+        <div class="config-field">
+          <label>路面 Mask 偏移 (px)</label>
+          <input type="number" id="cfgRoadMaskOffset" value="${roadOffset}" min="-20" max="20" step="1" style="width:80px">
+          <span class="config-hint">负值=内缩，正值=外扩，默认 -2（让精细 mask 补边缘）</span>
+        </div>
+        <div class="config-actions">
+          <button class="btn btn--primary" id="btnSaveStageConfig">保存</button>
+        </div>
+      </div>`;
+  } else if (stage.id === "convert_to_blender") {
+    const roadGapClose = cfg.s5_road_gap_close_m !== undefined ? cfg.s5_road_gap_close_m : 0.20;
+    const kerbNarrowWidth = cfg.s5_kerb_narrow_max_width_m !== undefined ? cfg.s5_kerb_narrow_max_width_m : 0.30;
+    const kerbNarrowAdj = cfg.s5_kerb_narrow_adjacency_m !== undefined ? cfg.s5_kerb_narrow_adjacency_m : 0.20;
+    stageConfigHtml = `
+      <div class="db-config db-config--stage">
+        <h4>阶段配置</h4>
+        <div class="config-field">
+          <label>路面空隙闭合 (Road Gap Close)</label>
+          <div class="s9-level-row">
+            <div class="config-field">
+              <label>闭合宽度 (米)</label>
+              <input type="number" id="s5RoadGapClose" value="${roadGapClose}" min="0" max="2.0" step="0.05" />
+              <span class="config-hint">填充 road 边缘 ≤ 此宽度的缝隙 (0=禁用)</span>
+            </div>
+          </div>
+        </div>
+        <div class="config-field">
+          <label>窄 Kerb 吸收为 Road (Narrow Kerb Absorption)</label>
+          <div class="s9-level-row">
+            <div class="config-field">
+              <label>最大宽度 (米)</label>
+              <input type="number" id="s5KerbNarrowWidth" value="${kerbNarrowWidth}" min="0" max="2.0" step="0.05" />
+              <span class="config-hint">窄于此宽度的 kerb 突起被吸收为 road</span>
+            </div>
+            <div class="config-field">
+              <label>邻接距离 (米)</label>
+              <input type="number" id="s5KerbNarrowAdj" value="${kerbNarrowAdj}" min="0" max="2.0" step="0.05" />
+              <span class="config-hint">仅吸收在此距离内紧邻 road 的窄 kerb</span>
+            </div>
+          </div>
         </div>
         <div class="config-actions">
           <button class="btn btn--primary" id="btnSaveStageConfig">保存</button>
@@ -651,11 +693,30 @@ async function showStageInfo(stage) {
   } else if (stage.id === "mask_full_map") {
     $("btnSaveStageConfig").addEventListener("click", async () => {
       const val = $("cfgInpaintModel").value;
+      const offsetVal = parseInt($("cfgRoadMaskOffset").value, 10) || -2;
       try {
         await fetch("/api/pipeline/config", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...cfg, inpaint_model: val }),
+          body: JSON.stringify({ ...cfg, inpaint_model: val, road_mask_offset_px: offsetVal }),
+        });
+        $("btnSaveStageConfig").textContent = "已保存";
+        setTimeout(() => { $("btnSaveStageConfig").textContent = "保存"; }, 1500);
+      } catch (e) {
+        alert("保存失败: " + e.message);
+      }
+    });
+  } else if (stage.id === "convert_to_blender") {
+    $("btnSaveStageConfig").addEventListener("click", async () => {
+      const updated = { ...cfg };
+      updated.s5_road_gap_close_m = parseFloat($("s5RoadGapClose").value) || 0;
+      updated.s5_kerb_narrow_max_width_m = parseFloat($("s5KerbNarrowWidth").value) || 0.30;
+      updated.s5_kerb_narrow_adjacency_m = parseFloat($("s5KerbNarrowAdj").value) || 0.20;
+      try {
+        await fetch("/api/pipeline/config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(updated),
         });
         $("btnSaveStageConfig").textContent = "已保存";
         setTimeout(() => { $("btnSaveStageConfig").textContent = "保存"; }, 1500);
@@ -847,6 +908,14 @@ async function showConfigPanel() {
         <input type="password" id="cfgGeminiKey" value="${cfg.gemini_api_key || ""}" />
       </div>
 
+      <div class="s9-level-row">
+        <div class="config-field">
+          <label>并发线程数 (Stage 1, 3)</label>
+          <input type="number" id="cfgMaxWorkers" value="${cfg.max_workers || 4}" min="1" max="16" step="1" />
+        </div>
+        <div></div>
+      </div>
+
       <div class="config-actions">
         <button class="btn btn--primary" id="btnSaveConfig">保存配置</button>
       </div>
@@ -873,6 +942,7 @@ async function saveConfig() {
     blender_exe: $("cfgBlenderExe").value.trim(),
     track_direction: $("cfgTrackDir").value,
     gemini_api_key: $("cfgGeminiKey").value.trim(),
+    max_workers: parseInt($("cfgMaxWorkers").value) || 4,
   };
   try {
     await fetch("/api/pipeline/config", {
@@ -1262,7 +1332,7 @@ function showTab(tabName) {
   if (tabName === "editor" && _pendingEditorUrl && _pendingEditorUrl !== _loadedEditorUrl) {
     _loadedEditorUrl = _pendingEditorUrl;
     const area = $("editorArea");
-    area.innerHTML = `<iframe src="${_pendingEditorUrl}" title="编辑器"></iframe>`;
+    area.innerHTML = `<iframe src="${_pendingEditorUrl}?_t=${Date.now()}" title="编辑器"></iframe>`;
   }
 }
 

@@ -5,6 +5,7 @@ import argparse
 import logging
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logger = logging.getLogger("sam3_pipeline.s03")
 
@@ -31,7 +32,8 @@ def run(config: PipelineConfig) -> None:
     if not os.path.isdir(result_dir):
         # Fallback: direct stage 2 output (no junction set up)
         result_dir = config.mask_full_map_dir
-    _clip_full_map(config.geotiff_path, config.clips_dir, result_dir)
+    _clip_full_map(config.geotiff_path, config.clips_dir, result_dir,
+                   max_workers=config.max_workers)
     logger.info("Clipping complete. Clips saved to %s", config.clips_dir)
 
 
@@ -76,7 +78,8 @@ def _union_layout_masks(layouts_json_path: str, layouts_dir: str):
     return Image.fromarray(union_arr, mode="L")
 
 
-def _clip_full_map(src_img_file: str, clips_output_dir: str, mask_full_map_dir: str) -> None:
+def _clip_full_map(src_img_file: str, clips_output_dir: str, mask_full_map_dir: str,
+                   max_workers: int = 1) -> None:
     """Clip the full GeoTIFF into smaller tiles based on the mask.
 
     All outputs (clips, visualization) go to *clips_output_dir*.
@@ -135,16 +138,39 @@ def _clip_full_map(src_img_file: str, clips_output_dir: str, mask_full_map_dir: 
                          save_path=os.path.join(clips_output_dir, "clip_boxes_visualization.png"))
 
     total = len(clip_boxes)
-    for i, box in enumerate(clip_boxes):
+    source_gsd = geo_image.geo_image.get_gsd()[0]
+    max_workers = max(1, max_workers)
+
+    def _process_clip(idx_box):
+        """Process a single clip: crop, generate modelscale, save, close."""
+        i, box = idx_box
         logger.info("Clipping %d/%d ...", i + 1, total)
         cropped = geo_image.crop_and_scale_to_gsd(
-            box, geo_image.geo_image.get_gsd()[0],
+            box, source_gsd,
             dst_image_path=os.path.join(clips_output_dir, f"clip_{i}.tif"),
         )
         cropped.generate_model_scale_image()
         cropped.save(save_masks=False, output_dir=clips_output_dir)
-        # Explicitly close rasterio dataset to avoid file-handle accumulation
         cropped.geo_image.close()
+        return i
+
+    if max_workers == 1:
+        for i, box in enumerate(clip_boxes):
+            _process_clip((i, box))
+    else:
+        logger.info("Clipping %d boxes with %d workers", total, max_workers)
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {
+                pool.submit(_process_clip, (i, box)): i
+                for i, box in enumerate(clip_boxes)
+            }
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    clip_idx = futures[future]
+                    logger.error("Failed to clip %d: %s", clip_idx, e)
+                    raise
 
 
 if __name__ == "__main__":

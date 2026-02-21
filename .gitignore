@@ -26,6 +26,7 @@ output/
 # 测试数据
 test_images/
 test_images_shajing/
+test_images_gic/
 test_session_record/
 
 # Blender文件

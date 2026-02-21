@@ -93,6 +93,9 @@ def run(config: PipelineConfig) -> None:
         fullmap_mask_dir=fullmap_mask_dir,
         layout_mask_dir=layout_mask_dir,
         composite_priority=composite_priority,
+        road_gap_close_m=config.s5_road_gap_close_m,
+        kerb_narrow_max_width_m=config.s5_kerb_narrow_max_width_m,
+        kerb_narrow_adjacency_m=config.s5_kerb_narrow_adjacency_m,
     )
     logger.info("Blender input files written to %s", output_dir)
 
@@ -107,6 +110,9 @@ def _merge_and_convert(
     layout_mask_dir: str = None,
     manual_surface_mask_dir: str = None,
     composite_priority: List[dict] = None,
+    road_gap_close_m: float = 0.20,
+    kerb_narrow_max_width_m: float = 0.30,
+    kerb_narrow_adjacency_m: float = 0.20,
 ) -> None:
     """Merge clip masks via rasterization, then convert to Blender coordinates."""
     from mask_merger import merge_clip_masks
@@ -123,6 +129,9 @@ def _merge_and_convert(
         manual_surface_mask_dir=manual_surface_mask_dir,
         composite_priority=composite_priority,
         preview_dir=preview_dir,
+        road_gap_close_m=road_gap_close_m,
+        kerb_narrow_max_width_m=kerb_narrow_max_width_m,
+        kerb_narrow_adjacency_m=kerb_narrow_adjacency_m,
     )
 
     if not merged:

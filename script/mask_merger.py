@@ -33,6 +33,38 @@ TAG_COLORS_BGR = {
 }
 
 
+def _pixel_size_m(
+    bounds: Dict[str, float],
+    canvas_w: int,
+    canvas_h: int,
+) -> float:
+    """Compute average pixel size in metres, handling geographic & projected CRS.
+
+    Geographic CRS (WGS84): bounds in degrees → convert via lat/lon scale.
+    Projected CRS (UTM etc.): bounds already in metres → direct division.
+    """
+    import math
+
+    left, right = bounds["left"], bounds["right"]
+    bottom, top = bounds["bottom"], bounds["top"]
+    geo_w = right - left
+    geo_h = top - bottom
+
+    if -180 <= left <= 180 and -180 <= right <= 180 and -90 <= bottom <= 90 and -90 <= top <= 90:
+        # Geographic (degrees)
+        lat_mid = (top + bottom) / 2.0
+        m_per_deg_lon = 111_320.0 * math.cos(math.radians(lat_mid))
+        m_per_deg_lat = 111_320.0
+        px = geo_w * m_per_deg_lon / canvas_w
+        py = geo_h * m_per_deg_lat / canvas_h
+    else:
+        # Projected (metres)
+        px = geo_w / canvas_w
+        py = geo_h / canvas_h
+
+    return (px + py) / 2.0
+
+
 def _read_geotiff_bounds(geotiff_path: str) -> Dict[str, Any]:
     """Read only metadata (bounds, size) from GeoTIFF without loading pixels."""
     import rasterio
@@ -400,21 +432,7 @@ def _absorb_narrow_kerb_into_road(
         return
 
     # --- pixel size in metres ------------------------------------------------
-    import math
-
-    geo_w_deg = bounds["right"] - bounds["left"]
-    geo_h_deg = bounds["top"] - bounds["bottom"]
-    lat_mid = (bounds["top"] + bounds["bottom"]) / 2.0
-
-    m_per_deg_lat = 111_320.0
-    m_per_deg_lon = 111_320.0 * math.cos(math.radians(lat_mid))
-
-    geo_w_m = geo_w_deg * m_per_deg_lon
-    geo_h_m = geo_h_deg * m_per_deg_lat
-
-    pixel_size_x_m = geo_w_m / canvas_w
-    pixel_size_y_m = geo_h_m / canvas_h
-    pixel_size_m = (pixel_size_x_m + pixel_size_y_m) / 2.0
+    pixel_size_m = _pixel_size_m(bounds, canvas_w, canvas_h)
 
     # Opening kernel radius in pixels — features narrower than 2*radius vanish
     radius_px = max(1, int(round(max_width_m / pixel_size_m / 2)))
@@ -571,6 +589,83 @@ def _absorb_orphan_kerb(
     else:
         logger.debug("  Orphan kerb: all %d component(s) touch road",
                       num_labels - 1)
+
+
+def _close_road_gaps(
+    composited: Dict[str, np.ndarray],
+    bounds: Dict[str, float],
+    canvas_w: int,
+    canvas_h: int,
+    gap_close_m: float = 0.20,
+) -> None:
+    """Fill narrow unassigned strips between road and neighboring tags (in-place).
+
+    SAM3 often leaves thin lane markings unclassified, creating a gap between
+    road and adjacent tags (grass, kerb, sand, road2).  This function finds
+    unassigned pixels where ``dist_to_road + dist_to_any_other_tag ≤ gap_px``
+    and fills them as road.
+
+    Only unassigned pixels are claimed — existing tag assignments are never
+    overwritten.
+    """
+    if "road" not in composited or gap_close_m <= 0:
+        return
+
+    road = composited["road"]
+    if np.count_nonzero(road) == 0:
+        return
+
+    pixel_size_m = _pixel_size_m(bounds, canvas_w, canvas_h)
+    gap_px = gap_close_m / pixel_size_m
+
+    # Build union of all assigned pixels (any tag)
+    assigned = np.zeros((canvas_h, canvas_w), dtype=np.uint8)
+    for mask in composited.values():
+        assigned = cv2.bitwise_or(assigned, mask)
+
+    # Unassigned = pixels not covered by any tag
+    unassigned = cv2.bitwise_not(assigned)
+    if np.count_nonzero(unassigned) == 0:
+        logger.debug("  Road gap close: no unassigned pixels")
+        return
+
+    # Union of all non-road tags
+    others = np.zeros((canvas_h, canvas_w), dtype=np.uint8)
+    for tag, mask in composited.items():
+        if tag != "road":
+            others = cv2.bitwise_or(others, mask)
+
+    if np.count_nonzero(others) == 0:
+        logger.debug("  Road gap close: no non-road tags to bridge to")
+        return
+
+    # Distance transforms (L2, from foreground to background)
+    # cv2.distanceTransform needs binary input where 0=foreground for distance
+    dist_from_road = cv2.distanceTransform(
+        cv2.bitwise_not(road), cv2.DIST_L2, cv2.DIST_MASK_PRECISE,
+    )
+    dist_from_others = cv2.distanceTransform(
+        cv2.bitwise_not(others), cv2.DIST_L2, cv2.DIST_MASK_PRECISE,
+    )
+
+    # Fill condition: unassigned AND (dist_road + dist_others ≤ gap_px)
+    gap_sum = dist_from_road + dist_from_others
+    fill_mask = (unassigned > 0) & (gap_sum <= gap_px)
+
+    n_filled = np.count_nonzero(fill_mask)
+    if n_filled == 0:
+        logger.debug(
+            "  Road gap close: no qualifying gaps (threshold=%.1f px ≈ %.1f cm)",
+            gap_px, gap_close_m * 100,
+        )
+        return
+
+    road[fill_mask] = 255
+
+    logger.info(
+        "  Road gap close: filled %d px (threshold=%.1f px ≈ %.1f cm)",
+        n_filled, gap_px, gap_close_m * 100,
+    )
 
 
 def _composite_surface_tags(
@@ -770,6 +865,9 @@ def merge_clip_masks(
     simplify_epsilon: float = 2.0,
     min_contour_area: int = 100,
     preview_dir: Optional[str] = None,
+    road_gap_close_m: float = 0.20,
+    kerb_narrow_max_width_m: float = 0.30,
+    kerb_narrow_adjacency_m: float = 0.20,
 ) -> Dict[str, List[Dict[str, Any]]]:
     """Merge per-clip mask polygons into unified per-tag masks.
 
@@ -886,11 +984,17 @@ def merge_clip_masks(
             canvas_w=canvas_w,
         )
 
-        # 1d-post. Absorb narrow kerb into road
-        _absorb_narrow_kerb_into_road(composited, bounds, canvas_w, canvas_h)
+        # 1d-post1. Absorb narrow kerb into road
+        _absorb_narrow_kerb_into_road(composited, bounds, canvas_w, canvas_h,
+                                      max_width_m=kerb_narrow_max_width_m,
+                                      adjacency_m=kerb_narrow_adjacency_m)
 
         # 1d-post2. Absorb orphan kerb (not adjacent to road) into neighbors
         _absorb_orphan_kerb(composited)
+
+        # 1d-post3. Close small gaps in road edges (after kerb absorption)
+        _close_road_gaps(composited, bounds, canvas_w, canvas_h,
+                         gap_close_m=road_gap_close_m)
 
         # 1e. Save composite label map for downstream gap-filling (Stage 8)
         if preview_dir:

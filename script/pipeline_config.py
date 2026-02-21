@@ -115,6 +115,65 @@ def _remove_junction_safe(path: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Geographic bounds → WGS84 conversion utility
+# ---------------------------------------------------------------------------
+def bounds_to_wgs84(crs_str: str, left: float, bottom: float,
+                    right: float, top: float) -> dict:
+    """Convert bounding box from *crs_str* to WGS84 (EPSG:4326).
+
+    Returns a dict with:
+    - ``bounds``: ``{"north", "south", "east", "west"}`` (bounding rectangle)
+    - ``corners``: ``{"top_left", "top_right", "bottom_left", "bottom_right"}``
+      as ``[lat, lon]`` arrays.  Needed for bilinear interpolation when the
+      source CRS has grid convergence (e.g. UTM) that makes the projected
+      area a rotated quadrilateral in WGS84.
+
+    If the CRS is already WGS84, corners are axis-aligned rectangles.
+    Uses rasterio.warp (always available via rasterio dependency).
+    """
+    if not crs_str or crs_str.upper() in ("EPSG:4326", "WGS84", "WGS 84"):
+        corners = {
+            "top_left": [top, left],
+            "top_right": [top, right],
+            "bottom_left": [bottom, left],
+            "bottom_right": [bottom, right],
+        }
+        return {
+            "north": top, "south": bottom, "east": right, "west": left,
+            "corners": corners,
+        }
+    try:
+        from rasterio.warp import transform
+        # Convert 4 corners: TL, TR, BL, BR
+        xs = [left, right, left, right]
+        ys = [top, top, bottom, bottom]
+        lons, lats = transform(crs_str, "EPSG:4326", xs, ys)
+        corners = {
+            "top_left": [lats[0], lons[0]],
+            "top_right": [lats[1], lons[1]],
+            "bottom_left": [lats[2], lons[2]],
+            "bottom_right": [lats[3], lons[3]],
+        }
+        return {
+            "north": max(lats), "south": min(lats),
+            "east": max(lons), "west": min(lons),
+            "corners": corners,
+        }
+    except Exception as ex:
+        logger.warning("CRS conversion failed (%s → WGS84): %s. Using raw bounds.", crs_str, ex)
+        corners = {
+            "top_left": [top, left],
+            "top_right": [top, right],
+            "bottom_left": [bottom, left],
+            "bottom_right": [bottom, right],
+        }
+        return {
+            "north": top, "south": bottom, "east": right, "west": left,
+            "corners": corners,
+        }
+
+
+# ---------------------------------------------------------------------------
 # Configuration dataclass
 # ---------------------------------------------------------------------------
 @dataclass
@@ -130,6 +189,9 @@ class PipelineConfig:
 
     # --- Tools ---
     blender_exe: str = r"C:\Program Files\Blender Foundation\Blender 5.0\blender.exe"
+
+    # --- Concurrency ---
+    max_workers: int = 4  # Thread pool size for parallel stages (1, 3)
 
     # --- AI ---
     gemini_api_key: str = "***REDACTED_GEMINI_KEY***"
@@ -167,6 +229,11 @@ class PipelineConfig:
     # --- Surface extraction edge simplification (metres, 0 = no simplification) ---
     surface_edge_simplify: float = 0.0
 
+    # --- Road mask offset (Stage 2) ---
+    # Negative = erode (shrink) inward, positive = dilate (expand).
+    # Default -2: shrink road mask by 2px so fine Stage 4 masks fill edges.
+    road_mask_offset_px: int = -2
+
     # --- SAM3 segmentation prompts ---
     sam3_prompts: List[Dict[str, Any]] = field(default_factory=lambda: [
         {"tag": "road", "prompt": "race track surface", "threshold": 0.25,
@@ -184,6 +251,11 @@ class PipelineConfig:
     sam3_fullmap_tags: List[str] = field(default_factory=lambda: [
         "road", "trees", "grass", "kerb", "sand", "building", "water", "concrete",
     ])
+
+    # --- Stage 5 options ---
+    s5_road_gap_close_m: float = 0.20       # Close small gaps in road edges (metres, 0=disabled)
+    s5_kerb_narrow_max_width_m: float = 0.30  # Narrow kerb absorption max width (metres)
+    s5_kerb_narrow_adjacency_m: float = 0.20  # Narrow kerb adjacency to road threshold (metres)
 
     # --- Stage 8 options ---
     s8_generate_curves: bool = False  # Generate diagnostic 2D curves (slow, debug only)

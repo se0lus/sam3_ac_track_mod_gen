@@ -150,6 +150,12 @@ def _mask_full_map(src_img_file: str, output_dir: str, config: PipelineConfig | 
     if merged_mask is None:
         logger.error("No merged mask produced")
         return None
+
+    # Apply road mask offset (erode/dilate) — shrink edges so fine Stage 4 fills them
+    offset = config.road_mask_offset_px if config else -2
+    if offset != 0:
+        merged_mask = _apply_mask_offset(merged_mask, offset)
+
     merged_mask.save(os.path.join(output_dir, "merged_mask.png"))
 
     return geo_image
@@ -254,6 +260,32 @@ def _generate_fullmap_tag_masks(
             logger.warning("No masks above threshold for tag '%s'", tag)
 
 
+def _apply_mask_offset(mask_img: Image.Image, offset_px: int) -> Image.Image:
+    """Erode (negative) or dilate (positive) a binary mask by *offset_px* pixels.
+
+    Uses a circular structuring element for isotropic shrink/expand.
+    """
+    import cv2
+
+    r = abs(offset_px)
+    if r == 0:
+        return mask_img
+
+    arr = np.array(mask_img.convert("L"))
+    # Build circular kernel of diameter 2*r+1
+    ksize = 2 * r + 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksize, ksize))
+
+    if offset_px < 0:
+        arr = cv2.erode(arr, kernel, iterations=1)
+        logger.info("Road mask eroded by %d px", r)
+    else:
+        arr = cv2.dilate(arr, kernel, iterations=1)
+        logger.info("Road mask dilated by %d px", r)
+
+    return Image.fromarray(arr, mode="L")
+
+
 def _generate_vlmscale_image(geo_image, config: PipelineConfig) -> None:
     """Generate a higher-resolution image for VLM input (stage 8).
 
@@ -314,23 +346,20 @@ def _generate_default_layout(config: PipelineConfig) -> None:
         logger.warning("merged_mask.png not found, skipping default layout generation")
         return
 
-    # Copy merged_mask as Default.png (only if not already present)
-    if not os.path.isfile(default_png):
-        shutil.copy2(merged_mask, default_png)
-        logger.info("Default layout mask: %s", default_png)
+    # Always regenerate — source dataset may have changed between runs.
+    shutil.copy2(merged_mask, default_png)
+    logger.info("Default layout mask: %s", default_png)
 
-    # Write layouts.json (only if not already present)
-    if not os.path.isfile(layouts_json):
-        data = {
-            "layouts": [{
-                "name": "Default",
-                "mask_file": "Default.png",
-                "track_direction": config.track_direction,
-            }]
-        }
-        with open(layouts_json, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        logger.info("Default layouts.json written: %s", layouts_json)
+    data = {
+        "layouts": [{
+            "name": "Default",
+            "mask_file": "Default.png",
+            "track_direction": config.track_direction,
+        }]
+    }
+    with open(layouts_json, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    logger.info("Default layouts.json written: %s", layouts_json)
 
 
 def _generate_geo_metadata(config: PipelineConfig) -> None:
@@ -341,8 +370,7 @@ def _generate_geo_metadata(config: PipelineConfig) -> None:
     masks_json = os.path.join(output_dir, "result_masks.json")
     geo_meta_path = os.path.join(output_dir, "geo_metadata.json")
 
-    if os.path.isfile(geo_meta_path):
-        return  # already exists
+    # Always regenerate — source dataset may have changed between runs.
 
     if not os.path.isfile(masks_json):
         logger.warning("result_masks.json not found, skipping geo_metadata.json")
@@ -354,17 +382,22 @@ def _generate_geo_metadata(config: PipelineConfig) -> None:
 
         meta = masks_data.get("meta", {})
         model_scale = meta.get("model_scale_size", {})
-        geo_bounds = meta.get("geo", {}).get("bounds", {})
+        geo = meta.get("geo", {})
+        geo_bounds = geo.get("bounds", {})
+        crs_str = geo.get("crs", "EPSG:4326")
+
+        from pipeline_config import bounds_to_wgs84
+        wgs84 = bounds_to_wgs84(
+            crs_str,
+            geo_bounds.get("left", 0), geo_bounds.get("bottom", 0),
+            geo_bounds.get("right", 0), geo_bounds.get("top", 0),
+        )
 
         geo_metadata = {
             "image_width": model_scale.get("width", 0),
             "image_height": model_scale.get("height", 0),
-            "bounds": {
-                "north": geo_bounds.get("top", 0),
-                "south": geo_bounds.get("bottom", 0),
-                "east": geo_bounds.get("right", 0),
-                "west": geo_bounds.get("left", 0),
-            },
+            "bounds": {k: wgs84[k] for k in ("north", "south", "east", "west")},
+            "corners": wgs84.get("corners"),
         }
 
         with open(geo_meta_path, "w", encoding="utf-8") as f:

@@ -1,4 +1,5 @@
 
+import threading
 from tkinter import N
 import rasterio
 from rasterio.windows import Window
@@ -30,6 +31,7 @@ class GeoTiffImage():
         self.image_path = image_path
         self.dataset = rasterio.open(image_path, 'r')
         self.memory_file = None  # 用于保存内存文件引用，防止被垃圾回收
+        self._read_lock = threading.Lock()  # Protects self.dataset.read() for thread safety
         
         # 获取地理信息
         self.transform = self.dataset.transform
@@ -38,6 +40,22 @@ class GeoTiffImage():
         self.width = self.dataset.width
         self.height = self.dataset.height
         self.count = self.dataset.count  # 波段数
+
+    def _read_band(self, band_idx, **kwargs):
+        """Thread-safe wrapper around self.dataset.read().
+
+        rasterio datasets are NOT safe for concurrent reads, so all access
+        goes through _read_lock.  The lock is held only during the actual
+        GDAL I/O; heavy NumPy / PyTorch work happens afterwards without
+        holding the lock.
+        """
+        with self._read_lock:
+            return self.dataset.read(band_idx, **kwargs)
+
+    def _read_all(self, **kwargs):
+        """Thread-safe wrapper for reading all bands at once."""
+        with self._read_lock:
+            return self.dataset.read(**kwargs)
 
     def _interpolate_multistage(
         self,
@@ -172,9 +190,9 @@ class GeoTiffImage():
         bands_data = []
         for band_idx in band_indices:
             if window is None:
-                band_data = self.dataset.read(band_idx)
+                band_data = self._read_band(band_idx)
             else:
-                band_data = self.dataset.read(band_idx, window=window)
+                band_data = self._read_band(band_idx, window=window)
             bands_data.append(band_data)
         
         # 堆叠波段
@@ -601,10 +619,10 @@ class GeoTiffImage():
             src_data_list = []
             for band_idx in band_indices:
                 if window is None:
-                    band_data = self.dataset.read(band_idx)
+                    band_data = self._read_band(band_idx)
                 else:
-                    band_data = self.dataset.read(band_idx, window=window)
-                
+                    band_data = self._read_band(band_idx, window=window)
+
                 if band_data.dtype != np.uint8:
                     if band_data.max() > 255:
                         band_data = (band_data / band_data.max() * 255).astype(np.uint8)
@@ -725,9 +743,9 @@ class GeoTiffImage():
         bands = []
         for band_idx in band_indices:
             if window is None:
-                data = self.dataset.read(band_idx)
+                data = self._read_band(band_idx)
             else:
-                data = self.dataset.read(band_idx, window=window)
+                data = self._read_band(band_idx, window=window)
             if data.dtype != np.uint8:
                 if data.max() > 255:
                     data = (data / data.max() * 255).astype(np.uint8)
@@ -823,7 +841,7 @@ class GeoTiffImage():
                 # 读取当前块的所有波段
                 chunk_data_list = []
                 for band_idx in band_indices:
-                    band_chunk = self.dataset.read(band_idx, window=chunk_window)
+                    band_chunk = self._read_band(band_idx, window=chunk_window)
                     
                     # 归一化到uint8
                     if band_chunk.dtype != np.uint8:
@@ -958,9 +976,9 @@ class GeoTiffImage():
         for i, band_idx in enumerate(band_indices):
             # 读取源波段数据
             if window is None:
-                src_data = self.dataset.read(band_idx)
+                src_data = self._read_band(band_idx)
             else:
-                src_data = self.dataset.read(band_idx, window=window)
+                src_data = self._read_band(band_idx, window=window)
             
             # 如果数据不是uint8，需要归一化
             if src_data.dtype != np.uint8:
@@ -1148,7 +1166,7 @@ class GeoTiffImage():
             - 保持原始数据类型
         """
         # 读取所有波段的数据
-        data = self.dataset.read()
+        data = self._read_all()
         
         # 确定数据类型（所有波段应该使用相同的数据类型）
         dtype = self.dataset.dtypes[0]  # 使用第一个波段的数据类型

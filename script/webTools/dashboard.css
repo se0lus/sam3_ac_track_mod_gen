@@ -406,6 +406,13 @@
   margin: 0 0 16px;
 }
 
+.db-config .config-hint {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 11px;
+  color: #667788;
+}
+
 .db-config label {
   display: flex;
   align-items: center;
@@ -417,16 +424,26 @@
 
 .db-config input[type="text"],
 .db-config input[type="password"],
+.db-config input[type="number"],
 .db-config select {
   width: 100%;
-  padding: 8px 12px;
+  height: 36px;
+  padding: 0 12px;
   background: #12122a;
   border: 1px solid #2a2a4a;
   border-radius: 6px;
   color: #e0e0e0;
   font-size: 13px;
+  line-height: 34px;
   font-family: "SF Mono", "Cascadia Code", "Fira Code", Consolas, monospace;
   transition: border-color 0.15s;
+}
+/* Number inputs: hide native spinner, match text input appearance */
+.db-config input[type="number"] { -moz-appearance: textfield; }
+.db-config input[type="number"]::-webkit-inner-spin-button,
+.db-config input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
 
 .db-config input:focus,
@@ -466,18 +483,8 @@
   margin: 0 0 16px;
 }
 
-/* ===== Stage config — number inputs ===== */
-.db-config--stage input[type="number"] {
-  width: 100%;
-  padding: 8px 12px;
-  background: #12122a;
-  border: 1px solid #2a2a4a;
-  border-radius: 6px;
-  color: #e0e0e0;
-  font-size: 13px;
-  font-family: "SF Mono", "Cascadia Code", "Fira Code", Consolas, monospace;
-  transition: border-color 0.15s;
-}
+/* Stage config number inputs inherit from .db-config above;
+   only the focus rule is stage-scoped (for specificity). */
 .db-config--stage input[type="number"]:focus {
   outline: none;
   border-color: #60a5fa;

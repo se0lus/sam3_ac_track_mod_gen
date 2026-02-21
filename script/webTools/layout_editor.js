@@ -596,35 +596,30 @@ async function init() {
   });
   setupRightDrag(map, $("map"));
 
-  // Load geo metadata
+  // Load modelscale image first to get actual dimensions (most reliable)
+  const baseImg = new Image();
+  baseImg.src = "/api/modelscale_image";
   try {
-    const metaResp = await fetch("/api/game_objects/geo_metadata");
-    if (metaResp.ok) geoMeta = await metaResp.json();
-  } catch {}
-  if (!geoMeta) {
-    try {
-      const metaResp = await fetch("/api/geo_metadata");
-      if (metaResp.ok) geoMeta = await metaResp.json();
-    } catch {}
-  }
-  if (!geoMeta) {
-    setStatus("Error: No geo_metadata found. Run stage 2 first.");
+    await new Promise((resolve, reject) => {
+      baseImg.onload = resolve;
+      baseImg.onerror = reject;
+    });
+  } catch (e) {
+    setStatus("Error: Could not load modelscale image. Run stage 2 first.");
     return;
   }
 
-  maskW = geoMeta.image_width;
-  maskH = geoMeta.image_height;
+  // Use the image's actual pixel dimensions — no metadata dependency
+  maskW = baseImg.naturalWidth;
+  maskH = baseImg.naturalHeight;
   imageBounds = [[0, 0], [maskH, maskW]];
+  console.log(`[layout_editor] image=${maskW}x${maskH}, bounds=[[0,0],[${maskH},${maskW}]]`);
 
-  // Load modelscale image as base layer
-  try {
-    baseImageOverlay = L.imageOverlay("/api/modelscale_image", imageBounds, {
-      opacity: 1.0,
-      interactive: false,
-    }).addTo(map);
-  } catch (e) {
-    setStatus("Warning: Could not load modelscale image");
-  }
+  // Base image overlay
+  baseImageOverlay = L.imageOverlay(baseImg.src, imageBounds, {
+    opacity: 1.0,
+    interactive: false,
+  }).addTo(map);
 
   // Mask overlay (will be updated via pixel processing)
   maskOverlay = L.imageOverlay("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQABNjN9GQAAAAlwSFlzAAAWJQAAFiUBSVIk8AAAAA0lEQVQI12P4z8BQDwAEgAF/QualzQAAAABJRU5ErkJggg==", imageBounds, {

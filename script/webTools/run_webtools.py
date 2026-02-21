@@ -76,6 +76,75 @@ def _result_or_fallback(result_dir: str, fallback_dir: str) -> str:
     return result_dir if os.path.isdir(result_dir) else fallback_dir
 
 
+def _ensure_wgs84_bounds(geo_data: dict) -> dict:
+    """If geo_data['bounds'] looks like projected coords (not lat/lng), convert to WGS84.
+
+    Detects projected CRS by checking if any bound value exceeds +-180.
+    Reads the source CRS from result_masks.json to perform accurate conversion.
+    Also adds 'corners' for bilinear interpolation (eliminates UTM grid convergence error).
+    """
+    bounds = geo_data.get("bounds")
+    if not bounds:
+        return geo_data
+
+    has_corners = "corners" in geo_data
+    vals = [abs(bounds.get(k, 0)) for k in ("north", "south", "east", "west")]
+    if all(v <= 180 for v in vals) and has_corners:
+        return geo_data  # already WGS84 with corners
+
+    # Read CRS from result_masks.json
+    crs_str = None
+    raw_bounds = None
+    for candidate in [
+        os.path.join(_MASK_FULL_MAP_DIR, "result_masks.json"),
+        os.path.join(_02_RESULT_DIR, "result_masks.json"),
+    ]:
+        if os.path.isfile(candidate):
+            try:
+                with open(candidate, "r", encoding="utf-8") as f:
+                    rm = json.load(f)
+                geo = rm.get("meta", {}).get("geo", {})
+                crs_str = geo.get("crs")
+                raw_bounds = geo.get("bounds")
+                if crs_str:
+                    break
+            except Exception:
+                pass
+
+    if not crs_str:
+        # Add axis-aligned corners if missing
+        if not has_corners:
+            geo_data = dict(geo_data)
+            geo_data["corners"] = {
+                "top_left": [bounds["north"], bounds["west"]],
+                "top_right": [bounds["north"], bounds["east"]],
+                "bottom_left": [bounds["south"], bounds["west"]],
+                "bottom_right": [bounds["south"], bounds["east"]],
+            }
+        return geo_data
+
+    try:
+        script_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        if script_dir not in sys.path:
+            sys.path.insert(0, script_dir)
+        from pipeline_config import bounds_to_wgs84
+        # Use raw UTM bounds from result_masks.json (not the converted ones)
+        src = raw_bounds or {"left": bounds["west"], "bottom": bounds["south"],
+                             "right": bounds["east"], "top": bounds["north"]}
+        wgs84 = bounds_to_wgs84(
+            crs_str,
+            src.get("left", 0), src.get("bottom", 0),
+            src.get("right", 0), src.get("top", 0),
+        )
+        geo_data = dict(geo_data)
+        geo_data["bounds"] = {k: wgs84[k] for k in ("north", "south", "east", "west")}
+        geo_data["corners"] = wgs84.get("corners")
+    except Exception as e:
+        print(f"[webtools] WARNING: WGS84 conversion failed: {e}")
+
+    return geo_data
+
+
 # ---------------------------------------------------------------------------
 # Surface mask tile cache (lazy-loaded in-memory numpy arrays)
 # ---------------------------------------------------------------------------
@@ -329,6 +398,18 @@ class PipelineRunner:
             cmd.extend(["--tiles-dir", config_dict["tiles_dir"]])
         if config_dict.get("inpaint_model"):
             cmd.extend(["--inpaint-model", config_dict["inpaint_model"]])
+        if config_dict.get("max_workers"):
+            cmd.extend(["--max-workers", str(config_dict["max_workers"])])
+        if config_dict.get("road_mask_offset_px") is not None:
+            cmd.extend(["--road-mask-offset", str(config_dict["road_mask_offset_px"])])
+
+        # Stage 5 options
+        if config_dict.get("s5_road_gap_close_m") is not None:
+            cmd.extend(["--s5-road-gap-close", str(config_dict["s5_road_gap_close_m"])])
+        if config_dict.get("s5_kerb_narrow_max_width_m") is not None:
+            cmd.extend(["--s5-kerb-narrow-width", str(config_dict["s5_kerb_narrow_max_width_m"])])
+        if config_dict.get("s5_kerb_narrow_adjacency_m") is not None:
+            cmd.extend(["--s5-kerb-narrow-adjacency", str(config_dict["s5_kerb_narrow_adjacency_m"])])
 
         # Stage 8 options
         if config_dict.get("s8_generate_curves"):
@@ -717,22 +798,25 @@ class ApiHandler(SimpleHTTPRequestHandler):
             result_walls = os.path.join(_result_or_fallback(_06_RESULT_DIR, os.path.dirname(_WALLS_JSON)), "walls.json")
             self._serve_json_file(result_walls)
         elif self.path == "/api/geo_metadata":
-            # Read from 07_result or fallback
+            # Read from 06_result, fallback to 06_ai_walls, then 02_mask_full_map
             result_meta = os.path.join(_result_or_fallback(_06_RESULT_DIR, os.path.dirname(_GEO_META_JSON)), "geo_metadata.json")
-            self._serve_json_file(result_meta)
+            if not os.path.isfile(result_meta):
+                result_meta = os.path.join(_MASK_FULL_MAP_DIR, "geo_metadata.json")
+            self._serve_geo_metadata(result_meta)
         elif self.path == "/api/game_objects":
             # Read from 08_result junction
             result_go = os.path.join(_result_or_fallback(_07_RESULT_DIR, _GAME_OBJECTS_DIR), "game_objects.json")
             self._serve_json_file(result_go)
         elif self.path == "/api/game_objects/geo_metadata":
-            # Read from 08_result, then 07_result
+            # Read from 07_result, then 06_result, then 02
             result_go_dir = _result_or_fallback(_07_RESULT_DIR, _GAME_OBJECTS_DIR)
             go_meta = os.path.join(result_go_dir, "geo_metadata.json")
-            if os.path.isfile(go_meta):
-                self._serve_json_file(go_meta)
-            else:
+            if not os.path.isfile(go_meta):
                 result_w_dir = _result_or_fallback(_06_RESULT_DIR, os.path.dirname(_GEO_META_JSON))
-                self._serve_json_file(os.path.join(result_w_dir, "geo_metadata.json"))
+                go_meta = os.path.join(result_w_dir, "geo_metadata.json")
+            if not os.path.isfile(go_meta):
+                go_meta = os.path.join(_MASK_FULL_MAP_DIR, "geo_metadata.json")
+            self._serve_geo_metadata(go_meta)
         elif self.path == "/api/centerline":
             # Read from 08_result
             result_go_dir = _result_or_fallback(_07_RESULT_DIR, _GAME_OBJECTS_DIR)
@@ -764,6 +848,16 @@ class ApiHandler(SimpleHTTPRequestHandler):
             mask_path = os.path.join(result_dir, f"{tag}_mask.png")
             self._serve_binary_file(mask_path, "image/png")
 
+        elif self.path == "/api/modelscale_geo_metadata":
+            # Geo metadata from stage 2 output (matches modelscale image dims).
+            # 02_result may point to 02a (no geo_metadata), so always fall back
+            # to the authoritative 02_mask_full_map directory.
+            result_dir = _result_or_fallback(_02_RESULT_DIR, _MASK_FULL_MAP_DIR)
+            meta_path = os.path.join(result_dir, "geo_metadata.json")
+            if not os.path.isfile(meta_path):
+                meta_path = os.path.join(_MASK_FULL_MAP_DIR, "geo_metadata.json")
+            self._serve_geo_metadata(meta_path)
+
         elif self.path == "/api/modelscale_image":
             # Find modelscale image in 02_result or stage 2 output
             search_dir = _result_or_fallback(_02_RESULT_DIR, _MASK_FULL_MAP_DIR)
@@ -783,6 +877,11 @@ class ApiHandler(SimpleHTTPRequestHandler):
             sf_json = os.path.join(_MANUAL_SURFACE_MASKS_EDIT_DIR, "surface_masks.json")
             self._serve_json_file(sf_json)
 
+        elif self.path.startswith("/api/surface_tile_index/"):
+            tag = self.path.split("?", 1)[0][len("/api/surface_tile_index/"):]
+            tag = re.sub(r'[^\w]', '', tag)
+            self._serve_surface_tile_index(tag)
+
         elif self.path.startswith("/api/surface_mask/"):
             tag = self.path[len("/api/surface_mask/"):]
             tag = re.sub(r'[^\w]', '', tag)
@@ -798,7 +897,9 @@ class ApiHandler(SimpleHTTPRequestHandler):
 
         # --- Surface tiles (tile-based editing) ---
         elif self.path.startswith("/api/surface_tile/"):
-            parts = self.path[len("/api/surface_tile/"):].split("/")
+            # Strip query string (?t=...) for cache-busting support
+            tile_path = self.path.split("?", 1)[0]
+            parts = tile_path[len("/api/surface_tile/"):].split("/")
             if len(parts) == 2:
                 tag = re.sub(r'[^\w]', '', parts[0])
                 m = re.match(r'(\d+)_(\d+)\.png$', parts[1])
@@ -820,14 +921,20 @@ class ApiHandler(SimpleHTTPRequestHandler):
             go_path = _layout_read_path(name, "game_objects.json")
             self._serve_json_file(go_path)
 
-        # --- Map tiles proxy ---
+        # --- Map tiles proxy (with overzoom fallback) ---
         elif self.path.startswith("/tiles/"):
             parts = self.path[len("/tiles/"):].rstrip("/").split("/")
             if len(parts) == 3:
                 cfg = _load_webtools_config()
                 tiles_dir = cfg.get("map_tiles_dir", _TILES_DIR)
-                tile_path = os.path.join(tiles_dir, *parts)
-                self._serve_binary_file(tile_path, "image/png")
+                try:
+                    z, x = int(parts[0]), int(parts[1])
+                    y_str = parts[2].replace(".png", "")
+                    y = int(y_str)
+                except ValueError:
+                    self.send_error(400, "Bad tile coordinates")
+                    return
+                self._serve_tile(tiles_dir, z, x, y)
             else:
                 self.send_error(400, "Bad tile path — expect /tiles/{z}/{x}/{y}.png")
 
@@ -932,6 +1039,96 @@ class ApiHandler(SimpleHTTPRequestHandler):
             self.wfile.write(data)
         except Exception as e:
             self.send_error(500, str(e))
+
+    def _serve_geo_metadata(self, path: str):
+        """Serve geo_metadata.json, converting projected bounds to WGS84 if needed."""
+        if not os.path.isfile(path):
+            self.send_error(404, f"File not found: {path}")
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                geo_data = json.load(f)
+            geo_data = _ensure_wgs84_bounds(geo_data)
+            data = json.dumps(geo_data).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def _serve_tile(self, tiles_dir: str, z: int, x: int, y: int):
+        """Serve a map tile with overzoom fallback.
+
+        If the tile at (z, x, y) doesn't exist, walk up parent zoom levels,
+        crop the relevant sub-region from the nearest parent tile, scale it up
+        to 256x256, and serve it.
+        """
+        tile_path = os.path.join(tiles_dir, str(z), str(x), f"{y}.png")
+        if os.path.isfile(tile_path):
+            self._serve_binary_file(tile_path, "image/png")
+            return
+
+        # Walk up zoom levels to find a parent tile
+        cur_z, cur_x, cur_y = z, x, y
+        while cur_z > 0:
+            cur_z -= 1
+            cur_x //= 2
+            cur_y //= 2
+            parent_path = os.path.join(
+                tiles_dir, str(cur_z), str(cur_x), f"{cur_y}.png"
+            )
+            if os.path.isfile(parent_path):
+                self._serve_overzoom_tile(parent_path, z, x, y, cur_z)
+                return
+
+        self.send_error(404, f"No tile at z={z} x={x} y={y}")
+
+    def _serve_overzoom_tile(
+        self, parent_path: str, z: int, x: int, y: int, parent_z: int
+    ):
+        """Crop and upscale a sub-region of a parent tile."""
+        import io
+        from PIL import Image
+
+        try:
+            img = Image.open(parent_path)
+            w, h = img.size  # typically 256×256
+
+            levels_up = z - parent_z
+            scale = 2 ** levels_up
+
+            # Which sub-region of the parent does (z, x, y) correspond to?
+            parent_x = x >> levels_up
+            parent_y = y >> levels_up
+            sub_x = x - parent_x * scale
+            sub_y = y - parent_y * scale
+
+            region_w = w / scale
+            region_h = h / scale
+            left = sub_x * region_w
+            top = sub_y * region_h
+
+            cropped = img.crop((
+                int(left), int(top),
+                int(left + region_w), int(top + region_h),
+            ))
+            resized = cropped.resize((w, h), Image.LANCZOS)
+
+            buf = io.BytesIO()
+            resized.save(buf, format="PNG")
+            data = buf.getvalue()
+
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "max-age=3600")
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception as e:
+            self.send_error(500, f"Overzoom tile error: {e}")
 
     def _serve_binary_file(self, path: str, content_type: str):
         if not os.path.isfile(path):
@@ -1087,6 +1284,42 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 f.write(body)
 
             self._send_json_ok({"path": mask_path, "size": len(body)})
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def _serve_surface_tile_index(self, tag):
+        """Return list of non-empty tile coordinates for a tag.
+
+        Scans the full mask and returns {"tiles": ["0_3", "1_3", ...]}
+        containing only tiles that have at least one non-zero pixel.
+        """
+        import numpy as np
+        try:
+            meta = _get_surface_meta()
+            if not meta:
+                self.send_error(404, "No surface meta")
+                return
+            ts = meta.get("tile_size", 512)
+            cols = meta.get("grid_cols", 0)
+            rows = meta.get("grid_rows", 0)
+            mask = _get_surface_mask(tag)
+            non_empty = []
+            if mask is not None:
+                for r in range(rows):
+                    for c in range(cols):
+                        y0, x0 = r * ts, c * ts
+                        y1 = min(y0 + ts, mask.shape[0])
+                        x1 = min(x0 + ts, mask.shape[1])
+                        if y0 < mask.shape[0] and x0 < mask.shape[1]:
+                            if np.any(mask[y0:y1, x0:x1] > 0):
+                                non_empty.append(f"{c}_{r}")
+            resp = json.dumps({"tiles": non_empty}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(resp)))
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(resp)
         except Exception as e:
             self.send_error(500, str(e))
 

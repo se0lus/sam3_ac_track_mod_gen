@@ -34,6 +34,7 @@ let map;
 let basemapLayer;
 let maskW = 0, maskH = 0, gridCols = 0, gridRows = 0;
 let geoBounds = null;       // {north, south, east, west}
+let geoCorners = null;      // {top_left, top_right, bottom_left, bottom_right} as [lat,lon]
 let layers = [];            // [{ tag, color, label, maskLayer: MaskLayer }]
 let selectedIdx = -1;
 let tool = "brush";
@@ -49,6 +50,17 @@ let lastMouseEvent = null;  // cache for cursor size updates
 // Coordinate conversion (canvas pixel <-> geographic latlng)
 // ---------------------------------------------------------------------------
 function canvasPixelToLatLng(cx, cy) {
+  if (geoCorners) {
+    // Bilinear interpolation using 4 true WGS84 corners.
+    // Eliminates UTM grid convergence error (up to 13m → <0.01m).
+    const u = cx / maskW;   // [0, 1]  left→right
+    const v = cy / maskH;   // [0, 1]  top→bottom
+    const tl = geoCorners.top_left, tr = geoCorners.top_right;
+    const bl = geoCorners.bottom_left, br = geoCorners.bottom_right;
+    const lat = (1-u)*(1-v)*tl[0] + u*(1-v)*tr[0] + (1-u)*v*bl[0] + u*v*br[0];
+    const lng = (1-u)*(1-v)*tl[1] + u*(1-v)*tr[1] + (1-u)*v*bl[1] + u*v*br[1];
+    return [lat, lng];
+  }
   const { north, south, east, west } = geoBounds;
   const lat = north - (cy / maskH) * (north - south);
   const lng = west + (cx / maskW) * (east - west);
@@ -56,6 +68,26 @@ function canvasPixelToLatLng(cx, cy) {
 }
 
 function latLngToCanvasPixel(lat, lng) {
+  if (geoCorners) {
+    // Inverse bilinear interpolation (Newton iteration, 2–3 steps sufficient).
+    const tl = geoCorners.top_left, tr = geoCorners.top_right;
+    const bl = geoCorners.bottom_left, br = geoCorners.bottom_right;
+    let u = 0.5, v = 0.5;
+    for (let i = 0; i < 4; i++) {
+      const fLat = (1-u)*(1-v)*tl[0] + u*(1-v)*tr[0] + (1-u)*v*bl[0] + u*v*br[0] - lat;
+      const fLng = (1-u)*(1-v)*tl[1] + u*(1-v)*tr[1] + (1-u)*v*bl[1] + u*v*br[1] - lng;
+      // Jacobian
+      const dLat_du = (1-v)*(tr[0]-tl[0]) + v*(br[0]-bl[0]);
+      const dLat_dv = (1-u)*(bl[0]-tl[0]) + u*(br[0]-tr[0]);
+      const dLng_du = (1-v)*(tr[1]-tl[1]) + v*(br[1]-bl[1]);
+      const dLng_dv = (1-u)*(bl[1]-tl[1]) + u*(br[1]-tr[1]);
+      const det = dLat_du * dLng_dv - dLat_dv * dLng_du;
+      if (Math.abs(det) < 1e-20) break;
+      u -= (fLat * dLng_dv - fLng * dLat_dv) / det;
+      v -= (fLng * dLat_du - fLat * dLng_du) / det;
+    }
+    return [u * maskW, v * maskH];
+  }
   const { north, south, east, west } = geoBounds;
   const cx = ((lng - west) / (east - west)) * maskW;
   const cy = ((north - lat) / (north - south)) * maskH;
@@ -84,7 +116,103 @@ function loadImage(url) {
 }
 
 // ---------------------------------------------------------------------------
-// MaskLayer — manages one tag's raw tiles, display tiles, and L.imageOverlays
+// MaskCanvasRenderer — single canvas per tag (eliminates tile seams)
+//
+// Per-tile L.imageOverlay used axis-aligned lat/lng rectangles, which caused
+// ~10px overlap when the GeoTIFF has rotation (512 * sin(θ)).  This renderer
+// draws ALL tiles onto one viewport-sized canvas using a shared affine
+// transform, so tiles are guaranteed to align pixel-perfectly.
+// ---------------------------------------------------------------------------
+const MaskCanvasRenderer = L.Layer.extend({
+  initialize(maskLayer) {
+    this._ml = maskLayer;
+    this._canvas = null;
+    this._animFrame = 0;
+  },
+
+  onAdd(map) {
+    this._map = map;
+    this._canvas = L.DomUtil.create('canvas', 'mask-canvas', map.getPane('overlayPane'));
+    this._canvas.style.pointerEvents = 'none';
+    this._canvas.style.imageRendering = 'pixelated';
+    map.on('viewreset zoomend moveend', this._draw, this);
+    this._draw();
+  },
+
+  onRemove(map) {
+    if (this._animFrame) { cancelAnimationFrame(this._animFrame); this._animFrame = 0; }
+    if (this._canvas) L.DomUtil.remove(this._canvas);
+    this._canvas = null;
+    map.off('viewreset zoomend moveend', this._draw, this);
+  },
+
+  /** Batch redraws via requestAnimationFrame (for painting performance). */
+  requestRedraw() {
+    if (this._animFrame || !this._canvas) return;
+    this._animFrame = requestAnimationFrame(() => {
+      this._animFrame = 0;
+      this._draw();
+    });
+  },
+
+  _draw() {
+    if (!this._map || !this._canvas) return;
+    const map = this._map;
+    const size = map.getSize();
+
+    // Viewport-sized canvas, positioned at container origin in layer coords
+    const topLeft = map.containerPointToLayerPoint([0, 0]);
+    L.DomUtil.setPosition(this._canvas, topLeft);
+    this._canvas.width = size.x;
+    this._canvas.height = size.y;
+
+    const ctx = this._canvas.getContext('2d');
+    ctx.clearRect(0, 0, size.x, size.y);
+
+    if (!this._ml._layerVisible) return;
+    ctx.globalAlpha = this._ml._opacity;
+    ctx.imageSmoothingEnabled = false;
+
+    // Shared affine: maskPixel(px, py) → layerPoint(lx, ly)
+    //   lx = O.x + px * ax + py * cx
+    //   ly = O.y + px * bx + py * dy
+    const O  = map.latLngToLayerPoint(canvasPixelToLatLng(0, 0));
+    const Rx = map.latLngToLayerPoint(canvasPixelToLatLng(maskW, 0));
+    const Ry = map.latLngToLayerPoint(canvasPixelToLatLng(0, maskH));
+    const ax = (Rx.x - O.x) / maskW;
+    const bx = (Rx.y - O.y) / maskW;
+    const cx = (Ry.x - O.x) / maskH;
+    const dy = (Ry.y - O.y) / maskH;
+
+    const ts = TILE_SIZE;
+    const offX = O.x - topLeft.x;
+    const offY = O.y - topLeft.y;
+
+    for (const [key, display] of this._ml._displayTiles) {
+      const [col, row] = key.split('_').map(Number);
+      const px = col * ts, py = row * ts;
+      const tx = offX + px * ax + py * cx;
+      const ty = offY + px * bx + py * dy;
+
+      // Cull tiles fully outside viewport
+      const x1 = tx + ts * ax, x2 = tx + ts * cx, x3 = tx + ts * (ax + cx);
+      const y1 = ty + ts * bx, y2 = ty + ts * dy, y3 = ty + ts * (bx + dy);
+      const minTX = Math.min(tx, x1, x2, x3);
+      const maxTX = Math.max(tx, x1, x2, x3);
+      const minTY = Math.min(ty, y1, y2, y3);
+      const maxTY = Math.max(ty, y1, y2, y3);
+      if (maxTX < 0 || maxTY < 0 || minTX > size.x || minTY > size.y) continue;
+
+      ctx.setTransform(ax, bx, cx, dy, tx, ty);
+      ctx.drawImage(display, 0, 0);
+    }
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+  },
+});
+
+// ---------------------------------------------------------------------------
+// MaskLayer — manages one tag's raw tiles + display tiles
 // ---------------------------------------------------------------------------
 class MaskLayer {
   constructor(tag, color, cols, rows) {
@@ -95,66 +223,84 @@ class MaskLayer {
     this._gridRows = rows;
     this._rawTiles = new Map();       // "col_row" -> Canvas (grayscale mask)
     this._displayTiles = new Map();   // "col_row" -> Canvas (tinted display)
-    this._overlays = new Map();       // "col_row" -> L.imageOverlay
+    this._renderer = null;            // MaskCanvasRenderer (single canvas per tag)
     this._dirtyTiles = new Set();
     this._layerVisible = true;
     this._opacity = 0.6;
   }
 
-  /** Load full mask PNG from server, split into tiles, add overlays. */
+  /** Attach canvas renderer to the map (called once). */
+  _initRenderer() {
+    if (this._renderer) return;
+    this._renderer = new MaskCanvasRenderer(this);
+    this._renderer.addTo(map);
+  }
+
+  /** Load mask tiles from server. */
   async load() {
-    const img = await loadImage(`/api/surface_mask/${this.tag}`);
-    if (!img) return;
-    this._loadFromImage(img);
+    this._initRenderer();
+    await this._loadTiles("");
   }
 
   /** Reload mask from server (e.g. after compositing changed the mask). */
   async reload() {
-    const img = await loadImage(`/api/surface_mask/${this.tag}?t=${Date.now()}`);
-    if (!img) return;
-    // Remove all existing overlays
-    for (const overlay of this._overlays.values()) overlay.remove();
     this._rawTiles.clear();
     this._displayTiles.clear();
-    this._overlays.clear();
     this._dirtyTiles.clear();
-    this._loadFromImage(img);
+    if (this._renderer) this._renderer._draw();
+    await this._loadTiles(`?t=${Date.now()}`);
   }
 
-  _loadFromImage(img) {
-    // Draw full image onto temporary canvas
-    const fullCanvas = document.createElement("canvas");
-    fullCanvas.width = maskW;
-    fullCanvas.height = maskH;
-    fullCanvas.getContext("2d").drawImage(img, 0, 0, maskW, maskH);
-
-    // Split into tiles
-    const ts = TILE_SIZE;
-    for (let r = 0; r < this._gridRows; r++) {
-      for (let c = 0; c < this._gridCols; c++) {
-        const sx = c * ts, sy = r * ts;
-        const sw = Math.min(ts, maskW - sx);
-        const sh = Math.min(ts, maskH - sy);
-        if (sw <= 0 || sh <= 0) continue;
-
-        const raw = document.createElement("canvas");
-        raw.width = ts;
-        raw.height = ts;
-        raw.getContext("2d").drawImage(fullCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
-
-        if (this._tileIsEmpty(raw)) continue;
-
-        const key = `${c}_${r}`;
-        this._rawTiles.set(key, raw);
-        const display = this._tintTile(raw);
-        this._displayTiles.set(key, display);
-        const overlay = L.imageOverlay(display.toDataURL(), tileBounds(c, r), {
-          opacity: this._layerVisible ? this._opacity : 0,
-          interactive: false,
-        }).addTo(map);
-        this._overlays.set(key, overlay);
+  async _loadTiles(cacheBust) {
+    // Fetch non-empty tile index first, then only request those tiles.
+    // This avoids thousands of unnecessary requests for empty tiles.
+    let tileKeys;
+    try {
+      const resp = await fetch(`/api/surface_tile_index/${this.tag}${cacheBust}`);
+      if (resp.ok) {
+        const data = await resp.json();
+        tileKeys = data.tiles || [];
       }
+    } catch {}
+
+    if (!tileKeys) {
+      // Fallback: request all tiles (shouldn't happen normally)
+      tileKeys = [];
+      for (let r = 0; r < this._gridRows; r++)
+        for (let c = 0; c < this._gridCols; c++)
+          tileKeys.push(`${c}_${r}`);
     }
+
+    // Load non-empty tiles in parallel (batched to avoid connection flooding)
+    const BATCH = 30;
+    for (let i = 0; i < tileKeys.length; i += BATCH) {
+      const batch = tileKeys.slice(i, i + BATCH);
+      await Promise.all(batch.map(key => {
+        const [c, r] = key.split("_").map(Number);
+        return this._loadOneTile(c, r, cacheBust);
+      }));
+    }
+  }
+
+  async _loadOneTile(col, row, cacheBust) {
+    const img = await loadImage(
+      `/api/surface_tile/${this.tag}/${col}_${row}.png${cacheBust}`
+    );
+    if (!img) return;
+
+    const ts = TILE_SIZE;
+    const raw = document.createElement("canvas");
+    raw.width = ts;
+    raw.height = ts;
+    raw.getContext("2d").drawImage(img, 0, 0, ts, ts);
+
+    if (this._tileIsEmpty(raw)) return;
+
+    const key = `${col}_${row}`;
+    this._rawTiles.set(key, raw);
+    const display = this._tintTile(raw);
+    this._displayTiles.set(key, display);
+    if (this._renderer) this._renderer.requestRedraw();
   }
 
   _tileIsEmpty(canvas) {
@@ -194,11 +340,7 @@ class MaskLayer {
     const ctx = display.getContext("2d");
     ctx.clearRect(0, 0, TILE_SIZE, TILE_SIZE);
     this._tint(raw, ctx);
-    // Update the overlay <img> src
-    const overlay = this._overlays.get(key);
-    if (overlay) {
-      overlay.setUrl(display.toDataURL());
-    }
+    if (this._renderer) this._renderer.requestRedraw();
   }
 
   /** Ensure tile exists (create blank for painting into empty areas). */
@@ -219,12 +361,6 @@ class MaskLayer {
     display.width = TILE_SIZE;
     display.height = TILE_SIZE;
     this._displayTiles.set(key, display);
-
-    const overlay = L.imageOverlay(display.toDataURL(), tileBounds(col, row), {
-      opacity: this._layerVisible ? this._opacity : 0,
-      interactive: false,
-    }).addTo(map);
-    this._overlays.set(key, overlay);
   }
 
   // -- Painting ----------------------------------------------------------
@@ -281,8 +417,9 @@ class MaskLayer {
   // -- Visibility --------------------------------------------------------
   setLayerVisible(v) {
     this._layerVisible = v;
-    for (const [, overlay] of this._overlays) {
-      overlay.setOpacity(v ? this._opacity : 0);
+    if (this._renderer && this._renderer._canvas) {
+      this._renderer._canvas.style.display = v ? '' : 'none';
+      if (v) this._renderer.requestRedraw();
     }
   }
 
@@ -596,17 +733,27 @@ async function init() {
     }
   }
 
-  // Load geo metadata for coordinate conversion
+  // Load geo metadata for coordinate conversion.
+  // Surface editor is stage 5a (runs before 6/7), so prefer stage 2's
+  // geo_metadata which is always fresh after running stage 2.
   let geoData;
-  try {
-    const resp = await fetch("/api/geo_metadata");
-    if (resp.ok) geoData = await resp.json();
-  } catch {}
+  for (const url of ["/api/modelscale_geo_metadata", "/api/geo_metadata"]) {
+    try {
+      const resp = await fetch(url);
+      if (resp.ok) {
+        const d = await resp.json();
+        if (d && d.bounds) { geoData = d; break; }
+      }
+    } catch {}
+  }
   if (!geoData || !geoData.bounds) {
-    setStatus("Error: geo_metadata.json not found. Run stage 7 first.");
+    setStatus("Error: geo_metadata.json not found. Run stage 2 first.");
     return;
   }
   geoBounds = geoData.bounds;
+  geoCorners = geoData.corners || null;
+  console.log(`[surface_editor] geoBounds: N=${geoBounds.north} S=${geoBounds.south} E=${geoBounds.east} W=${geoBounds.west}`);
+  console.log(`[surface_editor] geoCorners: ${geoCorners ? 'yes (bilinear)' : 'no (linear fallback)'}`);
 
   // Create map with standard Web Mercator CRS
   map = L.map("map", {

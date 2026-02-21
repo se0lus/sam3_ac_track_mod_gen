@@ -64,6 +64,15 @@ let rightDrag = null; // setupRightDrag() return value
 // ---------------------------------------------------------------------------
 function pixelToLatLng(px, py) {
   if (!geoMeta) return [0, 0];
+  const c = geoMeta.corners;
+  if (c) {
+    const u = px / geoMeta.image_width;
+    const v = py / geoMeta.image_height;
+    const tl = c.top_left, tr = c.top_right, bl = c.bottom_left, br = c.bottom_right;
+    const lat = (1-u)*(1-v)*tl[0] + u*(1-v)*tr[0] + (1-u)*v*bl[0] + u*v*br[0];
+    const lng = (1-u)*(1-v)*tl[1] + u*(1-v)*tr[1] + (1-u)*v*bl[1] + u*v*br[1];
+    return [lat, lng];
+  }
   const { north, south, east, west } = geoMeta.bounds;
   const lat = north - (py / geoMeta.image_height) * (north - south);
   const lng = west + (px / geoMeta.image_width) * (east - west);
@@ -72,6 +81,24 @@ function pixelToLatLng(px, py) {
 
 function latLngToPixel(lat, lng) {
   if (!geoMeta) return [0, 0];
+  const c = geoMeta.corners;
+  if (c) {
+    const tl = c.top_left, tr = c.top_right, bl = c.bottom_left, br = c.bottom_right;
+    let u = 0.5, v = 0.5;
+    for (let i = 0; i < 4; i++) {
+      const fLat = (1-u)*(1-v)*tl[0] + u*(1-v)*tr[0] + (1-u)*v*bl[0] + u*v*br[0] - lat;
+      const fLng = (1-u)*(1-v)*tl[1] + u*(1-v)*tr[1] + (1-u)*v*bl[1] + u*v*br[1] - lng;
+      const dLat_du = (1-v)*(tr[0]-tl[0]) + v*(br[0]-bl[0]);
+      const dLat_dv = (1-u)*(bl[0]-tl[0]) + u*(br[0]-tr[0]);
+      const dLng_du = (1-v)*(tr[1]-tl[1]) + v*(br[1]-bl[1]);
+      const dLng_dv = (1-u)*(bl[1]-tl[1]) + u*(br[1]-tr[1]);
+      const det = dLat_du * dLng_dv - dLat_dv * dLng_du;
+      if (Math.abs(det) < 1e-20) break;
+      u -= (fLat * dLng_dv - fLng * dLat_dv) / det;
+      v -= (fLng * dLat_du - fLat * dLng_du) / det;
+    }
+    return [u * geoMeta.image_width, v * geoMeta.image_height];
+  }
   const { north, south, east, west } = geoMeta.bounds;
   const px = ((lng - west) / (east - west)) * geoMeta.image_width;
   const py = ((north - lat) / (north - south)) * geoMeta.image_height;
