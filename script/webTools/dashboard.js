@@ -212,21 +212,60 @@ function renderStages() {
       actions.appendChild(edLink);
     }
 
+    // Progress percentage + ETA text (between info and actions)
+    const pctLabel = document.createElement("div");
+    pctLabel.className = "stage-card__pct";
+    pctLabel.id = `pct-${stage.id}`;
+
+    // Progress bar (thin line at card bottom)
+    const progressBar = document.createElement("div");
+    progressBar.className = "stage-card__progress";
+    progressBar.id = `progress-${stage.id}`;
+
     card.appendChild(indicator);
     card.appendChild(info);
+    card.appendChild(pctLabel);
     card.appendChild(actions);
+    card.appendChild(progressBar);
 
     stagesContainer.appendChild(card);
   });
 }
 
 function updateStatusIndicators() {
+  const progress = pipelineStatus._progress || {};
   stages.forEach((stage) => {
     const el = document.getElementById(`indicator-${stage.id}`);
     if (!el) return;
     const status = pipelineStatus[stage.id] || "not_started";
     el.className = `stage-card__indicator ${status}`;
+
+    // Update progress bar from polled status
+    const prog = progress[stage.id];
+    if (status === "running" && prog) {
+      _updateStageProgress(stage.id, prog.pct, prog.eta);
+    } else if (status !== "running") {
+      _updateStageProgress(stage.id, 0, "", false);
+    }
   });
+}
+
+function _updateStageProgress(stageId, pct, eta, show = true) {
+  const bar = document.getElementById(`progress-${stageId}`);
+  const label = document.getElementById(`pct-${stageId}`);
+  if (!bar || !label) return;
+
+  if (show && pct > 0) {
+    bar.style.width = `${pct}%`;
+    bar.classList.add("active");
+    label.classList.add("active");
+    label.textContent = eta ? `${pct}% ${eta}` : `${pct}%`;
+  } else {
+    bar.classList.remove("active");
+    label.classList.remove("active");
+    bar.style.width = "0";
+    label.textContent = "";
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1233,16 +1272,24 @@ function connectSSE() {
         appendLog(msg.data);
       } else if (msg.type === "stage_start") {
         loadStatus();
+        _updateStageProgress(msg.data.stage, 0, "");
         appendLog(`\n=== Stage ${msg.data.stage} started ===`);
+      } else if (msg.type === "stage_progress") {
+        _updateStageProgress(msg.data.stage, msg.data.pct, msg.data.eta || "");
       } else if (msg.type === "stage_complete") {
+        _updateStageProgress(msg.data.stage, 100, "");
+        setTimeout(() => _updateStageProgress(msg.data.stage, 0, "", false), 600);
         loadStatus();
         refreshFiles();
       } else if (msg.type === "pipeline_done") {
+        // Clear all progress bars
+        stages.forEach(s => _updateStageProgress(s.id, 0, "", false));
         loadStatus();
         refreshFiles();
         const rc = msg.data.returncode;
         appendLog(rc === 0 ? "\n=== Pipeline completed ===" : `\n=== Pipeline failed (rc=${rc}) ===`);
       } else if (msg.type === "pipeline_stop") {
+        stages.forEach(s => _updateStageProgress(s.id, 0, "", false));
         appendLog("\n=== Pipeline stopped ===");
         loadStatus();
         refreshFiles();

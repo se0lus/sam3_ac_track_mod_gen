@@ -348,6 +348,232 @@ _STAGE_ID_TO_PIPELINE = {
 
 
 # ---------------------------------------------------------------------------
+# Stage progress parsing — time-weighted, with ETA
+# ---------------------------------------------------------------------------
+# Progress is computed as a *time fraction*: how much of the estimated stage
+# duration has been covered by the sub-steps completed so far.
+#
+# For stages with known sub-steps (Stage 9 Blender), each step has a time
+# weight derived from real profiling.  Sub-step log patterns (tile refine
+# progress, projection %) further subdivide within a step.
+#
+# For other stages, log patterns provide coarse milestones.  ETA is always
+# computed from elapsed time + current progress fraction.
+
+import time as _progress_time  # avoid name clash
+
+# Stage 9 step time-weights (seconds, from real profiling).
+# Keys are step numbers 1-8.
+_S9_STEP_WEIGHT = {1: 2, 2: 5, 3: 30, 4: 90, 5: 20, 6: 2, 7: 3, 8: 15}
+_S9_TOTAL_WEIGHT = sum(_S9_STEP_WEIGHT.values())  # 167
+
+# Cumulative weight at the *start* of each step (0-based fraction).
+_S9_STEP_START: dict[int, float] = {}
+_cum = 0.0
+for _sn in sorted(_S9_STEP_WEIGHT):
+    _S9_STEP_START[_sn] = _cum / _S9_TOTAL_WEIGHT
+    _cum += _S9_STEP_WEIGHT[_sn]
+
+# Stage 2 sub-step patterns (sequential operations).
+_S2_MILESTONES = [
+    (re.compile(r"Center holes detected"), 0.05),
+    (re.compile(r"Inpainting complete|No center holes detected"), 0.15),
+    (re.compile(r"Running SAM3 for tag"), "s2_tag"),
+    (re.compile(r"Saved \w+ mask"), "s2_tag_done"),
+    (re.compile(r"VLM-scale image saved"), 0.85),
+    (re.compile(r"geo_metadata\.json written"), 0.95),
+    (re.compile(r"Full map segmentation complete"), 1.0),
+]
+
+# Stage 7 VLM type ordering (sequential generation).
+_S7_VLM_ORDER = {"hotlap": 0.15, "pit": 0.45, "start": 0.70, "timing": 0.90}
+
+# Compiled patterns (reused across calls).
+_RE_STEP = re.compile(r"Step (\d+)/(\d+)")
+_RE_REFINE = re.compile(r"\[(\d+)/(\d+)\] refine.*?(\d+)s remaining")
+_RE_REFINE_NO_ETA = re.compile(r"\[(\d+)/(\d+)\] refine")
+_RE_PROJECTION = re.compile(r"Projection:\s*(\d+)%")
+_RE_CLIP_PROGRESS = re.compile(r"Clipping (\d+)/(\d+)")
+_RE_CLIP_FOUND = re.compile(r"Found (\d+) clips")
+_RE_CLIP_TAG = re.compile(r"\[(\w+)\] (\d+)/(\d+) clips have no masks")
+_RE_VLM_TYPE = re.compile(r"VLM \[(\w+)\] attempt")
+_RE_TILE_IMPORT = re.compile(r"import level \d+,")
+_RE_TILE_NEED = re.compile(r"need to load level \d+:(\d+) tiles")
+_RE_COMPLETE = re.compile(r"(?:complete|done|saved|written)\b", re.IGNORECASE)
+
+
+def _fmt_eta(seconds: float) -> str:
+    """Format ETA as human-readable string."""
+    if seconds <= 0:
+        return ""
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"~{seconds}s"
+    m, s = divmod(seconds, 60)
+    return f"~{m}m{s:02d}s"
+
+
+def _eta_from_pct(state: dict, pct: float) -> str:
+    """Compute ETA from elapsed time and current progress fraction (0-1)."""
+    t0 = state.get("_t0")
+    if t0 is None or pct <= 0.005:
+        return ""
+    elapsed = _progress_time.time() - t0
+    if pct >= 0.99:
+        return ""
+    remaining = elapsed * (1.0 - pct) / pct
+    return _fmt_eta(remaining)
+
+
+def _parse_progress(line: str, state: dict) -> dict | None:
+    """Extract progress from *line* for the current stage.
+
+    *state* is a mutable dict persisted across calls for one stage run.
+    Must contain ``"_t0"`` (stage start timestamp) and ``"_stage_id"``.
+
+    Returns ``{"pct": 0-100, "eta": "~2m30s"}`` or None.
+    """
+    sid = state.get("_stage_id", "")
+
+    # ── Stage 9: Blender automation (time-weighted steps) ─────────────
+    if sid == "blender_automate":
+        return _parse_s9(line, state)
+
+    # ── Stage 2: Full-map SAM3 segmentation ───────────────────────────
+    if sid == "mask_full_map":
+        return _parse_s2(line, state)
+
+    # ── Stage 3: Clip full map ────────────────────────────────────────
+    if sid == "clip_full_map":
+        m = _RE_CLIP_PROGRESS.search(line)
+        if m:
+            cur, total = int(m.group(1)), int(m.group(2))
+            frac = cur / max(total, 1)
+            return {"pct": round(frac * 100), "eta": _eta_from_pct(state, frac)}
+        return None
+
+    # ── Stage 4: Per-clip SAM3 segmentation ───────────────────────────
+    if sid == "mask_on_clips":
+        return _parse_s4(line, state)
+
+    # ── Stage 7: AI game objects ──────────────────────────────────────
+    if sid == "ai_game_objects":
+        m = _RE_VLM_TYPE.search(line)
+        if m:
+            frac = _S7_VLM_ORDER.get(m.group(1), 0.5)
+            return {"pct": round(frac * 100), "eta": _eta_from_pct(state, frac)}
+        if "generation complete" in line.lower() or "game_objects.json" in line:
+            return {"pct": 95, "eta": ""}
+        return None
+
+    # ── Other stages: no sub-progress, just elapsed time ──────────────
+    return None
+
+
+def _parse_s9(line: str, state: dict) -> dict | None:
+    """Parse Stage 9 (Blender) progress using time-weighted steps."""
+    # Step N/M header → jump to that step's time-weighted start
+    m = _RE_STEP.search(line)
+    if m:
+        cur, total = int(m.group(1)), int(m.group(2))
+        state["s9_step"] = cur
+        state["s9_steps"] = total
+        frac = _S9_STEP_START.get(cur, 0)
+        return {"pct": round(frac * 100), "eta": _eta_from_pct(state, frac)}
+
+    step = state.get("s9_step", 0)
+    step_start = _S9_STEP_START.get(step, 0)
+    step_w = _S9_STEP_WEIGHT.get(step, 10) / _S9_TOTAL_WEIGHT
+
+    # Step 3: tile loading — count imported tiles
+    if step == 3:
+        m = _RE_TILE_NEED.search(line)
+        if m:
+            state["s9_tile_total"] = state.get("s9_tile_total", 0) + int(m.group(1))
+            return None
+        if _RE_TILE_IMPORT.search(line):
+            state["s9_tile_loaded"] = state.get("s9_tile_loaded", 0) + 1
+            total = state.get("s9_tile_total", 1)
+            sub = state["s9_tile_loaded"] / max(total, 1)
+            frac = step_start + step_w * min(sub, 1.0)
+            # Throttle: only update every 20 tiles
+            if state["s9_tile_loaded"] % 20 == 0 or sub >= 0.99:
+                return {"pct": round(frac * 100), "eta": _eta_from_pct(state, frac)}
+            return None
+
+    # Step 4: tile refinement — [N/M] refine pattern
+    if step == 4:
+        m = _RE_REFINE.search(line)
+        if m:
+            cur, total = int(m.group(1)), int(m.group(2))
+            eta_s = int(m.group(3))
+            sub = cur / max(total, 1)
+            frac = step_start + step_w * sub
+            return {"pct": round(frac * 100), "eta": _fmt_eta(eta_s) if eta_s > 0 else _eta_from_pct(state, frac)}
+        m = _RE_REFINE_NO_ETA.search(line)
+        if m:
+            cur, total = int(m.group(1)), int(m.group(2))
+            sub = cur / max(total, 1)
+            frac = step_start + step_w * sub
+            return {"pct": round(frac * 100), "eta": _eta_from_pct(state, frac)}
+
+    # Step 5: projection percentage
+    if step == 5:
+        m = _RE_PROJECTION.search(line)
+        if m:
+            sub = int(m.group(1)) / 100
+            frac = step_start + step_w * sub
+            return {"pct": round(frac * 100), "eta": _eta_from_pct(state, frac)}
+
+    return None
+
+
+def _parse_s2(line: str, state: dict) -> dict | None:
+    """Parse Stage 2 (full-map SAM3) progress from milestones."""
+    for pat, val in _S2_MILESTONES:
+        if not pat.search(line):
+            continue
+        if val == "s2_tag":
+            # Each tag is ~15% of total; count how many seen
+            state["s2_tags_seen"] = state.get("s2_tags_seen", 0) + 1
+            frac = 0.15 + state["s2_tags_seen"] * 0.12
+            frac = min(frac, 0.80)
+            return {"pct": round(frac * 100), "eta": _eta_from_pct(state, frac)}
+        if val == "s2_tag_done":
+            frac = 0.15 + state.get("s2_tags_seen", 1) * 0.12 + 0.06
+            frac = min(frac, 0.82)
+            return {"pct": round(frac * 100), "eta": _eta_from_pct(state, frac)}
+        if isinstance(val, (int, float)):
+            return {"pct": round(val * 100), "eta": _eta_from_pct(state, val)}
+    return None
+
+
+def _parse_s4(line: str, state: dict) -> dict | None:
+    """Parse Stage 4 (per-clip SAM3) progress."""
+    m = _RE_CLIP_FOUND.search(line)
+    if m:
+        state["s4_total_clips"] = int(m.group(1))
+        return {"pct": 2, "eta": ""}
+
+    m = _RE_CLIP_TAG.search(line)
+    if m:
+        # tag processing indicator; rough milestone
+        state["s4_tags_done"] = state.get("s4_tags_done", 0) + 1
+        frac = min(state["s4_tags_done"] * 0.18, 0.90)
+        return {"pct": round(frac * 100), "eta": _eta_from_pct(state, frac)}
+
+    if "Fallback complete" in line:
+        state["s4_tags_done"] = state.get("s4_tags_done", 0) + 1
+        frac = min(state["s4_tags_done"] * 0.18 + 0.05, 0.95)
+        return {"pct": round(frac * 100), "eta": _eta_from_pct(state, frac)}
+
+    if "Per-clip segmentation complete" in line:
+        return {"pct": 100, "eta": ""}
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # PipelineRunner — background pipeline execution with SSE streaming
 # ---------------------------------------------------------------------------
 class PipelineRunner:
@@ -367,6 +593,8 @@ class PipelineRunner:
         self.sse_clients = []          # list of queue.Queue
         self._lock = threading.Lock()
         self._stage_status = {}        # stage_id -> "not_started" | "running" | "completed" | "error"
+        self._stage_progress = {}      # stage_id -> {"pct": 0-100, "eta": "~30s"}
+        self._progress_state = {}      # mutable state for progress parser (per-stage)
         self._log_file_handle = None   # file handle for subprocess stdout
         self._stop_event = threading.Event()
 
@@ -627,9 +855,15 @@ class PipelineRunner:
                                 if pname in line:
                                     if self.current_stage and self.current_stage != sid:
                                         self._stage_status[self.current_stage] = "completed"
+                                        self._stage_progress[self.current_stage] = {"pct": 100, "eta": ""}
                                         self._safe_broadcast("stage_complete", {"stage": self.current_stage})
                                     self.current_stage = sid
                                     self._stage_status[sid] = "running"
+                                    self._progress_state[sid] = {
+                                        "_t0": _progress_time.time(),
+                                        "_stage_id": sid,
+                                    }
+                                    self._stage_progress[sid] = {"pct": 0, "eta": ""}
                                     self._safe_broadcast("stage_start", {"stage": sid})
                                     break
                         else:
@@ -639,6 +873,16 @@ class PipelineRunner:
                                 self._safe_broadcast("log", "\n".join(log_batch))
                                 log_batch = []
                                 last_flush = now
+
+                        # --- Progress parsing (throttled to ~2 updates/sec) ---
+                        sid = self.current_stage
+                        if sid:
+                            prog = _parse_progress(line, self._progress_state.setdefault(sid, {}))
+                            if prog:
+                                prev = self._stage_progress.get(sid, {})
+                                if prog["pct"] != prev.get("pct") or prog["eta"] != prev.get("eta", ""):
+                                    self._stage_progress[sid] = prog
+                                    self._safe_broadcast("stage_progress", {"stage": sid, **prog})
                     else:
                         # No new content — check if process is still alive
                         if proc.poll() is not None:
@@ -724,6 +968,7 @@ class PipelineRunner:
                         result[sid] = "not_started"
                 else:
                     result[sid] = "not_started"
+        result["_progress"] = dict(self._stage_progress)
         return result
 
     def add_sse_client(self):

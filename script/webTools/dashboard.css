@@ -91,6 +91,39 @@
   cursor: pointer;
   transition: background 0.15s;
   border: 1px solid transparent;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Thin progress bar — bottom of card, only visible when running */
+.stage-card__progress {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  background: #60a5fa;
+  border-radius: 0 1px 0 6px;
+  transition: width 0.4s ease;
+  width: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.stage-card__progress.active {
+  opacity: 1;
+}
+
+/* Progress text (percentage + ETA) — compact, beside stage name */
+.stage-card__pct {
+  font-size: 10px;
+  color: #60a5fa;
+  white-space: nowrap;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.3s;
+  margin-right: 2px;
+}
+.stage-card__pct.active {
+  opacity: 1;
 }
 
 .stage-card:hover {

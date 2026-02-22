@@ -72,10 +72,61 @@ def _read_json(path: str):
         return json.load(f)
 
 
+def _load_tileset_tree(tiles_dir: str, CTile):
+    """Load the CTile tree from *tiles_dir*.
+
+    Tries ``tiles_dir/tileset.json`` first.  If that does not exist (common
+    with block-based 3D Tiles datasets), walks subdirectories for individual
+    ``tileset.json`` files and assembles them under a virtual root.
+    """
+    top_json = os.path.join(tiles_dir, "tileset.json")
+    root_tile = CTile()
+    if os.path.isfile(top_json):
+        root_tile.loadFromRootJson(top_json)
+        return root_tile
+
+    # No root tileset.json — scan subdirectories for block-level tilesets
+    found = 0
+    for dirpath, _dirnames, filenames in os.walk(tiles_dir):
+        for fname in filenames:
+            if fname.lower() == "tileset.json":
+                child = CTile()
+                child.loadFromRootJson(os.path.join(dirpath, fname))
+                if child.children or child.hasMesh:
+                    root_tile.children.append(child)
+                    child.parent = root_tile
+                    found += 1
+    if found:
+        root_tile.canRefine = True
+        log.info("Assembled virtual root from %d block tileset(s)", found)
+    else:
+        log.warning("No tileset.json found in %s or subdirectories", tiles_dir)
+    return root_tile
+
+
 def _pixel_to_geo(px: float, py: float, geo_meta: dict) -> list:
-    """Convert pixel [x, y] in modelscale image to WGS84 [lon, lat]."""
+    """Convert pixel [x, y] in modelscale image to WGS84 [lon, lat].
+
+    When *geo_meta* contains ``corners`` (top_left/top_right/bottom_left/
+    bottom_right as [lat, lon]), uses bilinear interpolation to correctly
+    handle UTM grid convergence.  Falls back to simplified rectangle otherwise.
+    """
     w = geo_meta["image_width"]
     h = geo_meta["image_height"]
+    corners = geo_meta.get("corners")
+    if corners:
+        u = float(px) / w
+        v = float(py) / h
+        # corners in geo_metadata.json are [lat, lon] — swap to [lon, lat]
+        tl = corners["top_left"]
+        tr = corners["top_right"]
+        bl = corners["bottom_left"]
+        br = corners["bottom_right"]
+        lon = (1 - u) * (1 - v) * tl[1] + u * (1 - v) * tr[1] + \
+              (1 - u) * v * bl[1] + u * v * br[1]
+        lat = (1 - u) * (1 - v) * tl[0] + u * (1 - v) * tr[0] + \
+              (1 - u) * v * bl[0] + u * v * br[0]
+        return [lon, lat]
     bounds = geo_meta["bounds"]
     lon = bounds["west"] + float(px) * (bounds["east"] - bounds["west"]) / w
     lat = bounds["north"] - float(py) * (bounds["north"] - bounds["south"]) / h
@@ -460,6 +511,76 @@ def _import_game_objects_geo(
     return created
 
 
+def _project_game_objects_to_surface(height_above: float = 2.0) -> int:
+    """Raycast each game-object Empty downward onto terrain tile surfaces.
+
+    Sets ``empty.location.y = hit_y + height_above`` for every Empty in any
+    ``game_objects*`` collection.  Returns the number of objects projected.
+
+    Only accepts hits on terrain tile objects (those in ``L{digits}``
+    collections), so mask polygons and collision meshes are ignored without
+    needing to hide them (which doesn't work in ``--background`` mode).
+    """
+    # Collect empties from game_objects collections
+    empties: list[bpy.types.Object] = []
+    for col in bpy.data.collections:
+        if col.name == "game_objects" or col.name.startswith("game_objects_"):
+            for obj in col.all_objects:
+                if obj.type == "EMPTY":
+                    empties.append(obj)
+    if not empties:
+        return 0
+
+    # Build set of terrain tile object names (in L{digits} collections)
+    terrain_names: set[str] = set()
+    for col in bpy.data.collections:
+        if col.name.startswith("L") and col.name[1:].isdigit():
+            for obj in col.all_objects:
+                if obj.type == "MESH":
+                    terrain_names.add(obj.name)
+
+    if not terrain_names:
+        log.warning("No terrain tile objects found for game object projection")
+        return 0
+
+    projected = 0
+    ray_dir = Vector((0.0, 1.0, 0.0))   # gravity is +Y, cast toward ground
+    ray_origin_y = -5000.0               # start high above (negative Y = up)
+
+    # Per-object raycast against individual terrain meshes
+    # (avoids scene.ray_cast which requires hide_viewport to work)
+    for empty in empties:
+        ex, ez = empty.location.x, empty.location.z
+        best_y = None
+
+        for obj_name in terrain_names:
+            obj = bpy.data.objects.get(obj_name)
+            if obj is None or obj.data is None:
+                continue
+            # Quick AABB check in world space
+            bb = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
+            xs = [v.x for v in bb]
+            zs = [v.z for v in bb]
+            if ex < min(xs) or ex > max(xs) or ez < min(zs) or ez > max(zs):
+                continue
+
+            # Ray in object local space
+            inv = obj.matrix_world.inverted()
+            local_origin = inv @ Vector((ex, ray_origin_y, ez))
+            local_dir = (inv.to_3x3() @ ray_dir).normalized()
+            hit, loc, _n, _idx = obj.ray_cast(local_origin, local_dir)
+            if hit:
+                world_loc = obj.matrix_world @ loc
+                if best_y is None or world_loc.y < best_y:
+                    best_y = world_loc.y
+
+        if best_y is not None:
+            empty.location.y = best_y - height_above
+            projected += 1
+
+    return projected
+
+
 # ---------------------------------------------------------------------------
 # CLI argument parsing
 # ---------------------------------------------------------------------------
@@ -670,16 +791,16 @@ def main() -> None:
         # --------------------------------------------------------------
         # Step 3: Load base tiles
         # --------------------------------------------------------------
+        import time as _time
         log.info("Step 3/8: Loading base tiles (level=%d)...", args.base_level)
         from sam3_actions.c_tiles import CTile
         from sam3_actions.load_base_tiles import import_fullscene_with_ctile
 
-        tileset_path = os.path.join(tiles_dir, "tileset.json")
-        root_tile = CTile()
-        root_tile.loadFromRootJson(tileset_path)
+        _t3 = _time.time()
+        root_tile = _load_tileset_tree(tiles_dir, CTile)
         import_fullscene_with_ctile(root_tile, glb_dir, min_level=args.base_level,
                                     on_tile_loaded=_tile_redraw)
-        log.info("Base tiles loaded.")
+        log.info("Base tiles loaded in %.1fs.", _time.time() - _t3)
         _force_redraw()
 
         # Hide mask polygons so tiles are clearly visible
@@ -706,8 +827,8 @@ def main() -> None:
         log.info("Refinement mask tags: %s (%d objects)", refine_tags, len(masks))
 
         if masks:
-            root_tile2 = CTile()
-            root_tile2.loadFromRootJson(tileset_path)
+            _t4 = _time.time()
+            root_tile2 = _load_tileset_tree(tiles_dir, CTile)
             refine_by_mask_sync(
                 context=bpy.context,
                 masks=masks,
@@ -716,7 +837,7 @@ def main() -> None:
                 target_level=args.target_level,
                 on_tile_loaded=_tile_redraw,
             )
-            log.info("Tile refinement complete.")
+            log.info("Tile refinement complete in %.1fs.", _time.time() - _t4)
         else:
             log.warning("No mask objects found in '%s', skipping refinement.",
                          config.ROOT_POLYGON_COLLECTION_NAME)
@@ -796,6 +917,9 @@ def main() -> None:
                     filepath=go_json,
                 )
                 log.info("Import game objects result: %s", result)
+            # Project game objects down onto terrain surface + 2m
+            projected = _project_game_objects_to_surface(height_above=2.0)
+            log.info("Projected %d game objects onto terrain (2m above surface)", projected)
         else:
             log.info("Step 7/8: Skipped%s.", " (--skip-game-objects)" if args.skip_game_objects else " (no game objects JSON)")
 

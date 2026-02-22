@@ -163,7 +163,7 @@ def _run_gap_fill(
             continue
 
         mask = _rasterize_blender_json(
-            json_path, bounds, canvas_w, canvas_h,
+            json_path, bounds_wgs84, canvas_w, canvas_h,
         )
         n_pixels = int(np.count_nonzero(mask))
 

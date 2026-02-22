@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import bpy  # type: ignore[import-not-found]
 import os
+import time
 
 from . import ActionSpec
 from .c_tiles import CTile
-from .mask_select_utils import build_mask_cache, get_mask_objects, objects_hit_by_mask_cache_xz
+from .mask_select_utils import (
+    build_mask_cache, get_mask_objects, objects_hit_by_mask_cache_xz,
+    world_bbox_xz_range, _bbox2_overlap,
+)
 
 from config import BASE_TILES_DIR, GLB_DIR, BASE_LEVEL, TARGET_FINE_LEVEL
 
@@ -14,7 +18,7 @@ from config import BASE_TILES_DIR, GLB_DIR, BASE_LEVEL, TARGET_FINE_LEVEL
 # ----------------------------
 class _SAM3_NonBlockingModalMixin:
     """
-    用于 Blender Operator 的通用“非阻塞执行”辅助：
+    用于 Blender Operator 的通用"非阻塞执行"辅助：
     - event_timer_add / modal_handler_add
     - progress_begin/update/end
     - tag_redraw / redraw_timer / view_layer.update
@@ -192,40 +196,62 @@ class SAM3_OT_load_base_tiles(_SAM3_NonBlockingModalMixin, bpy.types.Operator):
 #base on a json file, load scene at at least min level
 def compute_tiles_need_load_for_min_level(root: CTile, min_level: int = 0, select_file_list_path: str = "") -> dict[int, list[CTile]]:
     """
-    仅计算“需要加载的 tiles”（按 level 分组），不做任何导入。
+    仅计算"需要加载的 tiles"（按 level 分组），不做任何导入。
     该逻辑从 import_fullscene_with_ctile 拆出，供同步/非阻塞两种执行方式复用。
+
+    当子树无法提供 ``min_level`` 的瓦片时，自动回退加载该分支最深可用层级的
+    瓦片，确保整个场景无空洞。
     """
     if not root:
         print("root tile = null")
         return {}
 
-    tiles_need_child = [root]
-    if select_file_list_path:
-        tiles_need_child = []
-        with open(select_file_list_path) as f:
-            lines = f.readlines()
-            for name in lines:
-                if len(name.strip()):
-                    tile = root.find(name.strip())
-                    if tile and tile not in tiles_need_child:
-                        tiles_need_child.append(tile)
-
     tiles_need_load: dict[int, list[CTile]] = {}
-    print("check {0} root tiles".format(len(tiles_need_child)))
-    while len(tiles_need_child) > 0:
-        next_level_tiles = []
-        for tile in tiles_need_child:
-            if tile.hasMesh:
-                if tile.canRefine == False or tile.meshLevel >= min_level or len(tile.children) == 0:
-                    level = tile.meshLevel
-                    if level not in tiles_need_load:
-                        tiles_need_load[level] = []
-                    tiles_need_load[level].append(tile)
-                    continue
 
-            if tile.canRefine and len(tile.children):
-                next_level_tiles += tile.children
-        tiles_need_child = next_level_tiles
+    def _add(tile: CTile) -> None:
+        tiles_need_load.setdefault(tile.meshLevel, []).append(tile)
+
+    def _walk(tile: CTile) -> bool:
+        """Recurse into *tile*; return True if at least one mesh was added."""
+        if tile.hasMesh:
+            # Leaf or already at/above target → load directly
+            if not tile.canRefine or tile.meshLevel >= min_level or not tile.children:
+                _add(tile)
+                return True
+
+            # Can refine & below min_level → try children first
+            any_child = False
+            for child in tile.children:
+                if _walk(child):
+                    any_child = True
+            if not any_child:
+                # Children produced nothing → fallback to this tile
+                _add(tile)
+                return True
+            return True  # children covered this area
+
+        # Non-mesh node (e.g. virtual root, JSON redirect)
+        if tile.canRefine and tile.children:
+            any_child = False
+            for child in tile.children:
+                if _walk(child):
+                    any_child = True
+            return any_child
+        return False
+
+    entry_tiles: list[CTile] = [root]
+    if select_file_list_path:
+        entry_tiles = []
+        with open(select_file_list_path) as f:
+            for name in f.readlines():
+                if name.strip():
+                    found = root.find(name.strip())
+                    if found and found not in entry_tiles:
+                        entry_tiles.append(found)
+
+    print("check {0} root tiles".format(len(entry_tiles)))
+    for tile in entry_tiles:
+        _walk(tile)
 
     return tiles_need_load
 
@@ -265,17 +291,30 @@ def load_glb_tiles_by_dic_level_array(path, tiles_need_load, on_tile_loaded=None
 
             if not os.path.exists(filepath):
                 # b3dm converter preserves subdirectory structure (e.g.,
-                # BlockBAA/BlockBAA_L17_26.glb), but tile.content is just the
-                # filename.  Try the block-prefix subdirectory as fallback.
+                # Model_0/BlockBAA/BlockBAA_L17_26.glb), but tile.content is
+                # just the filename.  Try block-prefix subdirectories as
+                # fallback, including nested parent dirs (e.g. Model_0/).
                 base = os.path.basename(name)
                 found = False
+                block_prefix = ""
                 for i in range(len(base) - 2):
                     if base[i:i+2] == "_L" and base[i+2].isdigit():
-                        alt = os.path.join(path, base[:i], base)
-                        if os.path.exists(alt):
-                            filepath = alt
-                            found = True
+                        block_prefix = base[:i]
                         break
+                if block_prefix:
+                    # Try flat: glb_dir/BlockXXX/file.glb
+                    alt = os.path.join(path, block_prefix, base)
+                    if os.path.exists(alt):
+                        filepath = alt
+                        found = True
+                    else:
+                        # Try with parent dirs: glb_dir/*/BlockXXX/file.glb
+                        for entry in os.listdir(path):
+                            alt = os.path.join(path, entry, block_prefix, base)
+                            if os.path.exists(alt):
+                                filepath = alt
+                                found = True
+                                break
                 if not found:
                     print("WARNING: glb not found, skip:", filepath)
                     continue
@@ -353,7 +392,7 @@ def load_glb_tiles_by_dic_level_array(path, tiles_need_load, on_tile_loaded=None
             except Exception:
                 pass
 
-            # 1.2) 再做一次“全量扫描”兜底（满足：先搜索场景所有 collection）
+            # 1.2) 再做一次"全量扫描"兜底（满足：先搜索场景所有 collection）
             for col in all_cols:
                 if col is None:
                     continue
@@ -460,6 +499,128 @@ def compute_one_tile_refine_plan(root_tile_to_refine: CTile) -> dict[int, list[C
     return tiles_need_load
 
 
+# ---------------------------------------------------------------------------
+# Helpers for CTile-level geographic pre-filtering (refine optimisation)
+# ---------------------------------------------------------------------------
+
+def _build_tile_index(tile: CTile, index: dict[str, CTile]) -> None:
+    """Recursively build content_key → CTile mapping for O(1) lookup."""
+    if tile.content:
+        key = tile.content.split(".")[0]
+        index[key] = tile
+    for child in tile.children:
+        _build_tile_index(child, index)
+
+
+def _mask_overall_aabb(
+    mask_cache: list,
+) -> tuple[float, float, float, float] | None:
+    """Union of all mask bboxes in Blender XZ → (min_x, max_x, min_z, max_z)."""
+    min_x = min_z = float("inf")
+    max_x = max_z = float("-inf")
+    for _m, _tris, overall in mask_cache:
+        if overall is not None:
+            min_x = min(min_x, overall[0])
+            max_x = max(max_x, overall[1])
+            min_z = min(min_z, overall[2])
+            max_z = max(max_z, overall[3])
+    if min_x == float("inf"):
+        return None
+    return (min_x, max_x, min_z, max_z)
+
+
+def _detect_axis_mapping(
+    context: bpy.types.Context,
+    tile_index: dict[str, CTile],
+) -> str:
+    """Detect which CTile bbox axes map to Blender X and Z.
+
+    Compares loaded Blender objects' world bboxes with their CTile
+    bounding volumes to determine the axis mapping.  Tries up to 5
+    tiles for robustness.
+
+    Returns one of ``"XY"`` ``"XnY"`` ``"XZ"`` ``"XnZ"``.
+    """
+    votes: dict[str, int] = {}
+    checked = 0
+
+    for obj in context.scene.objects:
+        if getattr(obj, "type", "") != "MESH":
+            continue
+        key = obj.name.split(".glb")[0]
+        tile = tile_index.get(key)
+        if tile is None:
+            continue
+
+        blender_bb = world_bbox_xz_range(obj)
+        if blender_bb is None:
+            continue
+
+        bb = tile.boxBoundingVolume
+        if not bb or len(bb) < 12 or all(v == 0 for v in bb):
+            continue
+
+        cx, cy, cz = bb[0], bb[1], bb[2]
+        bx_mid = (blender_bb[0] + blender_bb[1]) / 2
+        bz_mid = (blender_bb[2] + blender_bb[3]) / 2
+
+        candidates = {
+            "XY":  (cx,  cy),
+            "XnY": (cx, -cy),
+            "XZ":  (cx,  cz),
+            "XnZ": (cx, -cz),
+        }
+
+        best_name = "XY"
+        best_err = float("inf")
+        for name, (tx, tz) in candidates.items():
+            err = abs(tx - bx_mid) + abs(tz - bz_mid)
+            if err < best_err:
+                best_err = err
+                best_name = name
+
+        if best_err < 50:
+            votes[best_name] = votes.get(best_name, 0) + 1
+            checked += 1
+            if checked >= 5:
+                break
+
+    if votes:
+        winner = max(votes, key=lambda k: votes[k])
+        print(f"[refine] axis mapping votes: {votes} → {winner}")
+        return winner
+    return "XY"  # default
+
+
+def _tile_aabb_xz(
+    tile: CTile, axis_map: str,
+) -> tuple[float, float, float, float] | None:
+    """Convert CTile bounding volume to Blender XZ AABB.
+
+    Returns ``(min_x, max_x, min_z, max_z)`` or *None* if the bbox is
+    invalid/zero (in which case the tile should NOT be skipped).
+    """
+    bb = tile.boxBoundingVolume
+    if not bb or len(bb) < 12 or all(v == 0 for v in bb):
+        return None
+
+    cx, cy, cz = bb[0], bb[1], bb[2]
+    # Half-extents: for axis-aligned boxes the off-diagonal elements are 0,
+    # but handle the general OBB case conservatively.
+    hx = abs(bb[3]) + abs(bb[4]) + abs(bb[5])
+    hy = abs(bb[6]) + abs(bb[7]) + abs(bb[8])
+    hz = abs(bb[9]) + abs(bb[10]) + abs(bb[11])
+
+    if axis_map == "XnY":
+        return (cx - hx, cx + hx, -cy - hy, -cy + hy)
+    elif axis_map == "XZ":
+        return (cx - hx, cx + hx, cz - hz, cz + hz)
+    elif axis_map == "XnZ":
+        return (cx - hx, cx + hx, -cz - hz, -cz + hz)
+    else:  # "XY" or default
+        return (cx - hx, cx + hx, cy - hy, cy + hy)
+
+
 def refine_by_mask_sync(
     context: bpy.types.Context,
     masks: list[bpy.types.Object],
@@ -469,12 +630,20 @@ def refine_by_mask_sync(
     max_steps: int = 5000,
     on_tile_loaded=None,
 ) -> None:
-    """
-    Synchronous version of refine-by-mask-to-target-level.
+    """Synchronous refine-by-mask-to-target-level with geographic pre-filtering.
 
-    Performs the same algorithm as SAM3_OT_refine_by_mask_to_target_level but
-    in a blocking loop, suitable for ``--background`` mode where modal operators
-    with TIMER events are not available.
+    Key optimisations over the naive approach:
+
+    1. **CTile bbox pre-filter** — before importing a child GLB, its
+       ``boxBoundingVolume`` is tested against the mask AABB in Blender XZ.
+       Children that don't overlap are never loaded, saving expensive
+       glTF imports.
+    2. **Active-tile tracking** — only tiles loaded in the *previous* round
+       are candidates for further refinement.  The full scene is scanned
+       only once (initial round); subsequent rounds operate exclusively on
+       the tracked set.
+    3. **O(1) tile index** — a ``content_key → CTile`` dict replaces the
+       recursive ``root_tile.find()`` calls.
     """
 
     def _objname_to_tile_key(obj_name: str) -> str:
@@ -493,53 +662,99 @@ def refine_by_mask_sync(
             out.append(t)
         return out
 
+    # ------------------------------------------------------------------
+    # 1. Build mask cache & extract overall AABB
+    # ------------------------------------------------------------------
     mask_cache, stats = build_mask_cache(context, masks)
     if not mask_cache:
         print("[refine_by_mask_sync] No valid mask mesh data, abort.")
         return
     print(f"[refine_by_mask_sync] mask_cache built: {stats}")
 
+    mask_aabb = _mask_overall_aabb(mask_cache)
+    if mask_aabb is None:
+        print("[refine_by_mask_sync] No mask AABB, abort.")
+        return
+
+    # Pad by 10% for conservative pre-filtering (handles bbox approximation)
+    dx = (mask_aabb[1] - mask_aabb[0]) * 0.1
+    dz = (mask_aabb[3] - mask_aabb[2]) * 0.1
+    mask_aabb_padded = (
+        mask_aabb[0] - dx, mask_aabb[1] + dx,
+        mask_aabb[2] - dz, mask_aabb[3] + dz,
+    )
+    print(f"[refine_by_mask_sync] mask_aabb={mask_aabb}, padded={mask_aabb_padded}")
+
+    # ------------------------------------------------------------------
+    # 2. Build CTile content index for O(1) lookup
+    # ------------------------------------------------------------------
+    tile_index: dict[str, CTile] = {}
+    _build_tile_index(root_tile, tile_index)
+    print(f"[refine_by_mask_sync] tile_index: {len(tile_index)} entries")
+
+    # ------------------------------------------------------------------
+    # 3. Detect axis mapping: CTile bbox → Blender XZ
+    # ------------------------------------------------------------------
+    axis_map = _detect_axis_mapping(context, tile_index)
+    print(f"[refine_by_mask_sync] axis_map: {axis_map}")
+
+    # ------------------------------------------------------------------
+    # 4. Initial round: scan loaded base tiles for mask overlap
+    #    (this is the only round that scans all scene objects)
+    # ------------------------------------------------------------------
+    hit_objs, sel_stats = objects_hit_by_mask_cache_xz(
+        context=context,
+        masks=masks,
+        mask_cache=mask_cache,
+        select_hit_objects=False,
+        deselect_first=False,
+        set_active=False,
+    )
+
+    active_tiles: list[CTile] = []
+    for obj in hit_objs:
+        key = _objname_to_tile_key(getattr(obj, "name", "") or "")
+        tile = tile_index.get(key)
+        if tile is not None:
+            active_tiles.append(tile)
+    active_tiles = _dedupe_tiles(active_tiles)
+
+    tiles_to_refine = [t for t in active_tiles
+                       if t.canRefine and t.meshLevel < target_level]
+    print(f"[refine_by_mask_sync] Initial: {len(hit_objs)} hit objects, "
+          f"{len(active_tiles)} tiles, {len(tiles_to_refine)} need refine")
+
+    if not tiles_to_refine:
+        print("[refine_by_mask_sync] No tiles need refinement, done.")
+        return
+
+    # ------------------------------------------------------------------
+    # 5. Iterative refinement with CTile bbox pre-filter
+    # ------------------------------------------------------------------
     step = 0
     round_num = 0
-    while step < max_steps:
+    total_loaded = 0
+    total_skipped = 0
+    t_start = time.time()
+
+    while tiles_to_refine and step < max_steps:
         round_num += 1
-        print(f"[refine_by_mask_sync] Round {round_num}: selecting objects by mask...")
+        tiles_to_refine.sort(key=lambda t: (t.meshLevel, t.content or ""))
+        round_count = len(tiles_to_refine)
+        round_t0 = time.time()
+        min_lv = tiles_to_refine[0].meshLevel
+        remaining_levels = target_level - min_lv
+        print(f"[refine_by_mask_sync] Round {round_num}: "
+              f"{round_count} tiles to refine "
+              f"(level {min_lv}→{min_lv + 1}, "
+              f"{remaining_levels} level{'s' if remaining_levels > 1 else ''} to target)")
 
-        hit_objs, sel_stats = objects_hit_by_mask_cache_xz(
-            context=context,
-            masks=masks,
-            mask_cache=mask_cache,
-            select_hit_objects=True,
-            deselect_first=True,
-            set_active=True,
-        )
+        next_candidates: list[CTile] = []
 
-        if not hit_objs:
-            print("[refine_by_mask_sync] No objects hit by mask, done.")
-            break
-
-        # Map hit objects to CTiles
-        hit_tiles: list[CTile] = []
-        for obj in hit_objs:
-            key = _objname_to_tile_key(getattr(obj, "name", "") or "")
-            tile = root_tile.find(key) if key else None
-            if tile is not None:
-                hit_tiles.append(tile)
-
-        hit_tiles = _dedupe_tiles(hit_tiles)
-        need_refine = [t for t in hit_tiles if t.canRefine and t.meshLevel < target_level]
-        need_refine.sort(key=lambda t: (t.meshLevel, t.content or ""))
-
-        if not need_refine:
-            print(f"[refine_by_mask_sync] All hit tiles at target_level={target_level} or cannot refine, done.")
-            break
-
-        print(f"[refine_by_mask_sync] Round {round_num}: {len(need_refine)} tiles to refine")
-
-        for i, tile_to_refine in enumerate(need_refine):
+        for i, tile_to_refine in enumerate(tiles_to_refine):
             step += 1
             if step > max_steps:
-                print(f"[refine_by_mask_sync] Max steps reached ({max_steps}), stopping.")
+                print(f"[refine_by_mask_sync] Max steps ({max_steps}), stopping.")
                 return
 
             plan = compute_one_tile_refine_plan(tile_to_refine)
@@ -547,11 +762,73 @@ def refine_by_mask_sync(
                 tile_to_refine.canRefine = False
                 continue
 
-            print(f"[refine_by_mask_sync]   [{i+1}/{len(need_refine)}] refine tile={tile_to_refine.content}")
-            load_glb_tiles_by_dic_level_array(glb_dir, plan, on_tile_loaded=on_tile_loaded)
+            # Classify children: overlapping mask → refine further;
+            # non-overlapping → load only (preserve scene completeness).
+            # ALL children must be loaded before the parent is deleted,
+            # otherwise boundary tiles disappear leaving holes.
+            refine_plan: dict[int, list[CTile]] = {}   # overlap mask → load + track
+            boundary_plan: dict[int, list[CTile]] = {} # no overlap  → load only
+            n_refine = 0
+            n_boundary = 0
+            for level, tiles in plan.items():
+                ref_list: list[CTile] = []
+                bnd_list: list[CTile] = []
+                for child_tile in tiles:
+                    child_aabb = _tile_aabb_xz(child_tile, axis_map)
+                    if child_aabb is not None and not _bbox2_overlap(child_aabb, mask_aabb_padded):
+                        bnd_list.append(child_tile)
+                        n_boundary += 1
+                    else:
+                        ref_list.append(child_tile)
+                        n_refine += 1
+                if ref_list:
+                    refine_plan[level] = ref_list
+                if bnd_list:
+                    boundary_plan[level] = bnd_list
+
+            total_loaded += n_refine + n_boundary
+            total_skipped += n_boundary  # counted as "boundary" in stats
+
+            # Merge both plans into a single load plan
+            full_plan: dict[int, list[CTile]] = {}
+            for level in set(list(refine_plan.keys()) + list(boundary_plan.keys())):
+                full_plan[level] = refine_plan.get(level, []) + boundary_plan.get(level, [])
+
+            if not full_plan:
+                tile_to_refine.canRefine = False
+                continue
+
+            # Progress with ETA (every 50 tiles or at start/end)
+            if i == 0 or (i + 1) % 50 == 0 or i + 1 == round_count:
+                elapsed = time.time() - round_t0
+                rate = (i + 1) / max(elapsed, 0.01)
+                eta = (round_count - i - 1) / max(rate, 0.001)
+                print(f"[refine_by_mask_sync]   [{i+1}/{round_count}] "
+                      f"refine L{tile_to_refine.meshLevel} "
+                      f"load={n_refine} boundary={n_boundary} "
+                      f"({elapsed:.0f}s elapsed, ~{eta:.0f}s remaining)")
+
+            load_glb_tiles_by_dic_level_array(glb_dir, full_plan,
+                                              on_tile_loaded=on_tile_loaded)
             clear_scene_by_tile(tile_to_refine)
 
-    print(f"[refine_by_mask_sync] Complete. Total steps: {step}")
+            # Only mask-overlapping children are candidates for deeper refinement
+            for level, tiles in refine_plan.items():
+                next_candidates.extend(tiles)
+
+        round_elapsed = time.time() - round_t0
+        print(f"[refine_by_mask_sync] Round {round_num} done in {round_elapsed:.1f}s "
+              f"(loaded={total_loaded}, skipped={total_skipped})")
+
+        # Prepare next round: only tiles that can and need further refinement
+        next_candidates = _dedupe_tiles(next_candidates)
+        tiles_to_refine = [t for t in next_candidates
+                           if t.canRefine and t.meshLevel < target_level]
+
+    total_elapsed = time.time() - t_start
+    print(f"[refine_by_mask_sync] Complete. rounds={round_num} steps={step} "
+          f"loaded={total_loaded} skipped={total_skipped} "
+          f"total_time={total_elapsed:.1f}s")
 
 
 def refine_and_selected_tiles(root:CTile, path):

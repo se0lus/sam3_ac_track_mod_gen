@@ -73,9 +73,11 @@ def _read_geotiff_bounds(geotiff_path: str) -> Dict[str, Any]:
         bounds: Native CRS bounds (for pixel↔native coord mapping).
         bounds_wgs84: WGS84 (EPSG:4326) bounds (for geo_xy output to Blender).
             Same as bounds when the GeoTIFF is already in geographic CRS.
+            Includes ``corners`` sub-dict for bilinear interpolation when the
+            source CRS has grid convergence (e.g. UTM).
     """
     import rasterio
-    from rasterio.warp import transform_bounds
+    from rasterio.warp import transform_bounds, transform as warp_transform
 
     with rasterio.open(geotiff_path) as ds:
         native = {
@@ -97,6 +99,18 @@ def _read_geotiff_bounds(geotiff_path: str) -> Dict[str, Any]:
                 "GeoTIFF CRS %s → WGS84: [%.6f, %.6f, %.6f, %.6f]",
                 ds.crs, l84, b84, r84, t84,
             )
+            # Compute exact WGS84 corners for bilinear interpolation.
+            # Order: TL, TR, BL, BR (native coords: left/top, right/top,
+            # left/bottom, right/bottom).
+            xs = [ds.bounds.left, ds.bounds.right, ds.bounds.left, ds.bounds.right]
+            ys = [ds.bounds.top, ds.bounds.top, ds.bounds.bottom, ds.bounds.bottom]
+            c_lons, c_lats = warp_transform(ds.crs, "EPSG:4326", xs, ys)
+            wgs84["corners"] = {
+                "tl": [c_lons[0], c_lats[0]],
+                "tr": [c_lons[1], c_lats[1]],
+                "bl": [c_lons[2], c_lats[2]],
+                "br": [c_lons[3], c_lats[3]],
+            }
         else:
             wgs84 = dict(native)
 
@@ -162,7 +176,17 @@ def _geo_to_canvas(
     bounds: Dict[str, float],
     canvas_w: int, canvas_h: int,
 ) -> Tuple[float, float]:
-    """Convert WGS84 lon/lat to canvas pixel coordinates."""
+    """Convert WGS84 lon/lat to canvas pixel coordinates.
+
+    When *bounds* contains a ``corners`` dict (tl/tr/bl/br as [lon, lat]),
+    uses inverse bilinear interpolation for accurate mapping with UTM grid
+    convergence.  Falls back to the simplified rectangle formula otherwise.
+    """
+    corners = bounds.get("corners")
+    if corners:
+        u, v = _inverse_bilinear(lon, lat, corners)
+        return u * canvas_w, v * canvas_h
+
     left = bounds["left"]
     right = bounds["right"]
     top = bounds["top"]
@@ -178,7 +202,18 @@ def _canvas_to_geo(
     bounds: Dict[str, float],
     canvas_w: int, canvas_h: int,
 ) -> Tuple[float, float]:
-    """Convert canvas pixel coordinates back to WGS84 lon/lat."""
+    """Convert canvas pixel coordinates back to WGS84 lon/lat.
+
+    When *bounds* contains a ``corners`` dict (tl/tr/bl/br as [lon, lat]),
+    uses bilinear interpolation for accurate mapping with UTM grid convergence.
+    Falls back to the simplified rectangle formula otherwise.
+    """
+    corners = bounds.get("corners")
+    if corners:
+        u = cx / canvas_w
+        v = cy / canvas_h
+        return _forward_bilinear(u, v, corners)
+
     left = bounds["left"]
     right = bounds["right"]
     top = bounds["top"]
@@ -187,6 +222,71 @@ def _canvas_to_geo(
     lon = left + cx / canvas_w * (right - left)
     lat = top - cy / canvas_h * (top - bottom)
     return lon, lat
+
+
+def _forward_bilinear(
+    u: float, v: float,
+    corners: Dict[str, List[float]],
+) -> Tuple[float, float]:
+    """Bilinear interpolation: (u, v) in [0,1]² → (lon, lat).
+
+    corners: {"tl": [lon,lat], "tr": [lon,lat], "bl": [lon,lat], "br": [lon,lat]}
+    u=0,v=0 → TL;  u=1,v=0 → TR;  u=0,v=1 → BL;  u=1,v=1 → BR.
+    """
+    tl, tr, bl, br = corners["tl"], corners["tr"], corners["bl"], corners["br"]
+    lon = (1 - u) * (1 - v) * tl[0] + u * (1 - v) * tr[0] + \
+          (1 - u) * v * bl[0] + u * v * br[0]
+    lat = (1 - u) * (1 - v) * tl[1] + u * (1 - v) * tr[1] + \
+          (1 - u) * v * bl[1] + u * v * br[1]
+    return lon, lat
+
+
+def _inverse_bilinear(
+    lon: float, lat: float,
+    corners: Dict[str, List[float]],
+) -> Tuple[float, float]:
+    """Inverse bilinear: (lon, lat) → (u, v) in [0,1]².
+
+    Solves the bilinear system analytically (quadratic in v, then u).
+    """
+    tl, tr, bl, br = corners["tl"], corners["tr"], corners["bl"], corners["br"]
+
+    # Coefficients for: lon = tl + u*e1 + v*e2 + u*v*e3
+    e1 = tr[0] - tl[0]
+    e2 = bl[0] - tl[0]
+    e3 = tl[0] - tr[0] - bl[0] + br[0]
+    f1 = tr[1] - tl[1]
+    f2 = bl[1] - tl[1]
+    f3 = tl[1] - tr[1] - bl[1] + br[1]
+
+    p = lon - tl[0]
+    q = lat - tl[1]
+
+    # Quadratic in v: A*v² + B*v + C = 0
+    A = f2 * e3 - e2 * f3
+    B = p * f3 - q * e3 - e2 * f1 + f2 * e1
+    C = p * f1 - q * e1
+
+    if abs(A) < 1e-18:
+        # Nearly linear (typical for small grid convergence)
+        v = -C / B if abs(B) > 1e-18 else 0.0
+    else:
+        disc = B * B - 4.0 * A * C
+        if disc < 0:
+            disc = 0.0
+        sqrt_disc = disc ** 0.5
+        v1 = (-B + sqrt_disc) / (2.0 * A)
+        v2 = (-B - sqrt_disc) / (2.0 * A)
+        # Pick the root in [0, 1] (or closest)
+        v = v1 if abs(v1 - 0.5) <= abs(v2 - 0.5) else v2
+
+    denom = e1 + v * e3
+    if abs(denom) < 1e-18:
+        u = (q - v * f2) / (f1 + v * f3) if abs(f1 + v * f3) > 1e-18 else 0.0
+    else:
+        u = (p - v * e2) / denom
+
+    return u, v
 
 
 def _poly_geo_to_canvas(
