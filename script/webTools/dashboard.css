@@ -111,6 +111,14 @@
 .stage-card__progress.active {
   opacity: 1;
 }
+.stage-card__progress.indeterminate {
+  width: 30% !important;
+  animation: indeterminate-slide 1.4s ease-in-out infinite;
+}
+@keyframes indeterminate-slide {
+  0%   { left: -30%; }
+  100% { left: 100%; }
+}
 
 /* Progress text (percentage + ETA) — compact, beside stage name */
 .stage-card__pct {

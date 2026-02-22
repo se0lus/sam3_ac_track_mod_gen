@@ -242,8 +242,12 @@ function updateStatusIndicators() {
 
     // Update progress bar from polled status
     const prog = progress[stage.id];
-    if (status === "running" && prog) {
-      _updateStageProgress(stage.id, prog.pct, prog.eta);
+    if (status === "running") {
+      if (prog && prog.pct > 0) {
+        _updateStageProgress(stage.id, prog.pct, prog.eta);
+      } else {
+        _updateStageProgress(stage.id, -1, "");  // indeterminate
+      }
     } else if (status !== "running") {
       _updateStageProgress(stage.id, 0, "", false);
     }
@@ -255,13 +259,20 @@ function _updateStageProgress(stageId, pct, eta, show = true) {
   const label = document.getElementById(`pct-${stageId}`);
   if (!bar || !label) return;
 
-  if (show && pct > 0) {
+  if (show && pct === -1) {
+    // Indeterminate mode: sliding animation, no percentage text
+    bar.style.width = "";
+    bar.classList.add("active", "indeterminate");
+    label.classList.remove("active");
+    label.textContent = "";
+  } else if (show && pct > 0) {
+    bar.classList.remove("indeterminate");
     bar.style.width = `${pct}%`;
     bar.classList.add("active");
     label.classList.add("active");
     label.textContent = eta ? `${pct}% ${eta}` : `${pct}%`;
   } else {
-    bar.classList.remove("active");
+    bar.classList.remove("active", "indeterminate");
     label.classList.remove("active");
     bar.style.width = "0";
     label.textContent = "";
@@ -1272,10 +1283,11 @@ function connectSSE() {
         appendLog(msg.data);
       } else if (msg.type === "stage_start") {
         loadStatus();
-        _updateStageProgress(msg.data.stage, 0, "");
+        _updateStageProgress(msg.data.stage, -1, "");  // indeterminate until real progress
         appendLog(`\n=== Stage ${msg.data.stage} started ===`);
       } else if (msg.type === "stage_progress") {
-        _updateStageProgress(msg.data.stage, msg.data.pct, msg.data.eta || "");
+        const pct = msg.data.pct || 0;
+        _updateStageProgress(msg.data.stage, pct > 0 ? pct : -1, msg.data.eta || "");
       } else if (msg.type === "stage_complete") {
         _updateStageProgress(msg.data.stage, 100, "");
         setTimeout(() => _updateStageProgress(msg.data.stage, 0, "", false), 600);
