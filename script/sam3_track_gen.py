@@ -224,6 +224,8 @@ Available stages: """ + ", ".join(PIPELINE_STAGES)
                     help="Run Blender without --background (show GUI)")
     p.add_argument("--refine-tags", default="",
                     help="Comma-separated mask tags for tile refinement (default: road)")
+    p.add_argument("--tile-padding", type=float, default=-1,
+                    help="Tile plan polygon AABB padding in metres (default: use config)")
 
     # --- Surface extraction options ---
     p.add_argument("--edge-simplify", type=float, default=0.0,
@@ -337,6 +339,8 @@ def config_from_args(args: argparse.Namespace) -> PipelineConfig:
     config.s9_no_background = args.no_background
     if args.refine_tags:
         config.s9_refine_tags = [t.strip() for t in args.refine_tags.split(",") if t.strip()]
+    if args.tile_padding >= 0:
+        config.s9_tile_padding = args.tile_padding
 
     # Surface extraction options
     if args.edge_simplify > 0:

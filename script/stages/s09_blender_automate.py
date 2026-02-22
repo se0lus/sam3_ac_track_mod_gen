@@ -63,6 +63,15 @@ def run(config: PipelineConfig) -> None:
         "--target-level", str(config.target_fine_level),
     ])
 
+    # Polygon directory for tile refinement plan (Stage 8 gap_filled)
+    polygon_dir = os.path.join(config.stage_dir("blender_polygons"), "gap_filled")
+    if os.path.isdir(polygon_dir):
+        cmd.extend(["--polygon-dir", polygon_dir])
+        logger.info("Using polygon dir for tile plan: %s", polygon_dir)
+    else:
+        logger.warning("Polygon dir not found: %s (falling back to iterative refinement)",
+                       polygon_dir)
+
     # Stage 9 skip flags
     if config.s9_no_surfaces:
         cmd.append("--skip-surfaces")
@@ -72,6 +81,9 @@ def run(config: PipelineConfig) -> None:
     # Refine tags
     if config.s9_refine_tags:
         cmd.extend(["--refine-tags", ",".join(config.s9_refine_tags)])
+
+    # Tile plan padding
+    cmd.extend(["--tile-padding", str(config.s9_tile_padding)])
 
     # Surface extraction parameters
     if config.surface_edge_simplify > 0:

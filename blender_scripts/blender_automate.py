@@ -624,8 +624,12 @@ def _parse_args() -> argparse.Namespace:
                     help="Skip extracting collision surfaces")
     p.add_argument("--skip-textures", action="store_true",
                     help="Skip texture processing")
+    p.add_argument("--polygon-dir", default="",
+                    help="Stage 8 gap_filled polygon directory for tile refinement plan")
     p.add_argument("--refine-tags", default="road",
                     help="Comma-separated mask tags for refinement (default: road)")
+    p.add_argument("--tile-padding", type=float, default=0.0,
+                    help="Padding around polygon AABBs for tile plan (metres, default: 0)")
     p.add_argument("--edge-simplify", type=float, default=0.0,
                     help="Edge simplification epsilon in metres (0 = no simplification)")
     p.add_argument("--density-road", type=float, default=0.1,
@@ -789,18 +793,117 @@ def main() -> None:
         _tile_redraw = _make_throttled_redraw(interval=1.0)
 
         # --------------------------------------------------------------
-        # Step 3: Load base tiles
+        # Step 3+4: Pre-compute tile load plan, then load all at once
         # --------------------------------------------------------------
         import time as _time
-        log.info("Step 3/8: Loading base tiles (level=%d)...", args.base_level)
-        from sam3_actions.c_tiles import CTile
-        from sam3_actions.load_base_tiles import import_fullscene_with_ctile
+        from sam3_actions.load_base_tiles import load_glb_tiles_by_dic_level_array
 
-        _t3 = _time.time()
-        root_tile = _load_tileset_tree(tiles_dir, CTile)
-        import_fullscene_with_ctile(root_tile, glb_dir, min_level=args.base_level,
-                                    on_tile_loaded=_tile_redraw)
-        log.info("Base tiles loaded in %.1fs.", _time.time() - _t3)
+        polygon_dir = os.path.abspath(args.polygon_dir) if args.polygon_dir else ""
+        refine_tags = [t.strip() for t in args.refine_tags.split(",") if t.strip()]
+
+        if polygon_dir and os.path.isdir(polygon_dir):
+            # New plan-based approach: pre-compute which tiles to load
+            log.info("Step 3/8: Computing tile load plan (base=%d, target=%d)...",
+                     args.base_level, args.target_level)
+            log.info("  polygon_dir: %s", polygon_dir)
+            log.info("  refine_tags: %s", refine_tags)
+
+            from tile_plan import compute_plan_from_config
+            _t3 = _time.time()
+            plan = compute_plan_from_config(
+                tiles_dir=tiles_dir,
+                polygon_dir=polygon_dir,
+                tags=refine_tags,
+                base_level=args.base_level,
+                target_level=args.target_level,
+                padding_m=args.tile_padding,
+            )
+            plan_time = _time.time() - _t3
+            total_tiles = sum(len(v) for v in plan.values())
+
+            # --- Tile manifest: build text, log it, and save to file ---
+            manifest_lines = []
+            manifest_lines.append("=" * 60)
+            manifest_lines.append("TILE LOAD PLAN  (base={}, target={})".format(
+                args.base_level, args.target_level))
+            manifest_lines.append("  polygon_dir: {}".format(polygon_dir))
+            manifest_lines.append("  refine_tags: {}".format(refine_tags))
+            manifest_lines.append("  padding_m: {}".format(args.tile_padding))
+            manifest_lines.append("=" * 60)
+            for lv in sorted(plan.keys()):
+                tiles_at_lv = plan[lv]
+                manifest_lines.append("  Level {}: {} tiles".format(lv, len(tiles_at_lv)))
+                for t in tiles_at_lv:
+                    content = t.content or "(no content)"
+                    manifest_lines.append("    - {}".format(content))
+            manifest_lines.append("-" * 60)
+            manifest_lines.append("  TOTAL: {} tiles across {} levels".format(
+                total_tiles, len(plan)))
+            manifest_lines.append("  Plan computed in {:.1f}s".format(plan_time))
+            manifest_lines.append("=" * 60)
+
+            for line in manifest_lines:
+                log.info(line)
+
+            # Save manifest to Stage 9 output directory
+            manifest_path = os.path.join(os.path.dirname(output), "tile_load_plan.txt")
+            with open(manifest_path, "w", encoding="utf-8") as _mf:
+                _mf.write("\n".join(manifest_lines) + "\n")
+            log.info("Tile load plan saved to %s", manifest_path)
+
+            # Load all tiles in one pass (emit Step 4 header so Dashboard
+            # tracks tile-loading progress under Step 4's weight band)
+            log.info("Step 4/8: Loading %d planned tiles...", total_tiles)
+            # Emit "need to load" lines for Dashboard progress parser
+            # (load_glb_tiles_by_dic_level_array doesn't print these;
+            #  they're normally emitted by import_fullscene_with_ctile)
+            for lv in sorted(plan.keys()):
+                print("need to load level {}:{} tiles".format(lv, len(plan[lv])))
+            _t4 = _time.time()
+            load_glb_tiles_by_dic_level_array(glb_dir, plan, on_tile_loaded=_tile_redraw)
+            log.info("All tiles loaded in %.1fs.", _time.time() - _t4)
+        else:
+            # Fallback: no polygon dir → load all base tiles (old Step 3 only)
+            log.info("Step 3/8: Loading base tiles (level=%d, no polygon plan)...",
+                     args.base_level)
+            from sam3_actions.c_tiles import CTile
+            from sam3_actions.load_base_tiles import import_fullscene_with_ctile
+
+            _t3 = _time.time()
+            root_tile = _load_tileset_tree(tiles_dir, CTile)
+            import_fullscene_with_ctile(root_tile, glb_dir, min_level=args.base_level,
+                                        on_tile_loaded=_tile_redraw)
+            log.info("Base tiles loaded in %.1fs.", _time.time() - _t3)
+
+            # Old Step 4: iterative refinement (fallback when no polygon dir)
+            log.info("Step 4/8: Refining tiles by mask to level %d...", args.target_level)
+            from sam3_actions.load_base_tiles import refine_by_mask_sync
+
+            mask_col = bpy.data.collections.get(config.ROOT_POLYGON_COLLECTION_NAME)
+            masks = []
+            if mask_col is not None:
+                for tag in refine_tags:
+                    sub_col = mask_col.children.get(f"mask_polygon_{tag}")
+                    if sub_col is not None:
+                        masks.extend(list(sub_col.all_objects))
+            log.info("Refinement mask tags: %s (%d objects)", refine_tags, len(masks))
+
+            if masks:
+                _t4 = _time.time()
+                root_tile2 = _load_tileset_tree(tiles_dir, CTile)
+                refine_by_mask_sync(
+                    context=bpy.context,
+                    masks=masks,
+                    root_tile=root_tile2,
+                    glb_dir=glb_dir,
+                    target_level=args.target_level,
+                    on_tile_loaded=_tile_redraw,
+                )
+                log.info("Tile refinement complete in %.1fs.", _time.time() - _t4)
+            else:
+                log.warning("No mask objects found in '%s', skipping refinement.",
+                             config.ROOT_POLYGON_COLLECTION_NAME)
+
         _force_redraw()
 
         # Hide mask polygons so tiles are clearly visible
@@ -809,39 +912,6 @@ def main() -> None:
             mask_root.hide_viewport = True
             log.info("Mask polygons hidden for better visibility.")
             _force_redraw()
-
-        # --------------------------------------------------------------
-        # Step 4: Refine tiles by mask to target level
-        # --------------------------------------------------------------
-        log.info("Step 4/8: Refining tiles by mask to level %d...", args.target_level)
-        from sam3_actions.load_base_tiles import refine_by_mask_sync
-
-        refine_tags = [t.strip() for t in args.refine_tags.split(",") if t.strip()]
-        mask_col = bpy.data.collections.get(config.ROOT_POLYGON_COLLECTION_NAME)
-        masks = []
-        if mask_col is not None:
-            for tag in refine_tags:
-                sub_col = mask_col.children.get(f"mask_polygon_{tag}")
-                if sub_col is not None:
-                    masks.extend(list(sub_col.all_objects))
-        log.info("Refinement mask tags: %s (%d objects)", refine_tags, len(masks))
-
-        if masks:
-            _t4 = _time.time()
-            root_tile2 = _load_tileset_tree(tiles_dir, CTile)
-            refine_by_mask_sync(
-                context=bpy.context,
-                masks=masks,
-                root_tile=root_tile2,
-                glb_dir=glb_dir,
-                target_level=args.target_level,
-                on_tile_loaded=_tile_redraw,
-            )
-            log.info("Tile refinement complete in %.1fs.", _time.time() - _t4)
-        else:
-            log.warning("No mask objects found in '%s', skipping refinement.",
-                         config.ROOT_POLYGON_COLLECTION_NAME)
-        _force_redraw()
 
         # --------------------------------------------------------------
         # Prepare geo-transform and terrain bounds

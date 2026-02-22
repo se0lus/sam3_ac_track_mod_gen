@@ -346,19 +346,28 @@ def extract_terrain_for_road_kerb(
                 v1 = mw @ verts[vi[1]].co
                 v2 = mw @ verts[vi[2]].co
 
-                cx = (v0.x + v1.x + v2.x) / 3.0
-                cz = (v0.z + v1.z + v2.z) / 3.0
-
                 tri = (
                     (float(v0.x), float(v0.y), float(v0.z)),
                     (float(v1.x), float(v1.y), float(v1.z)),
                     (float(v2.x), float(v2.y), float(v2.z)),
                 )
 
+                # Test 3 vertices + centroid — select if ANY hits the mask.
+                # Vertices catch edge-straddling tris; centroid catches the
+                # rare case where all 3 vertices are outside but the center
+                # pokes through a narrow mask region.
+                cx = (v0.x + v1.x + v2.x) / 3.0
+                cz = (v0.z + v1.z + v2.z) / 3.0
+                pts = ((v0.x, v0.z), (v1.x, v1.z), (v2.x, v2.z), (cx, cz))
+
                 # Kerb takes priority
-                if kerb_bvh is not None and _point_inside_bvh(kerb_bvh, cx, cz, ray_y):
+                if kerb_bvh is not None and any(
+                    _point_inside_bvh(kerb_bvh, px, pz, ray_y) for px, pz in pts
+                ):
                     kerb_faces.append(tri)
-                elif road_bvh is not None and _point_inside_bvh(road_bvh, cx, cz, ray_y):
+                elif road_bvh is not None and any(
+                    _point_inside_bvh(road_bvh, px, pz, ray_y) for px, pz in pts
+                ):
                     road_faces.append(tri)
         finally:
             obj_eval.to_mesh_clear()

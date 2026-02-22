@@ -446,6 +446,7 @@ async function showStageInfo(stage) {
   } else if (stage.id === "blender_automate") {
     const baseLevel = cfg.s9_base_level || 17;
     const targetLevel = cfg.s9_target_level || 22;
+    const tilePadding = cfg.s9_tile_padding !== undefined ? cfg.s9_tile_padding : 0;
     const edgeSimplify = cfg.s9_edge_simplify || 0;
     const meshWeldDist = cfg.s9_mesh_weld_distance || 0.01;
     const meshDecimateRatio = cfg.s9_mesh_decimate_ratio || 0.5;
@@ -489,6 +490,10 @@ async function showStageInfo(stage) {
           <div class="config-field">
             <label>目标层级 (Target Level)</label>
             <input type="number" id="s9TargetLevel" value="${targetLevel}" min="15" max="25" />
+          </div>
+          <div class="config-field">
+            <label>瓦片外扩 (米)</label>
+            <input type="number" id="s9TilePadding" value="${tilePadding}" min="0" max="10" step="0.5" />
           </div>
         </div>
         <div class="config-field">
@@ -792,6 +797,7 @@ async function showStageInfo(stage) {
       const updated = { ...cfg };
       updated.s9_base_level = parseInt($("s9BaseLevel").value) || 17;
       updated.s9_target_level = parseInt($("s9TargetLevel").value) || 22;
+      updated.s9_tile_padding = parseFloat($("s9TilePadding").value) || 0;
       updated.s9_edge_simplify = parseFloat($("s9EdgeSimplify").value) || 0;
       updated.s9_mesh_weld_distance = parseFloat($("s9MeshWeldDist").value) || 0.01;
       updated.s9_mesh_decimate_ratio = parseFloat($("s9MeshDecimateRatio").value) || 0.5;

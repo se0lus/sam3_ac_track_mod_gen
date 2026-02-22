@@ -429,6 +429,25 @@ def _eta_from_pct(state: dict, pct: float) -> str:
     return _fmt_eta(remaining)
 
 
+def _eta_from_tile_rate(state: dict) -> str:
+    """Compute ETA from tile loading rate (loaded / total + elapsed time).
+
+    Uses a per-step timer (``s9_tile_t0``) rather than the global stage
+    timer, so the estimate is based purely on the tile-loading phase.
+    """
+    loaded = state.get("s9_tile_loaded", 0)
+    total = state.get("s9_tile_total", 0)
+    t0 = state.get("s9_tile_t0")
+    if t0 is None or loaded < 2 or total <= 0:
+        return ""
+    elapsed = _progress_time.time() - t0
+    rate = loaded / elapsed          # tiles per second
+    remaining_tiles = total - loaded
+    if rate <= 0:
+        return ""
+    return _fmt_eta(remaining_tiles / rate)
+
+
 def _parse_progress(line: str, state: dict) -> dict | None:
     """Extract progress from *line* for the current stage.
 
@@ -482,6 +501,11 @@ def _parse_s9(line: str, state: dict) -> dict | None:
         cur, total = int(m.group(1)), int(m.group(2))
         state["s9_step"] = cur
         state["s9_steps"] = total
+        # Reset tile counters on step transition so Step 4 doesn't inherit
+        # stale counts from Step 3 (or vice versa in fallback path)
+        state.pop("s9_tile_total", None)
+        state.pop("s9_tile_loaded", None)
+        state.pop("s9_tile_t0", None)
         frac = _S9_STEP_START.get(cur, 0)
         return {"pct": round(frac * 100), "eta": _eta_from_pct(state, frac)}
 
@@ -496,17 +520,19 @@ def _parse_s9(line: str, state: dict) -> dict | None:
             state["s9_tile_total"] = state.get("s9_tile_total", 0) + int(m.group(1))
             return None
         if _RE_TILE_IMPORT.search(line):
+            if "s9_tile_t0" not in state:
+                state["s9_tile_t0"] = _progress_time.time()
             state["s9_tile_loaded"] = state.get("s9_tile_loaded", 0) + 1
             total = state.get("s9_tile_total", 1)
             sub = state["s9_tile_loaded"] / max(total, 1)
             frac = step_start + step_w * min(sub, 1.0)
-            # Throttle: only update every 20 tiles
             if state["s9_tile_loaded"] % 20 == 0 or sub >= 0.99:
-                return {"pct": round(frac * 100), "eta": _eta_from_pct(state, frac)}
+                return {"pct": round(frac * 100), "eta": _eta_from_tile_rate(state)}
             return None
 
-    # Step 4: tile refinement — [N/M] refine pattern
+    # Step 4: tile refinement / plan-based tile loading
     if step == 4:
+        # Old path: iterative refinement — [N/M] refine pattern
         m = _RE_REFINE.search(line)
         if m:
             cur, total = int(m.group(1)), int(m.group(2))
@@ -520,6 +546,21 @@ def _parse_s9(line: str, state: dict) -> dict | None:
             sub = cur / max(total, 1)
             frac = step_start + step_w * sub
             return {"pct": round(frac * 100), "eta": _eta_from_pct(state, frac)}
+        # New path: plan-based tile loading (same import patterns as Step 3)
+        m = _RE_TILE_NEED.search(line)
+        if m:
+            state["s9_tile_total"] = state.get("s9_tile_total", 0) + int(m.group(1))
+            return None
+        if _RE_TILE_IMPORT.search(line):
+            if "s9_tile_t0" not in state:
+                state["s9_tile_t0"] = _progress_time.time()
+            state["s9_tile_loaded"] = state.get("s9_tile_loaded", 0) + 1
+            total = state.get("s9_tile_total", 1)
+            sub = state["s9_tile_loaded"] / max(total, 1)
+            frac = step_start + step_w * min(sub, 1.0)
+            if state["s9_tile_loaded"] % 20 == 0 or sub >= 0.99:
+                return {"pct": round(frac * 100), "eta": _eta_from_tile_rate(state)}
+            return None
 
     # Step 5: projection percentage
     if step == 5:
@@ -671,6 +712,9 @@ class PipelineRunner:
         refine_tags = config_dict.get("s9_refine_tags", ["road"])
         if refine_tags:
             cmd.extend(["--refine-tags", ",".join(refine_tags)])
+        tile_padding = config_dict.get("s9_tile_padding")
+        if tile_padding is not None:
+            cmd.extend(["--tile-padding", str(tile_padding)])
         if config_dict.get("s9_edge_simplify"):
             cmd.extend(["--edge-simplify", str(config_dict["s9_edge_simplify"])])
         if config_dict.get("s9_mesh_simplify"):

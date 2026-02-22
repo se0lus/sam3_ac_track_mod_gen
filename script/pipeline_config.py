@@ -270,6 +270,7 @@ class PipelineConfig:
     s9_no_textures: bool = False
     s9_no_background: bool = False
     s9_refine_tags: List[str] = field(default_factory=lambda: ["road"])
+    s9_tile_padding: float = 0.0            # Padding around polygon AABBs for tile plan (metres)
     s9_mesh_simplify: bool = False          # Enable post-processing simplification for terrain meshes
     s9_mesh_weld_distance: float = 0.01     # Weld distance in metres (default 0.01)
     s9_mesh_decimate_ratio: float = 0.5     # Decimate ratio 0-1 (default 0.5)
