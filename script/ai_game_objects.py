@@ -69,17 +69,26 @@ def _compute_pixel_size_m(geo_metadata_path: str, image_shape: Tuple[int, int]) 
         h = data.get("image_height", image_shape[0])
         geo_bounds = data.get("bounds", {})
 
-    left = geo_bounds.get("left", 0)
-    right = geo_bounds.get("right", 0)
-    bottom = geo_bounds.get("bottom", 0)
-    top = geo_bounds.get("top", 0)
+    left = geo_bounds.get("left", geo_bounds.get("west", 0))
+    right = geo_bounds.get("right", geo_bounds.get("east", 0))
+    bottom = geo_bounds.get("bottom", geo_bounds.get("south", 0))
+    top = geo_bounds.get("top", geo_bounds.get("north", 0))
 
-    # Convert lat/lon extent to meters
-    lat_mid = (top + bottom) / 2.0
-    cos_lat = math.cos(math.radians(lat_mid))
+    # Convert extent to meters (handle both geographic and projected CRS)
+    geo_w = abs(right - left)
+    geo_h = abs(top - bottom)
 
-    width_m = abs(right - left) * 111_320.0 * cos_lat
-    height_m = abs(top - bottom) * 111_320.0
+    if (-180 <= left <= 180 and -180 <= right <= 180
+            and -90 <= bottom <= 90 and -90 <= top <= 90):
+        # Geographic CRS (degrees)
+        lat_mid = (top + bottom) / 2.0
+        cos_lat = math.cos(math.radians(lat_mid))
+        width_m = geo_w * 111_320.0 * cos_lat
+        height_m = geo_h * 111_320.0
+    else:
+        # Projected CRS (already in metres)
+        width_m = geo_w
+        height_m = geo_h
 
     px_w = width_m / max(w, 1)
     px_h = height_m / max(h, 1)
@@ -318,8 +327,14 @@ def _build_per_type_prompt(
     track_direction: str = "clockwise",
     pit_count: int = 8,
     start_count: int = 8,
+    start_point_hint: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """Build VLM prompt for a specific object type."""
+    """Build VLM prompt for a specific object type.
+
+    Args:
+        start_point_hint: Optional dict with "position" [x,y] and "direction" [dx,dy]
+            of the user-specified start/finish line. Injected into pit/start prompts.
+    """
     w, h = image_size
     fmt = dict(
         w=w, h=h, direction=track_direction,
@@ -338,7 +353,29 @@ def _build_per_type_prompt(
     if template is None:
         raise ValueError(f"Unknown object type for VLM prompt: {obj_type}")
 
-    return template.format(**fmt)
+    prompt = template.format(**fmt)
+
+    # Inject start point context for pit and start prompts
+    if start_point_hint and obj_type in ("pit", "start"):
+        pos = start_point_hint["position"]
+        dir_ = start_point_hint["direction"]
+        if obj_type == "pit":
+            prompt += (
+                f"\n\nIMPORTANT CONTEXT: The start/finish line is at pixel position "
+                f"[{pos[0]:.0f}, {pos[1]:.0f}] with driving direction "
+                f"[{dir_[0]:.3f}, {dir_[1]:.3f}]. Place pit boxes in the pit lane area "
+                f"near the start/finish line."
+            )
+        else:  # start
+            prompt += (
+                f"\n\nIMPORTANT CONTEXT: The start/finish line is at pixel position "
+                f"[{pos[0]:.0f}, {pos[1]:.0f}] with driving direction "
+                f"[{dir_[0]:.3f}, {dir_[1]:.3f}]. AC_START_0 (pole position) should be "
+                f"just before this line, with the grid extending behind it in the "
+                f"driving direction."
+            )
+
+    return prompt
 
 
 # ---------------------------------------------------------------------------
@@ -759,12 +796,15 @@ def generate_single_type_vlm(
     model_name: str = "gemini-2.5-pro",
     temperature: float = 0.2,
     modelscale_size: Optional[Tuple[int, int]] = None,
+    start_point_hint: Optional[Dict[str, Any]] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Generate a single type of VLM objects with validation + retry.
 
     Args:
         obj_type: "hotlap", "pit", "start", or "timing_0".
         modelscale_size: (w, h) for coordinate scaling from vlmscale to modelscale.
+        start_point_hint: Optional dict with "position" and "direction" for
+            injecting start/finish context into pit/start prompts.
 
     Returns:
         (objects, validation_result)
@@ -788,7 +828,8 @@ def generate_single_type_vlm(
         images.append(mask_img)
 
     prompt = _build_per_type_prompt(obj_type, prompt_size, track_direction,
-                                     pit_count=pit_count, start_count=start_count)
+                                     pit_count=pit_count, start_count=start_count,
+                                     start_point_hint=start_point_hint)
     if mask_path:
         prompt += "\n\nA second image is the segmentation mask. White = racing surface."
 

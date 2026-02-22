@@ -1,7 +1,7 @@
 """Stage 8: Gap-fill mask voids + Blender polygon mesh generation.
 
 Phase 1 (gap-fill):
-  Re-rasterizes surface masks from Stage 5 result blender JSONs onto a
+  Re-rasterizes surface masks from Stage 5 result merged JSONs onto a
   fresh canvas, applies wall constraints from Stage 6, fills gaps via
   morphological operations, then re-extracts contours for Blender.
 
@@ -42,9 +42,9 @@ def run(config: PipelineConfig) -> None:
         raise ValueError("blender_exe is required for blender_polygons stage")
 
     # Read from 05_result junction (points to 05 or 05a)
-    input_dir = config.blender_clips_result
+    input_dir = config.merge_segments_result
     if not os.path.isdir(input_dir):
-        input_dir = config.blender_clips_dir  # fallback
+        input_dir = config.merge_segments_dir  # fallback
     if not os.path.isdir(input_dir):
         raise ValueError(f"Blender clips directory not found: {input_dir}")
 
@@ -120,6 +120,7 @@ def _run_gap_fill(
 
     geotiff_meta = _read_geotiff_bounds(config.geotiff_path)
     bounds = geotiff_meta["bounds"]
+    bounds_wgs84 = geotiff_meta["bounds_wgs84"]
 
     # Canvas size: use Stage 4 mask dir for scale factor
     mask_on_clips_dir = config.mask_on_clips_dir
@@ -265,7 +266,7 @@ def _run_gap_fill(
             continue
 
         _write_tag_blender_json(
-            binary, tag_name, bounds, canvas_w, canvas_h,
+            binary, tag_name, bounds_wgs84, canvas_w, canvas_h,
             tf_info, gap_filled_dir,
         )
 

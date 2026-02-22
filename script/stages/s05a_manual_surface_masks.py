@@ -2,8 +2,8 @@
 
 Users refine per-tag surface masks via the web-based surface editor.
 This stage initialises the output directory by copying Stage 5's complete
-output (merge_preview masks + blender JSON subdirectories) so that the
-05_result junction can point here and Stage 6 sees a format-compatible dir.
+output (merge_preview masks + merged JSON subdirectories) so that the
+05_result junction can point here and downstream stages see a format-compatible dir.
 
 Editable surface tags: road, grass, sand, kerb, road2.
 """
@@ -62,7 +62,7 @@ def run(config: PipelineConfig) -> None:
     """
     logger.info("=== Stage 5a: Manual surface mask management ===")
 
-    stage5_dir = config.blender_clips_dir
+    stage5_dir = config.merge_segments_dir
     out_dir = config.stage_dir("manual_surface_masks")
     masks_dir = os.path.join(out_dir, "masks")
     os.makedirs(out_dir, exist_ok=True)
@@ -196,13 +196,23 @@ def reconvert_masks(config: PipelineConfig) -> None:
         "bottom": geo_bounds.get("bottom", 0),
     }
 
+    # Get WGS84 bounds from GeoTIFF for contour extraction (geo_xy must be
+    # WGS84 lon/lat for geo_points_to_blender_xyz).  Native CRS bounds are
+    # kept for mask rasterization compatibility.
+    bounds_wgs84 = bounds  # fallback: assume WGS84
+    if config.geotiff_path and os.path.isfile(config.geotiff_path):
+        from mask_merger import _read_geotiff_bounds
+        geotiff_meta = _read_geotiff_bounds(config.geotiff_path)
+        bounds_wgs84 = geotiff_meta["bounds_wgs84"]
+
     # Get tileset transform (need tiles_dir + sample_geo_xy for tileset_local mode)
     # Without sample_geo_xy, get_tileset_transform falls back to ENU mode,
     # which is a different coordinate system than Stage 5's tileset_local.
+    # Use WGS84 bounds for sample_geo_xy since get_tileset_transform expects lon/lat.
     sample_geo_xy = None
-    if bounds["left"] and bounds["top"]:
-        cx = (bounds["left"] + bounds["right"]) / 2
-        cy = (bounds["top"] + bounds["bottom"]) / 2
+    if bounds_wgs84["left"] and bounds_wgs84["top"]:
+        cx = (bounds_wgs84["left"] + bounds_wgs84["right"]) / 2
+        cy = (bounds_wgs84["top"] + bounds_wgs84["bottom"]) / 2
         sample_geo_xy = (cx, cy)
 
     tf_info = None
@@ -278,7 +288,7 @@ def reconvert_masks(config: PipelineConfig) -> None:
     # ------------------------------------------------------------------
     for tag, binary in composited.items():
         groups = extract_contours_and_triangulate(
-            binary, tag, bounds, canvas_w, canvas_h,
+            binary, tag, bounds_wgs84, canvas_w, canvas_h,
             simplify_epsilon=2.0, min_contour_area=100,
         )
 

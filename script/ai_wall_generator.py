@@ -253,7 +253,7 @@ def _render_walls_on_image(
     for wall in walls:
         wtype = wall.get("type", "outer")
         color = _COLOR_MAP.get(wtype, (128, 128, 128))
-        pts = np.array(wall["points"], dtype=np.int32).reshape(-1, 1, 2)
+        pts = np.round(np.array(wall["points"], dtype=np.float64)).astype(np.int32).reshape(-1, 1, 2)
         closed = wall.get("closed", True)
         cv2.polylines(canvas, [pts], isClosed=closed, color=color, thickness=3)
     return canvas

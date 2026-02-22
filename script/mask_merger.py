@@ -66,19 +66,45 @@ def _pixel_size_m(
 
 
 def _read_geotiff_bounds(geotiff_path: str) -> Dict[str, Any]:
-    """Read only metadata (bounds, size) from GeoTIFF without loading pixels."""
+    """Read metadata (bounds, size) from GeoTIFF without loading pixels.
+
+    Returns dict with:
+        width, height: Pixel dimensions.
+        bounds: Native CRS bounds (for pixel↔native coord mapping).
+        bounds_wgs84: WGS84 (EPSG:4326) bounds (for geo_xy output to Blender).
+            Same as bounds when the GeoTIFF is already in geographic CRS.
+    """
     import rasterio
+    from rasterio.warp import transform_bounds
 
     with rasterio.open(geotiff_path) as ds:
+        native = {
+            "left": ds.bounds.left,
+            "bottom": ds.bounds.bottom,
+            "right": ds.bounds.right,
+            "top": ds.bounds.top,
+        }
+
+        # Convert to WGS84 if the GeoTIFF uses a projected CRS
+        if ds.crs and not ds.crs.is_geographic:
+            l84, b84, r84, t84 = transform_bounds(
+                ds.crs, "EPSG:4326",
+                ds.bounds.left, ds.bounds.bottom,
+                ds.bounds.right, ds.bounds.top,
+            )
+            wgs84 = {"left": l84, "bottom": b84, "right": r84, "top": t84}
+            logger.info(
+                "GeoTIFF CRS %s → WGS84: [%.6f, %.6f, %.6f, %.6f]",
+                ds.crs, l84, b84, r84, t84,
+            )
+        else:
+            wgs84 = dict(native)
+
         return {
             "width": ds.width,
             "height": ds.height,
-            "bounds": {
-                "left": ds.bounds.left,
-                "bottom": ds.bounds.bottom,
-                "right": ds.bounds.right,
-                "top": ds.bounds.top,
-            },
+            "bounds": native,
+            "bounds_wgs84": wgs84,
         }
 
 
@@ -904,6 +930,7 @@ def merge_clip_masks(
     geo_meta = _read_geotiff_bounds(geotiff_path)
     canvas_w, canvas_h, _scale = _compute_canvas_size(geo_meta, mask_dir)
     bounds = geo_meta["bounds"]
+    bounds_wgs84 = geo_meta["bounds_wgs84"]
 
     if preview_dir:
         os.makedirs(preview_dir, exist_ok=True)
@@ -1025,11 +1052,12 @@ def merge_clip_masks(
             )
 
         # 1f. Extract contours + triangulate for each composited tag
+        #     Use WGS84 bounds so geo_xy output is in lon/lat for Blender.
         for cfg in composite_priority:
             tag = cfg["tag"]
             binary = composited[tag]
             groups = extract_contours_and_triangulate(
-                binary, tag, bounds, canvas_w, canvas_h,
+                binary, tag, bounds_wgs84, canvas_w, canvas_h,
                 simplify_epsilon, min_contour_area,
             )
             results[tag] = groups
@@ -1066,7 +1094,7 @@ def merge_clip_masks(
             continue
 
         groups = extract_contours_and_triangulate(
-            full_canvas, tag, bounds, canvas_w, canvas_h,
+            full_canvas, tag, bounds_wgs84, canvas_w, canvas_h,
             simplify_epsilon, min_contour_area,
         )
         results[tag] = groups

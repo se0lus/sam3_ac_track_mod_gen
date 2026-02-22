@@ -32,7 +32,7 @@ STAGE_ORDER: Dict[str, int] = {
     "mask_full_map": 2,
     "clip_full_map": 3,
     "mask_on_clips": 4,
-    "convert_to_blender": 5,
+    "merge_segments": 5,
     "ai_walls": 6,
     "ai_game_objects": 7,
     "blender_polygons": 8,
@@ -46,7 +46,7 @@ PIPELINE_STAGES: List[str] = [
     "mask_full_map",
     "clip_full_map",
     "mask_on_clips",
-    "convert_to_blender",
+    "merge_segments",
     "ai_walls",
     "ai_game_objects",
     "blender_polygons",
@@ -60,7 +60,7 @@ PIPELINE_STAGES: List[str] = [
 # ---------------------------------------------------------------------------
 MANUAL_STAGE_PAIRS: Dict[str, str] = {
     "mask_full_map": "track_layouts",
-    "convert_to_blender": "manual_surface_masks",
+    "merge_segments": "manual_surface_masks",
     "ai_walls": "manual_walls",
     "ai_game_objects": "manual_game_objects",
     "blender_automate": "manual_blender",  # 09 → 09a
@@ -301,7 +301,7 @@ class PipelineConfig:
     clips_dir: str = ""
     mask_full_map_dir: str = ""
     mask_on_clips_dir: str = ""
-    blender_clips_dir: str = ""
+    merge_segments_dir: str = ""
     blend_file: str = ""
     walls_json: str = ""
     walls_preview: str = ""
@@ -403,7 +403,7 @@ class PipelineConfig:
         self.mask_full_map_dir = self.stage_dir("mask_full_map")
         self.clips_dir = self.stage_dir("clip_full_map")
         self.mask_on_clips_dir = self.stage_dir("mask_on_clips")
-        self.blender_clips_dir = self.stage_dir("convert_to_blender")
+        self.merge_segments_dir = self.stage_dir("merge_segments")
         self.blend_file = os.path.join(
             self.stage_dir("blender_polygons"), "polygons.blend"
         )
@@ -457,7 +457,7 @@ class PipelineConfig:
 
         # Result directories (junction targets for downstream stages)
         self.mask_full_map_result = self.result_dir("mask_full_map")       # 02_result
-        self.blender_clips_result = self.result_dir("convert_to_blender")  # 05_result
+        self.merge_segments_result = self.result_dir("merge_segments")  # 05_result
         self.walls_result_dir = self.result_dir("ai_walls")                # 06_result
         self.game_objects_result_dir = self.result_dir("ai_game_objects")   # 07_result
         self.manual_blend_file = os.path.join(

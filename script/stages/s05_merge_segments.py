@@ -1,6 +1,6 @@
-"""Stage 5: Merge clip masks (image-based) and convert to Blender coordinates.
+"""Stage 5: Merge segmentation masks and convert to Blender coordinates.
 
-Instead of converting each clip individually and consolidating, this stage:
+Merges per-clip SAM3 segmentation results into unified per-tag masks:
   1. Rasterizes all per-clip polygons onto a shared canvas (per tag)
   2. Extracts clean, overlap-free contours via cv2.findContours
   3. Converts the merged geo_xy polygons to Blender local coordinates
@@ -27,23 +27,23 @@ from pipeline_config import PipelineConfig
 
 
 def run(config: PipelineConfig) -> None:
-    """Execute Stage 5: Merge clip masks and convert to Blender input.
+    """Execute Stage 5: Merge segmentation masks and convert to Blender input.
 
     Reads ``*_masks.json`` from ``config.mask_on_clips_dir`` (stage 4 output),
     merges overlapping clip masks via rasterization, then converts merged
     polygons to Blender coordinates and writes per-tag JSON files to
-    ``config.blender_clips_dir``.
+    ``config.merge_segments_dir``.
 
     Surface tags (sand, grass, road2, road, kerb) use priority compositing
     to eliminate inter-tag gaps. Non-surface tags (trees, building, water)
     use independent per-tag merging.
     """
-    logger.info("=== Stage 5: Convert masks to Blender input (image-based merge) ===")
+    logger.info("=== Stage 5: Merge segmentation masks ===")
 
     if not config.tiles_dir:
-        raise ValueError("tiles_dir is required for convert_to_blender stage")
+        raise ValueError("tiles_dir is required for merge_segments stage")
     if not config.geotiff_path:
-        raise ValueError("geotiff_path is required for convert_to_blender stage")
+        raise ValueError("geotiff_path is required for merge_segments stage")
 
     mask_dir = config.mask_on_clips_dir
     if not os.path.isdir(mask_dir):
@@ -51,7 +51,7 @@ def run(config: PipelineConfig) -> None:
             f"mask_on_clips_dir not found: {mask_dir}. Run stage 4 first."
         )
 
-    output_dir = config.blender_clips_dir
+    output_dir = config.merge_segments_dir
 
     # Clean old output to avoid mixing stale per-clip files with new merged ones
     if os.path.isdir(output_dir):
@@ -97,7 +97,7 @@ def run(config: PipelineConfig) -> None:
         kerb_narrow_max_width_m=config.s5_kerb_narrow_max_width_m,
         kerb_narrow_adjacency_m=config.s5_kerb_narrow_adjacency_m,
     )
-    logger.info("Blender input files written to %s", output_dir)
+    logger.info("Merged segment files written to %s", output_dir)
 
 
 def _merge_and_convert(
@@ -217,7 +217,7 @@ if __name__ == "__main__":
         level=logging.INFO,
         format="[%(asctime)s] %(levelname)s %(name)s: %(message)s",
     )
-    p = argparse.ArgumentParser(description="Stage 5: Convert masks to Blender input (image-based merge)")
+    p = argparse.ArgumentParser(description="Stage 5: Merge segmentation masks")
     p.add_argument("--geotiff", required=True, help="Path to GeoTIFF file")
     p.add_argument("--tiles-dir", required=True, help="Directory with tileset.json")
     p.add_argument("--output-dir", default="output", help="Output base directory")

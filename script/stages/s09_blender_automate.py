@@ -22,7 +22,7 @@ def run(config: PipelineConfig) -> None:
     Reads:
     - ``config.blend_file`` from stage 8
     - ``config.glb_dir`` from stage 1
-    - ``config.blender_clips_dir`` from stage 5
+    - ``config.merge_segments_dir`` from stage 5
     - ``config.walls_json`` from stage 6 (optional)
     - ``config.game_objects_json`` from stage 7 (optional)
 
@@ -44,9 +44,9 @@ def run(config: PipelineConfig) -> None:
     blender_script = os.path.abspath(blender_script)
 
     # Read from result junctions (05_result, 06_result, 07_result)
-    blender_clips = config.blender_clips_result
+    blender_clips = config.merge_segments_result
     if not os.path.isdir(blender_clips):
-        blender_clips = config.blender_clips_dir  # fallback
+        blender_clips = config.merge_segments_dir  # fallback
 
     cmd = [config.blender_exe]
     if not config.s9_no_background:

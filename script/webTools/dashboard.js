@@ -284,7 +284,7 @@ async function showStageInfo(stage) {
   // Build per-stage config section
   let stageConfigHtml = "";
   let cfg = {};
-  if (stage.id === "mask_full_map" || stage.id === "blender_polygons" || stage.id === "blender_automate" || stage.id === "model_export" || stage.id === "track_packaging" || stage.id === "convert_to_blender") {
+  if (stage.id === "mask_full_map" || stage.id === "blender_polygons" || stage.id === "blender_automate" || stage.id === "model_export" || stage.id === "track_packaging" || stage.id === "merge_segments") {
     try {
       const resp = await fetch("/api/pipeline/config");
       cfg = await resp.json();
@@ -357,7 +357,7 @@ async function showStageInfo(stage) {
           <button class="btn btn--primary" id="btnSaveStageConfig">保存</button>
         </div>
       </div>`;
-  } else if (stage.id === "convert_to_blender") {
+  } else if (stage.id === "merge_segments") {
     const roadGapClose = cfg.s5_road_gap_close_m !== undefined ? cfg.s5_road_gap_close_m : 0.20;
     const kerbNarrowWidth = cfg.s5_kerb_narrow_max_width_m !== undefined ? cfg.s5_kerb_narrow_max_width_m : 0.30;
     const kerbNarrowAdj = cfg.s5_kerb_narrow_adjacency_m !== undefined ? cfg.s5_kerb_narrow_adjacency_m : 0.20;
@@ -706,7 +706,7 @@ async function showStageInfo(stage) {
         alert("保存失败: " + e.message);
       }
     });
-  } else if (stage.id === "convert_to_blender") {
+  } else if (stage.id === "merge_segments") {
     $("btnSaveStageConfig").addEventListener("click", async () => {
       const updated = { ...cfg };
       updated.s5_road_gap_close_m = parseFloat($("s5RoadGapClose").value) || 0;

@@ -547,15 +547,27 @@ def _compute_pixel_size_m(config: PipelineConfig) -> float:
                 ms = meta.get("model_scale_size", {})
                 w = ms.get("width", 1)
                 h = ms.get("height", 1)
-                geo = meta.get("geo", {}).get("bounds", {})
+                geo_info = meta.get("geo", {})
+                geo = geo_info.get("bounds", {})
                 left = geo.get("left", 0)
                 right = geo.get("right", 0)
                 bottom = geo.get("bottom", 0)
                 top = geo.get("top", 0)
-                lat_mid = (top + bottom) / 2.0
-                cos_lat = math.cos(math.radians(lat_mid))
-                width_m = abs(right - left) * 111_320.0 * cos_lat
-                height_m = abs(top - bottom) * 111_320.0
+                geo_w = abs(right - left)
+                geo_h = abs(top - bottom)
+
+                if (-180 <= left <= 180 and -180 <= right <= 180
+                        and -90 <= bottom <= 90 and -90 <= top <= 90):
+                    # Geographic CRS (degrees)
+                    lat_mid = (top + bottom) / 2.0
+                    cos_lat = math.cos(math.radians(lat_mid))
+                    width_m = geo_w * 111_320.0 * cos_lat
+                    height_m = geo_h * 111_320.0
+                else:
+                    # Projected CRS (already in metres)
+                    width_m = geo_w
+                    height_m = geo_h
+
                 px_w = width_m / max(w, 1)
                 px_h = height_m / max(h, 1)
                 return (px_w + px_h) / 2.0

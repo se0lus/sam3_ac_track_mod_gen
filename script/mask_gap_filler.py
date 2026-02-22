@@ -205,17 +205,17 @@ def build_driveable_zone(
 
     def _scale_pts(pts: np.ndarray) -> np.ndarray:
         if sx == 1.0 and sy == 1.0:
-            return pts
+            return np.round(pts).astype(np.int32)
         scaled = pts.astype(np.float64)
         scaled[:, 0] *= sx
         scaled[:, 1] *= sy
-        return scaled.astype(np.int32)
+        return np.round(scaled).astype(np.int32)
 
     # Classify walls
     outer_pts = None
     obstacle_walls = []
     for wall in walls:
-        pts = np.array(wall["points"], dtype=np.int32)
+        pts = np.array(wall["points"], dtype=np.float64)
         if len(pts) < 3:
             continue
         wtype = wall.get("type", "")
@@ -262,20 +262,28 @@ def _compute_meters_per_pixel(
     w: int,
     h: int,
 ) -> float:
-    """Compute approximate meters per pixel from geo bounds."""
-    geo_w_deg = bounds["right"] - bounds["left"]
-    geo_h_deg = bounds["top"] - bounds["bottom"]
-    lat_mid = (bounds["top"] + bounds["bottom"]) / 2.0
+    """Compute approximate meters per pixel from geo bounds.
 
-    m_per_deg_lat = 111_320.0
-    m_per_deg_lon = 111_320.0 * math.cos(math.radians(lat_mid))
+    Handles both geographic (WGS84, degrees) and projected (UTM etc., metres).
+    """
+    left, right = bounds["left"], bounds["right"]
+    bottom, top = bounds["bottom"], bounds["top"]
+    geo_w = right - left
+    geo_h = top - bottom
 
-    geo_w_m = geo_w_deg * m_per_deg_lon
-    geo_h_m = geo_h_deg * m_per_deg_lat
+    if -180 <= left <= 180 and -180 <= right <= 180 and -90 <= bottom <= 90 and -90 <= top <= 90:
+        # Geographic CRS (degrees)
+        lat_mid = (top + bottom) / 2.0
+        m_per_deg_lon = 111_320.0 * math.cos(math.radians(lat_mid))
+        m_per_deg_lat = 111_320.0
+        px = geo_w * m_per_deg_lon / w
+        py = geo_h * m_per_deg_lat / h
+    else:
+        # Projected CRS (already in metres)
+        px = geo_w / w
+        py = geo_h / h
 
-    pixel_size_x = geo_w_m / w
-    pixel_size_y = geo_h_m / h
-    return (pixel_size_x + pixel_size_y) / 2.0
+    return (px + py) / 2.0
 
 
 def _save_debug_colorized(

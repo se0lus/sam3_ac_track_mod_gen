@@ -28,38 +28,58 @@ logger = logging.getLogger("sam3_pipeline.centerline")
 
 def extract_centerline(
     road_mask: np.ndarray,
-    smooth_sigma: float = 3.0,
+    pixel_size_m: float = 0.3,
+    morph_close_gap_m: float = 1.5,
+    min_branch_length_m: float = 15.0,
+    resample_spacing_m: float = 2.5,
+    smooth_window_m: float = 120.0,
     simplify_tolerance: float = 0.0,
-    min_branch_length: int = 50,
-    resample_spacing: float = 8.0,
 ) -> np.ndarray:
     """Binary road mask -> ordered centerline coordinates (N, 2) in pixel space.
 
+    All algorithmic parameters are specified in physical units (meters) and
+    converted to pixels at runtime using *pixel_size_m*.
+
     Args:
         road_mask: HxW uint8 image (>127 = road).
-        smooth_sigma: Not used directly; smoothing is done via savgol_filter.
-        simplify_tolerance: Douglas-Peucker epsilon (0 = no simplification).
-        min_branch_length: Prune skeleton branches shorter than this (px).
-        resample_spacing: Uniform resampling interval (px) before smoothing.
+        pixel_size_m: Meters per pixel (from GeoTIFF metadata).
+        morph_close_gap_m: Morphological close kernel radius in meters.
+        min_branch_length_m: Prune skeleton branches shorter than this (meters).
+        resample_spacing_m: Uniform resampling interval (meters) before smoothing.
+        smooth_window_m: Savitzky-Golay smoothing window length in meters.
+        simplify_tolerance: Douglas-Peucker epsilon (0 = no simplification, in pixels).
 
     Returns:
         (N, 2) float64 array of [x, y] centerline points, ordered along the track.
     """
+    # --- Convert physical units to pixels ---
+    morph_px = max(3, int(round(morph_close_gap_m / pixel_size_m)))
+    ksize = morph_px | 1  # ensure odd
+    min_branch_px = max(5, int(round(min_branch_length_m / pixel_size_m)))
+    resample_px = max(1.0, resample_spacing_m / pixel_size_m)
+    smooth_pts = max(7, int(round(smooth_window_m / resample_spacing_m)))
+    smooth_pts = smooth_pts | 1  # ensure odd
+    min_cycle_px = max(20, int(round(15.0 / pixel_size_m)))  # 15 m
+
+    logger.debug("extract_centerline: pixel_size_m=%.3f, morph_px=%d, "
+                 "min_branch_px=%d, resample_px=%.1f, smooth_pts=%d",
+                 pixel_size_m, ksize, min_branch_px, resample_px, smooth_pts)
+
     # Binarize
     binary = (road_mask > 127).astype(np.uint8)
 
     # Morphological close to fill small gaps
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksize, ksize))
     binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
 
     # Skeletonize
     skel = skeletonize(binary > 0).astype(np.uint8)
 
     # Prune short branches
-    skel = _prune_branches(skel, min_length=min_branch_length)
+    skel = _prune_branches(skel, min_length=min_branch_px)
 
     # Extract ordered path from skeleton
-    path = _order_skeleton_path(skel)
+    path = _order_skeleton_path(skel, min_cycle_length=min_cycle_px)
     if path is None or len(path) < 10:
         logger.warning("Skeleton path too short (%d points), returning raw skeleton pixels",
                         len(path) if path is not None else 0)
@@ -69,11 +89,11 @@ def extract_centerline(
         return np.column_stack([xs, ys]).astype(np.float64)
 
     # Uniform resampling
-    path = _resample_path(path, spacing=resample_spacing)
+    path = _resample_path(path, spacing=resample_px)
 
-    # Savitzky-Golay smoothing (larger window for smoother result)
+    # Savitzky-Golay smoothing
     if len(path) > 15:
-        window = min(len(path) // 2 * 2 - 1, 51)  # must be odd
+        window = min(len(path) // 2 * 2 - 1, smooth_pts)  # must be odd, capped
         if window >= 7:
             path[:, 0] = savgol_filter(path[:, 0], window, 3, mode="wrap")
             path[:, 1] = savgol_filter(path[:, 1], window, 3, mode="wrap")
@@ -142,13 +162,17 @@ def _trace_branch(skel: np.ndarray, start_y: int, start_x: int) -> List[Tuple[in
     return branch
 
 
-def _order_skeleton_path(skel: np.ndarray) -> Optional[np.ndarray]:
+def _order_skeleton_path(skel: np.ndarray, min_cycle_length: int = 50) -> Optional[np.ndarray]:
     """Order skeleton pixels into the main track loop.
 
     Strategy: build a junction graph (nodes = junctions/endpoints, edges =
     pixel paths between them), then find the longest cycle via DFS on the
     simplified graph.  Finally concatenate edge pixel paths to reconstruct
     the full-resolution centerline.
+
+    Args:
+        skel: Binary skeleton image.
+        min_cycle_length: Minimum cycle length in pixels to be considered valid.
 
     Returns (N, 2) array of [x, y] coordinates.
     """
@@ -284,7 +308,7 @@ def _order_skeleton_path(skel: np.ndarray) -> Optional[np.ndarray]:
     for start_node in sorted_nodes[:min(len(sorted_nodes), 10)]:
         _dfs_cycle(start_node, start_node, {start_node}, set(), [], 0)
 
-    if best_cycle is None or best_cycle_len < 50:
+    if best_cycle is None or best_cycle_len < min_cycle_length:
         logger.warning("No suitable cycle found in junction graph, falling back to greedy walk")
         return _simple_greedy_walk(largest_comp, adj, comp_set)
 
@@ -418,16 +442,23 @@ def _resample_path(path: np.ndarray, spacing: float = 3.0) -> np.ndarray:
 # 2. Curvature computation
 # ---------------------------------------------------------------------------
 
-def compute_curvature(centerline: np.ndarray, window: int = 15) -> np.ndarray:
+def compute_curvature(
+    centerline: np.ndarray,
+    window_m: float = 35.0,
+    resample_spacing_m: float = 2.5,
+) -> np.ndarray:
     """Compute curvature (unsigned angle change in radians) at each centerline point.
 
     Args:
         centerline: (N, 2) array of [x, y].
-        window: Number of points ahead/behind for direction vectors.
+        window_m: Look-ahead/behind distance in meters for direction vectors.
+        resample_spacing_m: Resampling interval used when building the centerline (meters).
+            Must match the value passed to extract_centerline().
 
     Returns:
         (N,) array of curvature values (radians, always >= 0).
     """
+    window = max(3, int(round(window_m / resample_spacing_m)))
     n = len(centerline)
     curvature = np.zeros(n, dtype=np.float64)
 
@@ -452,21 +483,26 @@ def detect_composite_bends(
     centerline: np.ndarray,
     curvature: np.ndarray,
     curvature_threshold: float = 0.50,
-    min_bend_length: int = 5,
-    merge_gap: int = 10,
+    min_bend_length_m: float = 12.0,
+    merge_gap_m: float = 25.0,
+    resample_spacing_m: float = 2.5,
 ) -> List[Dict[str, Any]]:
     """Identify composite bends (sustained high-curvature segments).
 
     Args:
         centerline: (N, 2) array.
         curvature: (N,) array from compute_curvature().
-        curvature_threshold: Minimum curvature to count as "bending".
-        min_bend_length: Minimum number of points for a valid bend.
-        merge_gap: Merge segments closer than this many points.
+        curvature_threshold: Minimum curvature (radians) to count as "bending".
+        min_bend_length_m: Minimum bend length in meters.
+        merge_gap_m: Merge segments closer than this distance in meters.
+        resample_spacing_m: Resampling interval used when building the centerline (meters).
+            Must match the value passed to extract_centerline().
 
     Returns:
         List of dicts with keys: start_idx, end_idx, peak_idx, exit_idx, total_angle.
     """
+    min_bend_length = max(2, int(round(min_bend_length_m / resample_spacing_m)))
+    merge_gap = max(1, int(round(merge_gap_m / resample_spacing_m)))
     n = len(curvature)
     is_bend = curvature > curvature_threshold
 
@@ -549,8 +585,10 @@ def measure_track_width(
     road_mask: np.ndarray,
     centerline: np.ndarray,
     at_index: int,
-    max_ray: int = 200,
+    max_ray_m: float = 60.0,
     margin_px: float = 0.0,
+    pixel_size_m: float = 0.3,
+    off_road_tol_m: float = 1.5,
 ) -> Tuple[np.ndarray, np.ndarray, float]:
     """Measure track width at a centerline point by ray-marching perpendicular.
 
@@ -558,12 +596,16 @@ def measure_track_width(
         road_mask: HxW uint8 binary mask.
         centerline: (N, 2) array.
         at_index: Index into centerline.
-        max_ray: Maximum ray length in pixels.
+        max_ray_m: Maximum ray length in meters.
         margin_px: Extra pixels to push L/R beyond road edge (for timing gates).
+        pixel_size_m: Meters per pixel (from GeoTIFF metadata).
+        off_road_tol_m: Tolerance in meters for centerline slightly off-road.
 
     Returns:
         (left_point [x,y], right_point [x,y], width_pixels).
     """
+    max_ray = max(10, int(round(max_ray_m / pixel_size_m)))
+    off_road_tol = max(1, int(round(off_road_tol_m / pixel_size_m)))
     n = len(centerline)
     pt = centerline[at_index]
 
@@ -581,7 +623,7 @@ def measure_track_width(
 
     h, w = road_mask.shape[:2]
 
-    def _local_road_edge(direction: np.ndarray, off_road_tol: int = 5) -> int:
+    def _local_road_edge(direction: np.ndarray, off_road_tol: int = off_road_tol) -> int:
         """Scan outward from *pt* along *direction* and return the distance
         (in pixels) to the far edge of the **nearest** road section.
 
@@ -653,6 +695,7 @@ def generate_timing_points(
     curvature: np.ndarray,
     bends: List[Dict[str, Any]],
     track_direction: str = "clockwise",
+    pixel_size_m: float = 0.3,
 ) -> List[Dict[str, Any]]:
     """Generate AC_TIME_N_L / AC_TIME_N_R pairs at each composite bend exit.
 
@@ -662,6 +705,7 @@ def generate_timing_points(
         curvature: (N,) curvature array.
         bends: Output of detect_composite_bends().
         track_direction: "clockwise" or "counterclockwise".
+        pixel_size_m: Meters per pixel (from GeoTIFF metadata).
 
     Returns:
         List of game object dicts ready for game_objects.json.
@@ -673,7 +717,8 @@ def generate_timing_points(
         exit_idx = bend["exit_idx"]
 
         # Measure width at exit
-        left_pt, right_pt, width = measure_track_width(road_mask, centerline, exit_idx)
+        left_pt, right_pt, width = measure_track_width(
+            road_mask, centerline, exit_idx, pixel_size_m=pixel_size_m)
 
         # Driving direction at exit
         i_back = (exit_idx - 3) % n
@@ -775,7 +820,8 @@ def generate_timing_points_from_time0(
     # Helper: generate L/R pair at a centerline index
     def _make_pair(timing_num: int, cl_idx: int) -> List[Dict[str, Any]]:
         left_pt, right_pt, width = measure_track_width(
-            road_mask, centerline, cl_idx, margin_px=margin_px
+            road_mask, centerline, cl_idx, margin_px=margin_px,
+            pixel_size_m=pixel_size_m,
         )
 
         # If L/R are too close, the road may be very narrow here or the
@@ -1001,7 +1047,7 @@ def process_road_mask_from_array(
 
     Returns dict with keys: centerline, bends, timing_objects.
     """
-    centerline = extract_centerline(mask)
+    centerline = extract_centerline(mask, pixel_size_m=pixel_size_m)
     if len(centerline) < 10:
         logger.warning("Centerline too short, skipping bend detection")
         return {"centerline": centerline.tolist(), "bends": [], "timing_objects": []}
@@ -1020,7 +1066,10 @@ def process_road_mask_from_array(
             "timing_objects": timing_objects,
         }
     else:
-        timing_objects = generate_timing_points(mask, centerline, curvature, bends, track_direction)
+        timing_objects = generate_timing_points(
+            mask, centerline, curvature, bends, track_direction,
+            pixel_size_m=pixel_size_m,
+        )
         return {
             "centerline": centerline.tolist(),
             "bends": bends,
@@ -1070,7 +1119,10 @@ def regenerate_from_centerline(
             "timing_objects": timing_objects,
         }
     else:
-        timing_objects = generate_timing_points(mask, centerline, curvature, bends, track_direction)
+        timing_objects = generate_timing_points(
+            mask, centerline, curvature, bends, track_direction,
+            pixel_size_m=pixel_size_m,
+        )
         return {
             "bends": bends,
             "timing_objects": timing_objects,

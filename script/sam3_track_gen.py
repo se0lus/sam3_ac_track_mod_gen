@@ -6,7 +6,7 @@ Full pipeline:
   2. mask_full_map() -- SAM3 segmentation on full GeoTIFF
   3. clip_full_map() -- clip image into tiles for per-tile processing
   4. generate_mask_on_clips() -- SAM3 per-clip segmentation
-  5. convert_mask_to_blender_input() -- geo -> blender coords + consolidation
+  5. merge_segments() -- merge clip masks + geo -> blender coords
   6. AI wall generation -- generates wall JSON + preview
   7. AI game object generation -- generates objects JSON + preview
   8. Blender polygon generation with mesh conversion -- via subprocess
@@ -39,7 +39,7 @@ from stages import (
     s02_mask_full_map,
     s03_clip_full_map,
     s04_mask_on_clips,
-    s05_convert_to_blender,
+    s05_merge_segments,
     s06_ai_walls,
     s07_ai_game_objects,
     s08_blender_polygons,
@@ -66,7 +66,7 @@ STAGE_FUNCTIONS: Dict[str, Callable[[PipelineConfig], None]] = {
     "mask_full_map": s02_mask_full_map.run,
     "clip_full_map": s03_clip_full_map.run,
     "mask_on_clips": s04_mask_on_clips.run,
-    "convert_to_blender": s05_convert_to_blender.run,
+    "merge_segments": s05_merge_segments.run,
     "ai_walls": s06_ai_walls.run,
     "ai_game_objects": s07_ai_game_objects.run,
     "blender_polygons": s08_blender_polygons.run,

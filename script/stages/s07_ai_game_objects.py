@@ -126,18 +126,7 @@ def _generate_for_layout(config, layout, layouts_dir, out_dir, image_path,
         logger.warning("Cannot read layout mask: %s", mask_path)
         return
 
-    # Centerline extraction from layout mask
-    try:
-        centerline = extract_centerline(mask)
-        curvature = compute_curvature(centerline) if len(centerline) >= 10 else np.array([])
-        bends = detect_composite_bends(centerline, curvature) if len(curvature) > 0 else []
-    except Exception as e:
-        logger.warning("Centerline extraction failed for '%s': %s", name, e)
-        centerline = np.zeros((0, 2), dtype=np.float64)
-        curvature = np.array([])
-        bends = []
-
-    # Load validation masks (with geo metadata for pixel_size_m)
+    # Load validation masks (with geo metadata for pixel_size_m) — needed before centerline
     result_dir = config.mask_full_map_result
     if not os.path.isdir(result_dir):
         result_dir = config.mask_full_map_dir
@@ -151,6 +140,17 @@ def _generate_for_layout(config, layout, layouts_dir, out_dir, image_path,
             logger.warning("Failed to load validation masks: %s", e)
 
     pixel_size_m = masks.pixel_size_m if masks else 0.3
+
+    # Centerline extraction from layout mask (uses pixel_size_m for physical-unit params)
+    try:
+        centerline = extract_centerline(mask, pixel_size_m=pixel_size_m)
+        curvature = compute_curvature(centerline) if len(centerline) >= 10 else np.array([])
+        bends = detect_composite_bends(centerline, curvature) if len(curvature) > 0 else []
+    except Exception as e:
+        logger.warning("Centerline extraction failed for '%s': %s", name, e)
+        centerline = np.zeros((0, 2), dtype=np.float64)
+        curvature = np.array([])
+        bends = []
 
     # Sequential VLM generation (4 per-type calls with validation + retry)
     vlm_result = {"hotlap": [], "pits": [], "starts": [], "timing_0_raw": [], "validation": {}}

@@ -174,7 +174,7 @@ function findNearestVertex(wallIdx, clickPx, clickPy) {
 // Context menu
 // ---------------------------------------------------------------------------
 function showContextMenu(screenX, screenY, wallIdx, insertIdx, px, py, vertexIdx) {
-  ctxPending = { wallIdx, insertIdx, px: Math.round(px), py: Math.round(py), vertexIdx: vertexIdx ?? -1 };
+  ctxPending = { wallIdx, insertIdx, px, py, vertexIdx: vertexIdx ?? -1 };
   const menu = $("ctxMenu");
   menu.hidden = false;
   menu.style.left = screenX + "px";
@@ -473,14 +473,14 @@ function renderVertexMarkers() {
     marker.on("drag", (e) => {
       const latlng = e.target.getLatLng();
       const [npx, npy] = latLngToPixel(latlng.lat, latlng.lng);
-      w.points[vi] = [Math.round(npx), Math.round(npy)];
+      w.points[vi] = [npx, npy];
       updateWallLayer(selectedWallIdx);
     });
 
     marker.on("dragend", (e) => {
       const latlng = e.target.getLatLng();
       const [npx, npy] = latLngToPixel(latlng.lat, latlng.lng);
-      w.points[vi] = [Math.round(npx), Math.round(npy)];
+      w.points[vi] = [npx, npy];
       updateWallLayer(selectedWallIdx);
       updateSelectedVertexInfo();
     });
@@ -512,7 +512,7 @@ function renderVertexMarkers() {
     ghost.on("click", (e) => {
       L.DomEvent.stopPropagation(e);
       pushUndo();
-      w.points.splice(insertIdx, 0, [Math.round(mx), Math.round(my)]);
+      w.points.splice(insertIdx, 0, [mx, my]);
       selectVertex(insertIdx);
       renderAll();
     });
@@ -807,7 +807,7 @@ function finishDraw() {
 
 function handleDrawClick(e) {
   const [px, py] = latLngToPixel(e.latlng.lat, e.latlng.lng);
-  drawPoints.push([Math.round(px), Math.round(py)]);
+  drawPoints.push([px, py]);
   updateDrawPreview();
 }
 

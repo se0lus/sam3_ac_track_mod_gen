@@ -33,9 +33,9 @@ GeoTIFF 影像 + 3D Tiles (b3dm)
 │  对每个 clip 逐标签做精细 SAM3 分割                                    │
 │  road 支持回退提示词 (asphalt road / concrete road) 确保 100% 覆盖     │
 ├─────────────────────────────────────────────────────────────────────┤
-│  阶段 5: convert_mask_to_blender_input()                            │
-│  读取 3D Tiles tileset.json 坐标原点，将地理坐标多边形转为 Blender 坐标  │
-│  同时按类型（road/grass/sand/kerb）合并生成整合 clip 文件               │
+│  阶段 5: merge_segments()                                            │
+│  多瓦片分割结果合并 + 优先级合成 + 地理坐标 → Blender 坐标转换          │
+│  消除瓦片重叠、tag 间间隙，生成统一的 per-tag blender JSON              │
 ├─────────────────────────────────────────────────────────────────────┤
 │  阶段 6: 程序化围墙生成                                               │
 │  SAM3 洪水填充算法：从 road → 穿越 driveable 区域 → 到达障碍物边界       │
@@ -127,7 +127,7 @@ output/
 ├── 02a_track_layouts/     → layouts.json, per-layout 二值 mask（可选）
 ├── 03_clip_full_map/      → clip_0.tif, clip_1.tif, ..., clip_boxes_visualization.png
 ├── 04_mask_on_clips/      → road/, grass/, kerb/, sand/, trees/, building/, water/, concrete/
-├── 05_convert_to_blender/ → blender JSON 文件 + 按标签合并的 {tag}_clip.json
+├── 05_merge_segments/    → 合并分割结果 + 按标签合并的 blender JSON
 ├── 06_ai_walls/           → walls.json, walls_preview.png
 ├── 07_ai_game_objects/    → geo_metadata.json, {LayoutName}/game_objects.json,
 │                            {LayoutName}/centerline.json, {LayoutName}/game_objects_preview.png
@@ -220,20 +220,18 @@ if __name__ == "__main__":
   - `road/`, `grass/`, `sand/`, `kerb/`, `trees/`, `building/`, `water/`, `concrete/` 子目录
   - 每个子目录含 `clip_N_masks.json`（包含归一化/像素/地理坐标三套多边形）
 
-##### 阶段 5: Blender 坐标转换 (`s05_convert_to_blender.py`)
+##### 阶段 5: 合并分割 (`s05_merge_segments.py`)
 
-读取 3D Tiles 的 `tileset.json` 获取坐标原点信息，将地理坐标多边形经过变换链映射到 Blender 本地坐标：
+将多瓦片 SAM3 分割结果合并为统一的 per-tag mask，并转换为 Blender 坐标：
 
-```
-WGS84 (lon, lat, alt) → ECEF (X, Y, Z) → ENU (East, North, Up) → Blender (X, Y, Z)
-```
-
-同时按标签类型合并所有 clip，生成整合文件（如 `road_clip.json`），便于后续 Blender 批处理。
+1. 将各 clip 的分割多边形光栅化到共享画布，消除重叠
+2. 优先级合成（sand < grass < road2 < road < kerb）消除 tag 间间隙
+3. 读取 `tileset.json` 将地理坐标映射到 Blender 本地坐标
 
 - 输入: `output/04_mask_on_clips/` + `tileset.json`
-- 输出: `output/05_convert_to_blender/`
-  - `{tag}/clip_N_blender.json` — 单个 clip 的 Blender 坐标
-  - `{tag}_clip.json` — 按标签合并的整合文件
+- 输出: `output/05_merge_segments/`
+  - `{tag}/{tag}_merged_blender.json` — 合并后的 Blender 坐标
+  - `merge_preview/` — 合成预览图
 
 ##### 阶段 6: 程序化围墙生成 (`s06_ai_walls.py`)
 
@@ -292,7 +290,7 @@ WGS84 (lon, lat, alt) → ECEF (X, Y, Z) → ENU (East, North, Up) → Blender (
 
 生成的 Mesh 对象可直接用于后续的 mask 投影和表面提取。
 
-- 输入: `output/05_convert_to_blender/`
+- 输入: `output/05_merge_segments/`
 - 输出: `output/08_blender_polygons/polygons.blend`
 
 ##### 阶段 9: Blender 无头自动化 (`s09_blender_automate.py`)
@@ -621,8 +619,8 @@ python script/stages/s03_clip_full_map.py \
 python script/stages/s04_mask_on_clips.py \
     --geotiff test_images_shajing/result.tif --output-dir output
 
-# 阶段5: 转换为 Blender 坐标
-python script/stages/s05_convert_to_blender.py \
+# 阶段5: 合并分割
+python script/stages/s05_merge_segments.py \
     --geotiff test_images_shajing/result.tif \
     --tiles-dir test_images_shajing/b3dm --output-dir output
 

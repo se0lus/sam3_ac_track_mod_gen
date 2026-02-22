@@ -77,7 +77,7 @@ class TestPipelineConfig:
         assert config.tiles_dir == os.path.abspath(tiles)
         assert config.output_dir == os.path.abspath(out)
         assert config.clips_dir == os.path.join(os.path.dirname(os.path.abspath(geotiff)), "clips")
-        assert config.blender_clips_dir == os.path.join(os.path.abspath(out), "blender_clips")
+        assert config.merge_segments_dir == os.path.join(os.path.abspath(out), "05_merge_segments")
         assert config.glb_dir == os.path.join(os.path.abspath(out), "glb")
         assert config.blend_file.endswith("polygons.blend")
         assert config.walls_json.endswith("walls.json")
@@ -197,12 +197,12 @@ class TestPipelineStages:
     def test_pipeline_stages_ordered(self):
         """Verify that stage order is logical."""
         stage_order = {name: i for i, name in enumerate(PIPELINE_STAGES)}
-        # b3dm_convert should come before convert_to_blender
-        assert stage_order["b3dm_convert"] < stage_order["convert_to_blender"]
-        # mask stages come before blender conversion
-        assert stage_order["mask_full_map"] < stage_order["convert_to_blender"]
-        # blender polygons comes after conversion
-        assert stage_order["convert_to_blender"] < stage_order["blender_polygons"]
+        # b3dm_convert should come before merge_segments
+        assert stage_order["b3dm_convert"] < stage_order["merge_segments"]
+        # mask stages come before merge_segments
+        assert stage_order["mask_full_map"] < stage_order["merge_segments"]
+        # blender polygons comes after merge_segments
+        assert stage_order["merge_segments"] < stage_order["blender_polygons"]
         # AI stages are after mask stages
         assert stage_order["mask_on_clips"] < stage_order["ai_walls"]
 
@@ -248,11 +248,11 @@ class TestRunPipeline:
         with pytest.raises(RuntimeError, match="blender_exe is required"):
             run_pipeline(config, stages=["blender_polygons"])
 
-    def test_run_convert_to_blender_no_geotiff(self, tmp_path):
+    def test_run_merge_segments_no_geotiff(self, tmp_path):
         config = PipelineConfig(output_dir=str(tmp_path / "out"))
         config.resolve()
         with pytest.raises(RuntimeError, match="geotiff_path is required"):
-            run_pipeline(config, stages=["convert_to_blender"])
+            run_pipeline(config, stages=["merge_segments"])
 
 
 # ---------------------------------------------------------------------------
@@ -350,22 +350,22 @@ class TestStageValidation:
         with pytest.raises(ValueError, match="clips_dir not found"):
             stage_mask_on_clips(config)
 
-    def test_convert_to_blender_requires_geotiff(self, tmp_path):
-        from sam3_track_gen import stage_convert_to_blender
+    def test_merge_segments_requires_geotiff(self, tmp_path):
+        from sam3_track_gen import stage_merge_segments
         config = PipelineConfig(output_dir=str(tmp_path / "out"))
         config.resolve()
         with pytest.raises(ValueError, match="geotiff_path is required"):
-            stage_convert_to_blender(config)
+            stage_merge_segments(config)
 
-    def test_convert_to_blender_requires_tiles_dir(self, tmp_path):
-        from sam3_track_gen import stage_convert_to_blender
+    def test_merge_segments_requires_tiles_dir(self, tmp_path):
+        from sam3_track_gen import stage_merge_segments
         config = PipelineConfig(
             geotiff_path=str(tmp_path / "result.tif"),
             output_dir=str(tmp_path / "out"),
         )
         config.resolve()
         with pytest.raises(ValueError, match="tiles_dir is required"):
-            stage_convert_to_blender(config)
+            stage_merge_segments(config)
 
     def test_blender_polygons_requires_blender_exe(self, tmp_path):
         from sam3_track_gen import stage_blender_polygons

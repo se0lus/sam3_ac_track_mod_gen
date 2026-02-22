@@ -38,7 +38,7 @@ let trackDirection = "clockwise";
 let edited = false;
 let time0Idx = null;  // centerline index of TIME_0 (VLM-generated)
 
-let mode = "centerline"; // "centerline" | "objects" | "create" | "create_direction"
+let mode = "centerline"; // "centerline" | "objects" | "create" | "create_direction" | "set_start"
 let createType = "pit";
 let createPendingPos = null;
 let selectedObjIdx = -1;
@@ -58,10 +58,11 @@ let layers = {
 };
 
 // Leaflet objects
+const TILE_URL = "/tiles/{z}/{x}/{y}.png";
 let map;
-let baseImageOverlay = null;
+let tileLayer = null;
 let maskOverlay = null;
-let imageBounds = null;
+let imageBounds = null; // geographic [[south, west], [north, east]]
 
 let centerlinePolyline = null;
 let bendPolylines = [];
@@ -77,14 +78,49 @@ let timingWidthHandle = null;
 let _suppressMapClick = false; // suppress map click after handle drag
 
 // ---------------------------------------------------------------------------
-// Coordinate conversions (Simple CRS: pixel coords)
+// Coordinate conversions (pixel ↔ geographic via bilinear interpolation)
 // ---------------------------------------------------------------------------
 function pixelToLatLng(px, py) {
-  return [maskH - py, px];
+  if (!geoMeta) return [0, 0];
+  const c = geoMeta.corners;
+  if (c) {
+    const u = px / geoMeta.image_width;
+    const v = py / geoMeta.image_height;
+    const tl = c.top_left, tr = c.top_right, bl = c.bottom_left, br = c.bottom_right;
+    const lat = (1-u)*(1-v)*tl[0] + u*(1-v)*tr[0] + (1-u)*v*bl[0] + u*v*br[0];
+    const lng = (1-u)*(1-v)*tl[1] + u*(1-v)*tr[1] + (1-u)*v*bl[1] + u*v*br[1];
+    return [lat, lng];
+  }
+  const { north, south, east, west } = geoMeta.bounds;
+  const lat = north - (py / geoMeta.image_height) * (north - south);
+  const lng = west + (px / geoMeta.image_width) * (east - west);
+  return [lat, lng];
 }
 
 function latLngToPixel(lat, lng) {
-  return [lng, maskH - lat];
+  if (!geoMeta) return [0, 0];
+  const c = geoMeta.corners;
+  if (c) {
+    const tl = c.top_left, tr = c.top_right, bl = c.bottom_left, br = c.bottom_right;
+    let u = 0.5, v = 0.5;
+    for (let i = 0; i < 4; i++) {
+      const fLat = (1-u)*(1-v)*tl[0] + u*(1-v)*tr[0] + (1-u)*v*bl[0] + u*v*br[0] - lat;
+      const fLng = (1-u)*(1-v)*tl[1] + u*(1-v)*tr[1] + (1-u)*v*bl[1] + u*v*br[1] - lng;
+      const dLat_du = (1-v)*(tr[0]-tl[0]) + v*(br[0]-bl[0]);
+      const dLat_dv = (1-u)*(bl[0]-tl[0]) + u*(br[0]-tr[0]);
+      const dLng_du = (1-v)*(tr[1]-tl[1]) + v*(br[1]-bl[1]);
+      const dLng_dv = (1-u)*(bl[1]-tl[1]) + u*(br[1]-tr[1]);
+      const det = dLat_du * dLng_dv - dLat_dv * dLng_du;
+      if (Math.abs(det) < 1e-20) break;
+      u -= (fLat * dLng_dv - fLng * dLat_dv) / det;
+      v -= (fLng * dLat_du - fLat * dLng_du) / det;
+    }
+    return [u * geoMeta.image_width, v * geoMeta.image_height];
+  }
+  const { north, south, east, west } = geoMeta.bounds;
+  const px = ((lng - west) / (east - west)) * geoMeta.image_width;
+  const py = ((north - lat) / (north - south)) * geoMeta.image_height;
+  return [px, py];
 }
 
 // ---------------------------------------------------------------------------
@@ -380,7 +416,8 @@ function renderObjectMarkers() {
 
   if (!layers.objects) return;
 
-  const isObjMode = mode === "objects" || mode === "create" || mode === "create_direction";
+  const isObjMode = mode === "objects" || mode === "create" || mode === "create_direction"
+    || mode === "set_start";
 
   // Build idx→markerArrayIndex map (timing objects skipped in centerline mode)
   _idxToMarker = {};
@@ -436,7 +473,7 @@ function renderObjectMarkers() {
         marker.on("drag", (e) => {
           const latlng = e.target.getLatLng();
           const [npx, npy] = latLngToPixel(latlng.lat, latlng.lng);
-          obj.position = [Math.round(npx), Math.round(npy)];
+          obj.position = [Math.round(npx * 10) / 10, Math.round(npy * 10) / 10];
           updateArrow(idx);
           updateDirHandle();
         });
@@ -578,12 +615,12 @@ function renderTimingPairHandles() {
 
   function applyState() {
     leftObj.position = [
-      Math.round(center[0] + normal[0] * halfWidth),
-      Math.round(center[1] + normal[1] * halfWidth),
+      Math.round((center[0] + normal[0] * halfWidth) * 10) / 10,
+      Math.round((center[1] + normal[1] * halfWidth) * 10) / 10,
     ];
     rightObj.position = [
-      Math.round(center[0] - normal[0] * halfWidth),
-      Math.round(center[1] - normal[1] * halfWidth),
+      Math.round((center[0] - normal[0] * halfWidth) * 10) / 10,
+      Math.round((center[1] - normal[1] * halfWidth) * 10) / 10,
     ];
     const oz = [
       Math.round(orient[0] * 10000) / 10000,
@@ -748,7 +785,8 @@ function renderObjectList() {
   const el = $("objectList");
   el.innerHTML = "";
 
-  const isObjMode = mode === "objects" || mode === "create" || mode === "create_direction";
+  const isObjMode = mode === "objects" || mode === "create" || mode === "create_direction"
+    || mode === "set_start";
 
   // Separate timing pairs from other objects
   const timingPairs = {}; // num -> { L: {obj,idx}, R: {obj,idx} }
@@ -974,6 +1012,10 @@ function setMode(newMode) {
     $("map").classList.remove("map--create");
     map.doubleClickZoom.enable();
   }
+  if (mode === "set_start") {
+    $("map").classList.remove("map--create");
+    map.doubleClickZoom.enable();
+  }
 
   mode = newMode;
 
@@ -1010,7 +1052,7 @@ function handleCreateClick(e) {
   const [px, py] = latLngToPixel(e.latlng.lat, e.latlng.lng);
 
   if (mode === "create") {
-    createPendingPos = [Math.round(px), Math.round(py)];
+    createPendingPos = [Math.round(px * 10) / 10, Math.round(py * 10) / 10];
     mode = "create_direction";
     setStatus("Move mouse to set direction, click to confirm");
     return;
@@ -1039,12 +1081,12 @@ function handleCreateClick(e) {
       const nextNum = existingNums.length > 0 ? Math.max(...existingNums) + 1 : 0;
 
       const leftPos = [
-        Math.round(createPendingPos[0] + normal[0] * TIMING_SPREAD),
-        Math.round(createPendingPos[1] + normal[1] * TIMING_SPREAD),
+        Math.round((createPendingPos[0] + normal[0] * TIMING_SPREAD) * 10) / 10,
+        Math.round((createPendingPos[1] + normal[1] * TIMING_SPREAD) * 10) / 10,
       ];
       const rightPos = [
-        Math.round(createPendingPos[0] - normal[0] * TIMING_SPREAD),
-        Math.round(createPendingPos[1] - normal[1] * TIMING_SPREAD),
+        Math.round((createPendingPos[0] - normal[0] * TIMING_SPREAD) * 10) / 10,
+        Math.round((createPendingPos[1] - normal[1] * TIMING_SPREAD) * 10) / 10,
       ];
 
       gameObjects.push({
@@ -1099,6 +1141,69 @@ function handleCreateMouseMove(e) {
       opacity: 0.7,
       interactive: false,
     }).addTo(map);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// "Set Start Point" mode — single click on track to set start/finish position
+// Direction is auto-computed from centerline tangent on the server side.
+// ---------------------------------------------------------------------------
+
+function handleSetStartClick(e) {
+  const [px, py] = latLngToPixel(e.latlng.lat, e.latlng.lng);
+  const position = [Math.round(px * 10) / 10, Math.round(py * 10) / 10];
+
+  // Exit set_start mode immediately
+  $("map").classList.remove("map--create");
+  map.doubleClickZoom.enable();
+  mode = "objects";
+
+  regenerateFromStartPoint(position);
+}
+
+async function regenerateFromStartPoint(position) {
+  const statusEl = $("setStartStatus");
+  statusEl.textContent = "Generating...";
+  setStatus("Regenerating all objects from start point...");
+
+  const pitAuto = $("pitAuto").checked;
+  const startAuto = $("startAuto").checked;
+  const pitCount = pitAuto ? null : (parseInt($("pitCount").value) || 8);
+  const startCount = startAuto ? null : (parseInt($("startCount").value) || 8);
+
+  try {
+    const resp = await fetch("/api/regenerate_from_start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        layout_name: selectedLayout,
+        start_position: position,
+        pit_count: pitCount,
+        start_count: startCount,
+      }),
+    });
+
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`${resp.status}: ${text}`);
+    }
+
+    const result = await resp.json();
+    const newObjects = _parseVLMObjects(result.objects);
+
+    pushUndo();
+    gameObjects = newObjects;
+    await _reloadCenterlineData();
+    selectedObjIdx = -1;
+    renderAll();
+
+    const valSummary = _validationSummary(result.validation);
+    const countStr = `${newObjects.length} objects`;
+    statusEl.textContent = valSummary || countStr;
+    setStatus(`Set Start Point: ${countStr}. ${valSummary}`);
+  } catch (err) {
+    statusEl.textContent = "Failed";
+    setStatus(`Set Start Point failed: ${err.message}`);
   }
 }
 
@@ -1391,8 +1496,9 @@ async function regenerateVLM() {
 function toggleLayer(layerName) {
   layers[layerName] = !layers[layerName];
 
-  if (layerName === "basemap" && baseImageOverlay) {
-    baseImageOverlay.setOpacity(layers.basemap ? 1.0 : 0);
+  if (layerName === "basemap" && tileLayer) {
+    if (layers.basemap) tileLayer.addTo(map);
+    else tileLayer.remove();
   }
   if (layerName === "mask" && maskOverlay) {
     maskOverlay.setOpacity(layers.mask ? 0.25 : 0);
@@ -1406,12 +1512,9 @@ function toggleLayer(layerName) {
 // ---------------------------------------------------------------------------
 async function init() {
   map = L.map("map", {
-    crs: L.CRS.Simple,
     zoomControl: true,
     zoomSnap: 0.25,
     zoomDelta: 0.5,
-    minZoom: -2,
-    maxZoom: 6,
   });
   setupRightDrag(map, $("map"));
 
@@ -1434,15 +1537,22 @@ async function init() {
 
   maskW = geoMeta.image_width;
   maskH = geoMeta.image_height;
-  imageBounds = [[0, 0], [maskH, maskW]];
 
-  // Base image
-  try {
-    baseImageOverlay = L.imageOverlay("/api/modelscale_image", imageBounds, {
-      opacity: 1.0,
-      interactive: false,
-    }).addTo(map);
-  } catch {}
+  // Compute geographic bounds for mask overlay + initial view
+  const topLeft = pixelToLatLng(0, 0);
+  const bottomRight = pixelToLatLng(maskW, maskH);
+  imageBounds = [
+    [Math.min(topLeft[0], bottomRight[0]), Math.min(topLeft[1], bottomRight[1])],
+    [Math.max(topLeft[0], bottomRight[0]), Math.max(topLeft[1], bottomRight[1])],
+  ];
+
+  // Tile base map (high-res)
+  tileLayer = L.tileLayer(TILE_URL, {
+    minZoom: 12,
+    maxZoom: 24,
+    maxNativeZoom: 24,
+    attribution: "Local tiles",
+  }).addTo(map);
 
   map.fitBounds(imageBounds, { padding: [10, 10] });
 
@@ -1451,6 +1561,10 @@ async function init() {
     if (_suppressMapClick) { _suppressMapClick = false; return; }
     if (mode === "create" || mode === "create_direction") {
       handleCreateClick(e);
+      return;
+    }
+    if (mode === "set_start") {
+      handleSetStartClick(e);
       return;
     }
     if (mode === "objects") {
@@ -1514,6 +1628,15 @@ function wireUI() {
   $("btnRedo").addEventListener("click", () => redo());
 
   // Actions
+  $("btnSetStart").addEventListener("click", () => {
+    mode = "set_start";
+    startPendingPos = null;
+    clearRubberArrow();
+    $("map").classList.add("map--create");
+    map.doubleClickZoom.disable();
+    setStatus("Click on map to set track start/finish point");
+    $("setStartStatus").textContent = "";
+  });
   $("btnRegenCenterline").addEventListener("click", () => regenerateCenterline());
   $("btnRegenHotlap").addEventListener("click", () => regenerateVLMType("hotlap", "regenHotlapStatus"));
   $("btnRegenPits").addEventListener("click", () => regenerateVLMType("pit", "regenPitsStatus"));
@@ -1578,7 +1701,8 @@ function wireUI() {
       return;
     }
     if (e.key === "Escape") {
-      if (mode === "create" || mode === "create_direction") {
+      if (mode === "create" || mode === "create_direction"
+          || mode === "set_start") {
         setMode("objects");
       } else {
         deselectAll();

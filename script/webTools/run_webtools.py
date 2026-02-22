@@ -60,7 +60,7 @@ _GAME_OBJECTS_DIR = os.path.join(_REPO_ROOT, "output", "07_ai_game_objects")
 _MANUAL_GAME_OBJECTS_DIR = os.path.join(_REPO_ROOT, "output", "07a_manual_game_objects")
 _MANUAL_SURFACE_MASKS_DIR = os.path.join(_REPO_ROOT, "output", "05a_manual_surface_masks")
 _MANUAL_SURFACE_MASKS_EDIT_DIR = os.path.join(_REPO_ROOT, "output", "05a_manual_surface_masks", "masks")
-_STAGE5_PREVIEW_DIR = os.path.join(_REPO_ROOT, "output", "05_convert_to_blender", "merge_preview")
+_STAGE5_PREVIEW_DIR = os.path.join(_REPO_ROOT, "output", "05_merge_segments", "merge_preview")
 _TILES_DIR = os.path.join(_REPO_ROOT, "test_images_shajing", "map")
 _CONFIG_JSON = os.path.join(_REPO_ROOT, "output", "webtools_config.json")
 
@@ -300,8 +300,8 @@ PIPELINE_STAGE_META = [
      "desc": "将全图智能裁剪为瓦片 (clips)", "output_dir": "03_clip_full_map"},
     {"id": "mask_on_clips",      "num": "4",  "name": "瓦片分割",   "type": "auto",
      "desc": "逐瓦片精细分割（含回退提示词）", "output_dir": "04_mask_on_clips"},
-    {"id": "convert_to_blender", "num": "5",  "name": "Blender转换", "type": "auto",
-     "desc": "地理坐标 → Blender 坐标转换 + 按类型合并", "output_dir": "05_convert_to_blender"},
+    {"id": "merge_segments", "num": "5",  "name": "合并分割", "type": "auto",
+     "desc": "多瓦片分割结果合并 + 地理坐标 → Blender 坐标转换", "output_dir": "05_merge_segments"},
     {"id": "manual_surface_masks","num": "5a", "name": "表面编辑",   "type": "manual",
      "desc": "手动编辑表面 mask（可选）", "output_dir": "05a_manual_surface_masks",
      "editor": "surface_editor.html"},
@@ -337,7 +337,7 @@ _STAGE_ID_TO_PIPELINE = {
     "mask_full_map": "mask_full_map",
     "clip_full_map": "clip_full_map",
     "mask_on_clips": "mask_on_clips",
-    "convert_to_blender": "convert_to_blender",
+    "merge_segments": "merge_segments",
     "blender_polygons": "blender_polygons",
     "ai_walls": "ai_walls",
     "ai_game_objects": "ai_game_objects",
@@ -957,6 +957,12 @@ class ApiHandler(SimpleHTTPRequestHandler):
         else:
             super().do_GET()
 
+    def end_headers(self):
+        """Add no-cache for static dev assets (.js/.css/.html)."""
+        if self.path and any(self.path.endswith(ext) for ext in (".js", ".css", ".html")):
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        super().end_headers()
+
     def do_POST(self):
         if self.path == "/api/walls":
             self._save_walls()
@@ -1008,6 +1014,9 @@ class ApiHandler(SimpleHTTPRequestHandler):
 
         elif self.path == "/api/vlm_objects/regenerate":
             self._regenerate_vlm_objects()
+
+        elif self.path == "/api/regenerate_from_start":
+            self._regenerate_from_start_point()
 
         # --- Pipeline control ---
         elif self.path == "/api/pipeline/run":
@@ -1697,6 +1706,253 @@ class ApiHandler(SimpleHTTPRequestHandler):
             json.dump(cl_data, f, indent=2, ensure_ascii=False)
 
         return timing_objs
+
+    def _regenerate_from_start_point(self):
+        """Regenerate all objects from a manually-set start point.
+
+        Request:
+          start_position: [x, y]  -- pixel coords of start/finish point
+          layout_name: str
+          pit_count: int | null
+          start_count: int | null
+
+        Direction is auto-computed from centerline tangent (no user input needed).
+
+        Logic:
+          1. Snap start_position to centerline -> time0_idx, direction from tangent
+          2. Find the last bend exit before time0_idx -> hotlap_start position
+          3. Regenerate all timing points from time0_idx
+          4. Call VLM for pits + starts with start_point_hint
+          5. Merge all objects -> return
+        """
+        try:
+            # --- sys.path setup (must be before local imports) ---
+            script_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            if script_dir not in sys.path:
+                sys.path.insert(0, script_dir)
+
+            import numpy as np
+            from road_centerline import (
+                snap_to_centerline, generate_timing_points_from_time0,
+                compute_curvature, detect_composite_bends,
+            )
+            from pipeline_config import PipelineConfig
+            from ai_game_objects import ValidationMasks, generate_single_type_vlm
+
+            body = self._read_body()
+            data = json.loads(body)
+
+            layout_name = data.get("layout_name", "")
+            start_position = data.get("start_position")
+            if not start_position or len(start_position) != 2:
+                self.send_error(400, "start_position [x, y] is required")
+                return
+            pit_count = data.get("pit_count")
+            start_count = data.get("start_count")
+
+            if pit_count is not None:
+                pit_count = int(pit_count)
+            if start_count is not None:
+                start_count = int(start_count)
+
+            # --- Load centerline ---
+            cl_path = _layout_read_path(layout_name, "centerline.json")
+            if not os.path.isfile(cl_path):
+                self.send_error(400, f"No centerline found for layout '{layout_name}'")
+                return
+
+            with open(cl_path, "r", encoding="utf-8") as f:
+                cl_data = json.load(f)
+
+            centerline_pts = cl_data.get("centerline", [])
+            if len(centerline_pts) < 10:
+                self.send_error(400, "Centerline too short (need >= 10 points)")
+                return
+
+            track_direction = cl_data.get("track_direction", "clockwise")
+            centerline = np.array(centerline_pts, dtype=np.float64)
+            curvature = compute_curvature(centerline)
+            bends = detect_composite_bends(centerline, curvature)
+
+            # 1. Snap start_position to centerline -> time0_idx
+            time0_idx, snapped_pos = snap_to_centerline(start_position, centerline)
+
+            # --- Determine driving direction along indices ---
+            n = len(centerline)
+            x, y = centerline[:, 0], centerline[:, 1]
+            signed_area = 0.5 * (
+                np.sum(x[:-1] * y[1:] - x[1:] * y[:-1])
+                + x[-1] * y[0] - x[0] * y[-1]
+            )
+            centerline_is_cw = signed_area > 0
+            track_is_cw = (track_direction == "clockwise")
+            driving_follows_index = (centerline_is_cw == track_is_cw)
+
+            # Get orientation at time0_idx from centerline tangent
+            i_back = (time0_idx - 3) % n
+            i_fwd = (time0_idx + 3) % n
+            tangent = centerline[i_fwd] - centerline[i_back]
+            tlen = float(np.linalg.norm(tangent))
+            if tlen > 1e-6:
+                tangent = tangent / tlen
+            if not driving_follows_index:
+                tangent = -tangent
+            time0_orient = [round(float(tangent[0]), 4), round(float(tangent[1]), 4)]
+
+            # 2. Find the last bend exit BEFORE time0_idx (in driving direction)
+            #    -> that's where hotlap_start goes
+            hotlap_idx = None
+            if bends:
+                best_dist = None
+                for bend in bends:
+                    exit_idx = bend["exit_idx"]
+                    if driving_follows_index:
+                        dist = (time0_idx - exit_idx) % n
+                    else:
+                        dist = (exit_idx - time0_idx) % n
+                    if dist > 0 and (best_dist is None or dist < best_dist):
+                        best_dist = dist
+                        hotlap_idx = exit_idx
+
+            if hotlap_idx is None:
+                # No bends found -- place hotlap a bit before time0
+                offset = max(10, n // 20)
+                if driving_follows_index:
+                    hotlap_idx = (time0_idx - offset) % n
+                else:
+                    hotlap_idx = (time0_idx + offset) % n
+
+            hotlap_pos = centerline[hotlap_idx].tolist()
+            hb = (hotlap_idx - 3) % n
+            hf = (hotlap_idx + 3) % n
+            h_tang = centerline[hf] - centerline[hb]
+            h_tlen = float(np.linalg.norm(h_tang))
+            if h_tlen > 1e-6:
+                h_tang = h_tang / h_tlen
+            if not driving_follows_index:
+                h_tang = -h_tang
+            hotlap_orient = [round(float(h_tang[0]), 4), round(float(h_tang[1]), 4)]
+
+            hotlap_obj = {
+                "name": "AC_HOTLAP_START_0",
+                "position": [round(hotlap_pos[0]), round(hotlap_pos[1])],
+                "orientation_z": hotlap_orient,
+                "type": "hotlap_start",
+            }
+
+            # 3. Load mask and generate timing from time0_idx
+            result_02 = _result_or_fallback(_02_RESULT_DIR, _MASK_FULL_MAP_DIR)
+            safe = _safe_layout_name(layout_name)
+            mask_path = None
+            mask = None
+            for base in [result_02, _LAYOUTS_DIR]:
+                candidate = os.path.join(base, f"{safe}.png")
+                if os.path.isfile(candidate):
+                    mask_path = candidate
+                    break
+
+            config = PipelineConfig().resolve()
+
+            geo_meta_path = os.path.join(result_02, "result_masks.json")
+            masks = None
+            if mask_path and os.path.isfile(geo_meta_path):
+                try:
+                    masks = ValidationMasks.load(mask_path, result_02, geo_meta_path)
+                except Exception:
+                    pass
+
+            pixel_size_m = masks.pixel_size_m if masks else 0.3
+
+            if mask_path:
+                from PIL import Image as PILImage
+                mask = np.array(PILImage.open(mask_path).convert("L"))
+
+            timing_objs = []
+            labeled_bends = []
+            if mask is not None:
+                timing_objs, labeled_bends = generate_timing_points_from_time0(
+                    mask, centerline, curvature, bends, time0_idx,
+                    track_direction, pixel_size_m,
+                )
+
+            # 4. Update centerline.json with time0_idx and labeled bends
+            cl_data["bends"] = labeled_bends
+            cl_data["time0_idx"] = time0_idx
+            cl_write_path = _layout_write_path(layout_name, "centerline.json")
+            with open(cl_write_path, "w", encoding="utf-8") as f:
+                json.dump(cl_data, f, indent=2, ensure_ascii=False)
+
+            # 5. Call VLM for pits + starts with start_point_hint
+            image_path = _modelscale_image_path()
+            start_point_hint = {
+                "position": snapped_pos,
+                "direction": time0_orient,
+            }
+
+            validation_results = {}
+            pit_objs = []
+            start_objs = []
+
+            if image_path:
+                try:
+                    pit_objs, pit_val = generate_single_type_vlm(
+                        "pit", image_path, mask_path, track_direction, masks,
+                        pit_count=pit_count or 8,
+                        start_count=start_count or 8,
+                        api_key=config.gemini_api_key,
+                        model_name=config.gemini_model,
+                        start_point_hint=start_point_hint,
+                    )
+                    validation_results["pit"] = pit_val
+                except Exception as e:
+                    print(f"[SetStart] VLM pit generation failed: {e}")
+
+                try:
+                    start_objs, start_val = generate_single_type_vlm(
+                        "start", image_path, mask_path, track_direction, masks,
+                        pit_count=pit_count or 8,
+                        start_count=start_count or 8,
+                        api_key=config.gemini_api_key,
+                        model_name=config.gemini_model,
+                        start_point_hint=start_point_hint,
+                    )
+                    validation_results["start"] = start_val
+                except Exception as e:
+                    print(f"[SetStart] VLM start generation failed: {e}")
+
+            # 6. Merge all objects
+            all_objects = [hotlap_obj] + timing_objs + pit_objs + start_objs
+
+            # 7. Save game_objects.json to 7a
+            go_data = {
+                "layout_name": layout_name,
+                "track_direction": track_direction,
+                "objects": all_objects,
+            }
+            go_path = _layout_write_path(layout_name, "game_objects.json")
+            with open(go_path, "w", encoding="utf-8") as f:
+                json.dump(go_data, f, indent=2, ensure_ascii=False)
+            _auto_merge_manual()
+
+            # 8. Return response
+            resp_data = {
+                "objects": all_objects,
+                "validation": validation_results,
+            }
+
+            resp = json.dumps(resp_data).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(resp)))
+            self.end_headers()
+            self.wfile.write(resp)
+
+        except json.JSONDecodeError as e:
+            self.send_error(400, f"Invalid JSON: {e}")
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.send_error(500, str(e))
 
     # ------------------------------------------------------------------
     # Pipeline API handlers
