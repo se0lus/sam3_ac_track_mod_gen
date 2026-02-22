@@ -400,6 +400,10 @@ _RE_VLM_TYPE = re.compile(r"VLM \[(\w+)\] attempt")
 _RE_TILE_IMPORT = re.compile(r"import level \d+,")
 _RE_TILE_NEED = re.compile(r"need to load level \d+:(\d+) tiles")
 _RE_COMPLETE = re.compile(r"(?:complete|done|saved|written)\b", re.IGNORECASE)
+_RE_STAGE_HEADER = re.compile(r"=== Stage (\d+\w?):")
+
+# Reverse mapping: stage number ("1", "2a", "9", "10") → stage_id
+_STAGE_NUM_TO_ID = {meta["num"]: meta["id"] for meta in PIPELINE_STAGE_META if meta["id"] != "prep"}
 
 
 def _fmt_eta(seconds: float) -> str:
@@ -813,8 +817,13 @@ class PipelineRunner:
         # Mark first stage as "running" immediately (initialization phase)
         with self._lock:
             if stage_ids:
-                self.current_stage = stage_ids[0]
-                self._stage_status[stage_ids[0]] = "running"
+                first = stage_ids[0]
+                self.current_stage = first
+                self._stage_status[first] = "running"
+                self._progress_state[first] = {
+                    "_t0": _progress_time.time(),
+                    "_stage_id": first,
+                }
         threading.Thread(target=self._tail_log, args=(log_path,), daemon=True).start()
         self._broadcast("pipeline_start", {"stages": stage_ids})
 
@@ -843,29 +852,28 @@ class PipelineRunner:
                         with self._lock:
                             self.log_lines.append(line)
 
-                        is_stage_line = "=== Stage" in line
+                        stage_m = _RE_STAGE_HEADER.search(line)
 
-                        if is_stage_line:
+                        if stage_m:
                             if log_batch:
                                 self._safe_broadcast("log", "\n".join(log_batch))
                                 log_batch = []
                                 last_flush = time.monotonic()
                             self._safe_broadcast("log", line)
-                            for sid, pname in _STAGE_ID_TO_PIPELINE.items():
-                                if pname in line:
-                                    if self.current_stage and self.current_stage != sid:
-                                        self._stage_status[self.current_stage] = "completed"
-                                        self._stage_progress[self.current_stage] = {"pct": 100, "eta": ""}
-                                        self._safe_broadcast("stage_complete", {"stage": self.current_stage})
-                                    self.current_stage = sid
-                                    self._stage_status[sid] = "running"
-                                    self._progress_state[sid] = {
-                                        "_t0": _progress_time.time(),
-                                        "_stage_id": sid,
-                                    }
-                                    self._stage_progress[sid] = {"pct": 0, "eta": ""}
-                                    self._safe_broadcast("stage_start", {"stage": sid})
-                                    break
+                            sid = _STAGE_NUM_TO_ID.get(stage_m.group(1))
+                            if sid:
+                                if self.current_stage and self.current_stage != sid:
+                                    self._stage_status[self.current_stage] = "completed"
+                                    self._stage_progress[self.current_stage] = {"pct": 100, "eta": ""}
+                                    self._safe_broadcast("stage_complete", {"stage": self.current_stage})
+                                self.current_stage = sid
+                                self._stage_status[sid] = "running"
+                                self._progress_state[sid] = {
+                                    "_t0": _progress_time.time(),
+                                    "_stage_id": sid,
+                                }
+                                self._stage_progress[sid] = {"pct": 0, "eta": ""}
+                                self._safe_broadcast("stage_start", {"stage": sid})
                         else:
                             log_batch.append(line)
                             now = time.monotonic()
