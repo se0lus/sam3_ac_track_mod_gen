@@ -773,6 +773,19 @@ def step4_batch_organise(max_batch_mb: int) -> List[str]:
             if c.name in _MASK_COLLECTIONS or c.name.startswith("export_batch"):
                 skip = True
                 break
+            # Skip objects belonging to tile, collision or game_objects collections
+            # These should have been assigned by Groups 1-4; if they weren't,
+            # they belong to a known group and must not leak into custom.
+            if re.match(r"^L\d+$", c.name):
+                log.warning("  '%s' in tile collection '%s' but not assigned "
+                            "by tile groups — skipping from custom", obj.name, c.name)
+                skip = True
+                break
+            if c.name in _GAME_COLLECTIONS or c.name.startswith("game_objects_"):
+                log.warning("  '%s' in game collection '%s' but not assigned "
+                            "by earlier groups — skipping from custom", obj.name, c.name)
+                skip = True
+                break
         if skip:
             continue
         custom_objs.append(obj)
