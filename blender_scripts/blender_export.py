@@ -48,6 +48,11 @@ import bpy  # type: ignore[import-not-found]
 import bmesh  # type: ignore[import-not-found]
 from mathutils import Vector  # type: ignore[import-not-found]
 
+
+def _emit_progress(pct, msg=""):
+    """Emit structured progress line for webtools dashboard."""
+    print(f"@@PROGRESS@@ {max(0,min(100,int(pct)))} {msg}".rstrip(), flush=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] %(levelname)s %(name)s: %(message)s",
@@ -1192,9 +1197,11 @@ def main() -> None:
     os.makedirs(args.output_dir, exist_ok=True)
 
     # Step 1: Cleanup masks
+    _emit_progress(5, "Cleanup masks...")
     step1_cleanup()
 
     # Step 2: Split oversized meshes
+    _emit_progress(15, "Splitting oversized meshes...")
     centerline = None
     if args.centerline_json and args.geo_metadata and args.tiles_dir:
         centerline = _load_centerline_blender(
@@ -1203,15 +1210,19 @@ def main() -> None:
     step2_split_meshes(args.max_vertices, centerline)
 
     # Step 3: Rename collision objects
+    _emit_progress(40, "Renaming collision objects...")
     step3_rename_collision()
 
     # Step 4: Batch organisation (auto-detects tile levels)
+    _emit_progress(55, "Batch organisation...")
     batch_names = step4_batch_organise(args.max_batch_mb)
 
     # Step 5: Remove all non-export data
+    _emit_progress(65, "Final cleanup...")
     step5_final_cleanup(batch_names)
 
     # Step 6: Save + export FBX (with INI generation)
+    _emit_progress(75, "Saving and exporting FBX...")
     exported = step6_save_and_export(
         batch_names, args.output_dir, args.fbx_scale,
         ks_ambient=args.ks_ambient,
@@ -1219,6 +1230,7 @@ def main() -> None:
         ks_emissive=args.ks_emissive,
     )
 
+    _emit_progress(100, "Export complete")
     log.info("=" * 60)
     log.info("Stage 10 complete: %d FBX files exported to %s", len(exported), args.output_dir)
     log.info("=" * 60)

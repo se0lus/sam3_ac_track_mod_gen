@@ -14,6 +14,7 @@ if _script_dir not in sys.path:
     sys.path.insert(0, _script_dir)
 
 from pipeline_config import PipelineConfig
+from progress import ProgressTracker, report_progress
 
 
 def run(config: PipelineConfig) -> None:
@@ -32,6 +33,7 @@ def run(config: PipelineConfig) -> None:
         output_dir=config.mask_on_clips_dir,
         prompts=config.sam3_prompts,
     )
+    report_progress(100, "Per-clip segmentation complete")
     logger.info("Per-clip segmentation complete. Output: %s", config.mask_on_clips_dir)
 
 
@@ -74,7 +76,12 @@ def _generate_mask_on_clips(
     logger.info("Found %d clips, %d tags", len(clips), len(prompts))
     bpe_path = os.path.join(sam3_pkg_dir, "assets", "bpe_simple_vocab_16e6.txt.gz")
     checkpoint_path = os.path.join(sam3_pkg_dir, "..", "..", "sam3_model", "sam3.pt")
+    report_progress(1, "Loading SAM3 model...")
     model = build_sam3_image_model(bpe_path=bpe_path, checkpoint_path=checkpoint_path, load_from_HF=False)
+
+    _total_items = len(clips) * len(prompts)
+    _tracker = ProgressTracker(total=max(1, _total_items), pct_start=2, pct_end=92)
+    _done = 0
 
     for inp in prompts:
         tag = inp["tag"]
@@ -106,6 +113,8 @@ def _generate_mask_on_clips(
                 no_mask_clips.append(clip)
 
             geo_image.save(save_masks=True, overwrite=True, output_dir=target_path)
+            _done += 1
+            _tracker.update(_done, f"[{tag}] Clip {idx+1}/{len(clips)}")
             logger.info("[%s] Clip %d/%d", tag, idx + 1, len(clips))
 
         # Fallback: retry clips with no masks using alternative prompts

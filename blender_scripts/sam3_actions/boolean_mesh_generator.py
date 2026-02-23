@@ -68,6 +68,21 @@ def _get_density(tag: str) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Progress reporting (set by blender_automate before invoking)
+# ---------------------------------------------------------------------------
+PROGRESS_RANGE = None  # (start_pct, end_pct) set by blender_automate
+
+
+def _report_sub_progress(sub_frac, msg=""):
+    """Report sub-progress within PROGRESS_RANGE."""
+    if PROGRESS_RANGE is None:
+        return
+    start, end = PROGRESS_RANGE
+    pct = int(start + sub_frac * (end - start))
+    print(f"@@PROGRESS@@ {max(0,min(100,pct))} {msg}".rstrip(), flush=True)
+
+
+# ---------------------------------------------------------------------------
 # Logging / formatting helpers
 # ---------------------------------------------------------------------------
 
@@ -403,6 +418,8 @@ def _project_to_terrain(
             elapsed = time.monotonic() - t0
             _log(f"  Projection: {pct}% ({vi:,}/{total_v:,}) "
                  f"elapsed {_fmt_time(elapsed)}")
+            # Note: per-vertex sub-progress not emitted here to avoid
+            # overhead; tag-level progress from the operator loop is enough.
 
         loc = _raycast_terrain(
             scene, depsgraph, excluded, v.co.x, v.co.z,
@@ -668,6 +685,9 @@ class SAM3_OT_generate_boolean_surfaces(bpy.types.Operator):
                 continue
 
             density = _get_density(tag)
+            _report_sub_progress(
+                ti / max(len(BOOLEAN_TAGS), 1),
+                f"Boolean: {tag}")
             _log(f"[{ti + 1}/{len(BOOLEAN_TAGS)}] ===== {tag} ===== "
                  f"({len(mesh_objs)} mesh(es), density={density}m)")
 

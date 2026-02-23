@@ -13,6 +13,18 @@ from .mask_select_utils import (
 
 from config import BASE_TILES_DIR, GLB_DIR, BASE_LEVEL, TARGET_FINE_LEVEL
 
+# Progress reporting (set by blender_automate before invoking)
+PROGRESS_RANGE = None  # (start_pct, end_pct) set by blender_automate
+
+
+def _report_sub_progress(sub_frac, msg=""):
+    """Report sub-progress within PROGRESS_RANGE."""
+    if PROGRESS_RANGE is None:
+        return
+    start, end = PROGRESS_RANGE
+    pct = int(start + sub_frac * (end - start))
+    print(f"@@PROGRESS@@ {max(0,min(100,pct))} {msg}".rstrip(), flush=True)
+
 # ----------------------------
 # 通用：非阻塞 modal 执行辅助
 # ----------------------------

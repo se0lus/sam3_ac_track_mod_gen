@@ -695,6 +695,7 @@ def generate_all_vlm_sequential(
     model_name: str = "gemini-2.5-pro",
     temperature: float = 0.2,
     modelscale_size: Optional[Tuple[int, int]] = None,
+    on_progress=None,
 ) -> Dict[str, Any]:
     """Generate all VLM objects sequentially with per-type validation + retry.
 
@@ -703,6 +704,8 @@ def generate_all_vlm_sequential(
             image is higher resolution (vlmscale), coordinates are scaled
             back to modelscale space so downstream masks/centerline stay
             consistent.
+        on_progress: Optional callback ``(step, total_steps, label)``
+            called before each VLM type generation.
 
     Returns:
         dict with keys: hotlap, pits, starts, timing_0_raw, validation
@@ -734,6 +737,8 @@ def generate_all_vlm_sequential(
     validation_results = {}
 
     # 1. Hotlap
+    if on_progress:
+        on_progress(1, 4, "hotlap")
     logger.info("=== Generating hotlap_start ===")
     prompt = _build_per_type_prompt("hotlap", prompt_size, track_direction)
     if mask_path:
@@ -743,6 +748,8 @@ def generate_all_vlm_sequential(
     validation_results["hotlap"] = val
 
     # 2. Pits
+    if on_progress:
+        on_progress(2, 4, "pit")
     logger.info("=== Generating pit boxes ===")
     prompt = _build_per_type_prompt("pit", prompt_size, track_direction, pit_count=pit_count)
     if mask_path:
@@ -753,6 +760,8 @@ def generate_all_vlm_sequential(
     validation_results["pit"] = val
 
     # 3. Starts
+    if on_progress:
+        on_progress(3, 4, "start")
     logger.info("=== Generating start grid ===")
     prompt = _build_per_type_prompt("start", prompt_size, track_direction, start_count=start_count)
     if mask_path:
@@ -763,6 +772,8 @@ def generate_all_vlm_sequential(
     validation_results["start"] = val
 
     # 4. Timing_0 (start/finish line)
+    if on_progress:
+        on_progress(4, 4, "timing_0")
     logger.info("=== Generating timing_0 (start/finish line) ===")
     prompt = _build_per_type_prompt("timing_0", prompt_size, track_direction)
     if mask_path:

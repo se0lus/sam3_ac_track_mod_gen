@@ -14,6 +14,7 @@ if _script_dir not in sys.path:
     sys.path.insert(0, _script_dir)
 
 from pipeline_config import PipelineConfig
+from progress import report_progress
 
 
 def run(config: PipelineConfig) -> None:
@@ -57,6 +58,7 @@ def run(config: PipelineConfig) -> None:
         else:
             logger.info("No %s mask found", name)
 
+    report_progress(20, "Generating walls...")
     walls_data = generate_walls(
         image_path=image_path,
         mask_image_path=mask_path,
@@ -70,6 +72,7 @@ def run(config: PipelineConfig) -> None:
         output_dir=out_dir,
     )
 
+    report_progress(80, "Saving wall data...")
     with open(config.walls_json, "w", encoding="utf-8") as f:
         json.dump(walls_data, f, indent=2, ensure_ascii=False)
     logger.info("Wall JSON saved: %s", config.walls_json)
@@ -82,6 +85,7 @@ def run(config: PipelineConfig) -> None:
 
     # Generate geo_metadata.json for wall editor
     _write_geo_metadata(config, out_dir)
+    report_progress(100, "Wall generation complete")
 
 
 def _write_geo_metadata(config: PipelineConfig, out_dir: str) -> None:

@@ -14,6 +14,7 @@ if _script_dir not in sys.path:
     sys.path.insert(0, _script_dir)
 
 from pipeline_config import PipelineConfig
+from progress import ProgressTracker
 
 
 def run(config: PipelineConfig) -> None:
@@ -32,8 +33,11 @@ def run(config: PipelineConfig) -> None:
     if not os.path.isdir(result_dir):
         # Fallback: direct stage 2 output (no junction set up)
         result_dir = config.mask_full_map_dir
+    from progress import report_progress
+    report_progress(2, "Loading GeoTIFF...")
     _clip_full_map(config.geotiff_path, config.clips_dir, result_dir,
                    max_workers=config.max_workers)
+    report_progress(100, "Clipping complete")
     logger.info("Clipping complete. Clips saved to %s", config.clips_dir)
 
 
@@ -140,11 +144,13 @@ def _clip_full_map(src_img_file: str, clips_output_dir: str, mask_full_map_dir: 
     total = len(clip_boxes)
     source_gsd = geo_image.geo_image.get_gsd()[0]
     max_workers = max(1, max_workers)
+    _tracker = ProgressTracker(total=total, pct_start=5, pct_end=95)
 
     def _process_clip(idx_box):
         """Process a single clip: crop, generate modelscale, save, close."""
         i, box = idx_box
         logger.info("Clipping %d/%d ...", i + 1, total)
+        _tracker.update(i + 1, f"Clipping {i+1}/{total}")
         cropped = geo_image.crop_and_scale_to_gsd(
             box, source_gsd,
             dst_image_path=os.path.join(clips_output_dir, f"clip_{i}.tif"),

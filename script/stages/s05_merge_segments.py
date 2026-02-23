@@ -24,6 +24,7 @@ if _script_dir not in sys.path:
     sys.path.insert(0, _script_dir)
 
 from pipeline_config import PipelineConfig
+from progress import report_progress
 
 
 def run(config: PipelineConfig) -> None:
@@ -84,6 +85,7 @@ def run(config: PipelineConfig) -> None:
     fullmap_mask_dir = result_dir
     layout_mask_dir = result_dir  # layouts.json + masks live in same dir
 
+    report_progress(5, "Merging clip masks...")
     _merge_and_convert(
         geotiff_path=config.geotiff_path,
         mask_dir=mask_dir,
@@ -97,6 +99,7 @@ def run(config: PipelineConfig) -> None:
         kerb_narrow_max_width_m=config.s5_kerb_narrow_max_width_m,
         kerb_narrow_adjacency_m=config.s5_kerb_narrow_adjacency_m,
     )
+    report_progress(100, "Merge complete")
     logger.info("Merged segment files written to %s", output_dir)
 
 
@@ -119,6 +122,7 @@ def _merge_and_convert(
     from geo_sam3_blender_utils import get_tileset_transform, geo_points_to_blender_xyz
 
     # Step 1: Merge clip masks per tag (with optional priority compositing)
+    report_progress(10, "Rasterizing clip masks...")
     preview_dir = os.path.join(output_dir, "merge_preview")
     merged = merge_clip_masks(
         geotiff_path=geotiff_path,
@@ -137,6 +141,8 @@ def _merge_and_convert(
     if not merged:
         logger.warning("No merged results produced")
         return
+
+    report_progress(60, "Compositing complete")
 
     # Step 2: Get tileset transform info (one-time)
     # Use the first available polygon as sample point for tileset selection
@@ -157,7 +163,11 @@ def _merge_and_convert(
     # Step 3: Convert each tag's pre-triangulated groups to Blender coords.
     # Each group has earcut-triangulated "vertices" + "faces", so the Blender
     # script can create mesh directly without curve fill.
-    for tag, groups in merged.items():
+    report_progress(65, "Converting to Blender coordinates...")
+    tag_list = list(merged.keys())
+    for tag_i, (tag, groups) in enumerate(merged.items()):
+        report_progress(70 + int(tag_i / max(len(tag_list), 1) * 25),
+                        f"Converting {tag}...")
         mesh_groups = []
         total_verts = 0
         total_faces = 0

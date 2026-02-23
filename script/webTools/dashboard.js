@@ -594,7 +594,7 @@ async function showStageInfo(stage) {
         <h4>KN5 转换</h4>
         <div class="config-field">
           <label>ksEditorAT 路径 (留空自动检测/下载)</label>
-          <input type="text" id="s10KsEditorExe" value="${ksEditorExe}" placeholder="ac_toolbox/ac_tools_cmd/ksEditorAT.exe" />
+          <input type="text" id="s10KsEditorExe" value="${ksEditorExe}" placeholder="ac_toolbox/ksEditorAt/ksEditorAt.exe (auto-download)" />
         </div>
         <div class="config-actions">
           <button class="btn btn--primary" id="btnSaveStageConfig">保存</button>

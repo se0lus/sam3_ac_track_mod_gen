@@ -2,7 +2,7 @@
 
 Reads ``09_result/final_track.blend`` and exports split models as FBX files
 suitable for Assetto Corsa.  Runs Blender in ``--background`` mode.
-Optionally converts FBX → KN5 via ``ksEditorAT.exe`` from ac_tools_cmd.
+Optionally converts FBX → KN5 via ``ksEditorAt.exe`` (KsEditorAt v6).
 
 Tile levels are auto-detected from ``L{N}`` collections in the .blend file,
 so no base_level/target_level parameters are needed.
@@ -13,6 +13,7 @@ import argparse
 import glob
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -27,65 +28,123 @@ if _script_dir not in sys.path:
     sys.path.insert(0, _script_dir)
 
 from pipeline_config import PipelineConfig
+from progress import report_progress
+
+# Progress range allocation — based on measured timings:
+#   Blender export ~9% of total, KN5 conversion ~91%
+_PCT_BLENDER_START = 2
+_PCT_BLENDER_END = 10
+_PCT_KN5_START = 12
+_PCT_KN5_END = 98
+_RE_PROGRESS = re.compile(r"@@PROGRESS@@\s+(\d+)\s*(.*)")
 
 
 # ---------------------------------------------------------------------------
-# ksEditorAT auto-setup + FBX→KN5 conversion
+# KsEditorAt v6 auto-setup + FBX→KN5 conversion
 # ---------------------------------------------------------------------------
-_KSEDITOR_RELEASE_URL = "https://github.com/leBluem/ac_tools_cmd/releases/download/0.9.5/ackn5.7z"
+_KSEDITOR_YANDEX_KEY = "https://yadi.sk/d/RuPNrcCurCm4Z"
+_KSEDITOR_SHA256 = "1058657ad6922715e5f7c060e2800dd004d68ce135dd2073cedc076b14d4d4b7"
 
 
-def _download_and_extract_7z(url: str, dest_dir: str) -> None:
-    """Download a .7z archive and extract it to *dest_dir*."""
-    os.makedirs(dest_dir, exist_ok=True)
-    tmp_path = os.path.join(tempfile.gettempdir(), "ackn5.7z")
+def _download_kseditor_v6(dest_dir: str) -> None:
+    """Download KsEditorAt v6 via Yandex Disk public API and extract."""
+    import hashlib
+    import json
+    import zipfile
+
+    # 1. Get direct download link from Yandex Disk public API
+    api_url = (
+        "https://cloud-api.yandex.net/v1/disk/public/resources/download"
+        f"?public_key={_KSEDITOR_YANDEX_KEY}"
+    )
+    logger.info("Fetching KsEditorAt v6 download link...")
+    with urllib.request.urlopen(api_url) as resp:
+        href = json.loads(resp.read())["href"]
+
+    # 2. Download ZIP
+    tmp_zip = os.path.join(tempfile.gettempdir(), "KsEditorAt_v6.zip")
     try:
-        logger.info("Downloading %s ...", url)
-        urllib.request.urlretrieve(url, tmp_path)
-        logger.info("Downloaded %.1f MB", os.path.getsize(tmp_path) / 1e6)
+        logger.info("Downloading KsEditorAt v6...")
+        urllib.request.urlretrieve(href, tmp_zip)
+        logger.info("Downloaded %.1f MB", os.path.getsize(tmp_zip) / 1e6)
 
-        # Strategy 1: py7zr (pure Python)
-        try:
-            import py7zr
-        except ImportError:
-            logger.info("py7zr not installed, installing...")
-            subprocess.check_call(
-                [sys.executable, "-m", "pip", "install", "py7zr"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-            import py7zr
-
-        with py7zr.SevenZipFile(tmp_path, mode="r") as z:
-            z.extractall(path=dest_dir)
-        logger.info("Extracted to %s", dest_dir)
-    except Exception as e:
-        # Strategy 2: system 7z.exe
-        logger.info("py7zr failed (%s), trying system 7z...", e)
-        exe_7z = _find_system_7z()
-        if not exe_7z:
+        # 3. Verify SHA256
+        h = hashlib.sha256()
+        with open(tmp_zip, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        if h.hexdigest() != _KSEDITOR_SHA256:
             raise RuntimeError(
-                f"Cannot extract 7z archive: py7zr failed and 7z.exe not found. "
-                f"Please install py7zr (pip install py7zr) or 7-Zip."
-            ) from e
-        subprocess.check_call(
-            [exe_7z, "x", "-y", f"-o{dest_dir}", tmp_path],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        logger.info("Extracted to %s (via 7z.exe)", dest_dir)
+                f"KsEditorAt v6 SHA256 mismatch: expected {_KSEDITOR_SHA256}, "
+                f"got {h.hexdigest()}"
+            )
+
+        # 4. Extract
+        os.makedirs(dest_dir, exist_ok=True)
+        with zipfile.ZipFile(tmp_zip, "r") as zf:
+            zf.extractall(dest_dir)
+        logger.info("Extracted KsEditorAt v6 to %s", dest_dir)
     finally:
-        if os.path.isfile(tmp_path):
+        if os.path.isfile(tmp_zip):
             try:
-                os.remove(tmp_path)
+                os.remove(tmp_zip)
             except OSError:
                 pass
 
 
-def _find_system_7z() -> Optional[str]:
-    """Search for 7z.exe on PATH and common install locations."""
-    # Check PATH
-    if shutil.which("7z"):
-        return shutil.which("7z")
-    # Common Windows locations
+def _find_exe_in_dir(base: str, name: str) -> Optional[str]:
+    """Search for *name* in *base* and its immediate subdirectories."""
+    if not os.path.isdir(base):
+        return None
+    # Direct child
+    candidate = os.path.join(base, name)
+    if os.path.isfile(candidate):
+        return candidate
+    # One level of subdirectories
+    for entry in os.listdir(base):
+        candidate = os.path.join(base, entry, name)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def _ensure_kseditor(config: PipelineConfig, project_root: str) -> Optional[str]:
+    """Locate or auto-download ``ksEditorAt.exe`` (KsEditorAt v6).
+
+    Search order:
+    1. ``config.s10_kseditor_exe`` (user-configured path)
+    2. ``{project_root}/ac_toolbox/ksEditorAt/`` and one level of subdirs
+    3. Auto-download from Yandex Disk → extract to convention path → search
+    """
+    # 1. User-configured path
+    if config.s10_kseditor_exe and os.path.isfile(config.s10_kseditor_exe):
+        return config.s10_kseditor_exe
+
+    # 2. Convention path
+    base = os.path.join(project_root, "ac_toolbox", "ksEditorAt")
+    exe = _find_exe_in_dir(base, "ksEditorAt.exe")
+    if exe:
+        return exe
+
+    # 3. Auto-download
+    logger.info("ksEditorAt not found, downloading KsEditorAt v6...")
+    try:
+        _download_kseditor_v6(base)
+    except Exception as e:
+        logger.error("Failed to download KsEditorAt v6: %s", e)
+        return None
+
+    return _find_exe_in_dir(base, "ksEditorAt.exe")
+
+
+_AC_TOOLS_CMD_URL = "https://github.com/leBluem/ac_tools_cmd/releases/download/0.9.5/ackn5.7z"
+
+
+def _find_7z() -> Optional[str]:
+    """Locate 7z.exe on PATH or common install locations."""
+    found = shutil.which("7z")
+    if found:
+        return found
     for candidate in [
         r"C:\Program Files\7-Zip\7z.exe",
         r"C:\Program Files (x86)\7-Zip\7z.exe",
@@ -95,59 +154,85 @@ def _find_system_7z() -> Optional[str]:
     return None
 
 
-def _ensure_kseditor(config: PipelineConfig, project_root: str) -> Optional[str]:
-    """Locate or download ``ksEditorAt.exe``.
-
-    The ac_tools_cmd release extracts to: ``ackn5/ksEditorAT/ksEditorAt.exe``
-
-    Search order:
-    1. ``config.s10_kseditor_exe`` (user-configured path)
-    2. ``{project_root}/ac_toolbox/ac_tools_cmd/ackn5/ksEditorAT/ksEditorAt.exe``
-    3. Auto-download from GitHub Releases
-    """
-    # 1. User-configured path
-    if config.s10_kseditor_exe and os.path.isfile(config.s10_kseditor_exe):
-        return config.s10_kseditor_exe
-
-    # 2. Convention path (7z extracts to ackn5/ksEditorAT/)
-    default_path = os.path.join(
-        project_root, "ac_toolbox", "ac_tools_cmd",
-        "ackn5", "ksEditorAT", "ksEditorAt.exe",
-    )
-    if os.path.isfile(default_path):
-        return default_path
-
-    # 3. Auto-download
-    logger.info("ksEditorAt not found, downloading from GitHub...")
-    dest_dir = os.path.join(project_root, "ac_toolbox", "ac_tools_cmd")
+def _download_and_extract_7z(url: str, dest_dir: str) -> None:
+    """Download a .7z archive and extract it to *dest_dir* using system 7z."""
+    exe_7z = _find_7z()
+    if not exe_7z:
+        raise RuntimeError(
+            "7z.exe not found. Please install 7-Zip "
+            "(winget install 7zip.7zip) to extract ac_tools_cmd."
+        )
+    os.makedirs(dest_dir, exist_ok=True)
+    tmp_path = os.path.join(tempfile.gettempdir(), "ackn5.7z")
     try:
-        _download_and_extract_7z(_KSEDITOR_RELEASE_URL, dest_dir)
-    except Exception as e:
-        logger.error("Failed to download ac_tools_cmd: %s", e)
-        return None
+        logger.info("Downloading %s ...", url)
+        urllib.request.urlretrieve(url, tmp_path)
+        logger.info("Downloaded %.1f MB", os.path.getsize(tmp_path) / 1e6)
+        subprocess.check_call(
+            [exe_7z, "x", "-y", f"-o{dest_dir}", tmp_path],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        logger.info("Extracted to %s", dest_dir)
+    finally:
+        if os.path.isfile(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
-    return default_path if os.path.isfile(default_path) else None
 
-
-def _find_kn5fixbyini(kseditor_exe: str) -> Optional[str]:
-    """Locate ``kn5FixByINI.exe`` relative to ksEditorAt.exe.
-
-    The tool lives at ``ackn5/kn5FixByINI/x64/kn5FixByINI.exe`` (prefer x64)
-    or ``ackn5/kn5FixByINI/kn5FixByINI.exe``.
-    """
-    # ackn5/ksEditorAT/ksEditorAt.exe → ackn5/
-    ackn5_dir = os.path.dirname(os.path.dirname(kseditor_exe))
-    for subpath in [
-        os.path.join("kn5FixByINI", "x64", "kn5FixByINI.exe"),
-        os.path.join("kn5FixByINI", "kn5FixByINI.exe"),
-    ]:
-        candidate = os.path.join(ackn5_dir, subpath)
-        if os.path.isfile(candidate):
-            return candidate
+def _search_kn5fixbyini(search_dirs: list) -> Optional[str]:
+    """Search for kn5FixByINI.exe in a list of directories."""
+    for base in search_dirs:
+        for subpath in [
+            os.path.join("kn5FixByINI", "x64", "kn5FixByINI.exe"),
+            os.path.join("kn5FixByINI", "kn5FixByINI.exe"),
+            "kn5FixByINI.exe",
+        ]:
+            candidate = os.path.join(base, subpath)
+            if os.path.isfile(candidate):
+                return candidate
     return None
 
 
-def _convert_fbx_to_kn5(kseditor_exe: str, export_dir: str) -> List[str]:
+def _find_kn5fixbyini(kseditor_exe: str, project_root: str) -> Optional[str]:
+    """Locate or download ``kn5FixByINI.exe``.
+
+    kn5FixByINI is NOT bundled with KsEditorAt v6 — it comes from
+    ac_tools_cmd (GitHub).  Search order:
+    1. Same directory as ksEditorAt.exe and its parent
+    2. ``ac_toolbox/ac_tools_cmd/ackn5/kn5FixByINI/``
+    3. Auto-download ac_tools_cmd from GitHub → extract → search
+    """
+    search_dirs = [
+        os.path.dirname(kseditor_exe),
+        os.path.dirname(os.path.dirname(kseditor_exe)),
+    ]
+    ackn5_dir = os.path.join(project_root, "ac_toolbox", "ac_tools_cmd", "ackn5")
+    if os.path.isdir(ackn5_dir):
+        search_dirs.append(ackn5_dir)
+
+    exe = _search_kn5fixbyini(search_dirs)
+    if exe:
+        return exe
+
+    # Auto-download ac_tools_cmd for kn5FixByINI
+    logger.info("kn5FixByINI not found, downloading ac_tools_cmd...")
+    dest_dir = os.path.join(project_root, "ac_toolbox", "ac_tools_cmd")
+    try:
+        _download_and_extract_7z(_AC_TOOLS_CMD_URL, dest_dir)
+    except Exception as e:
+        logger.warning("Failed to download ac_tools_cmd for kn5FixByINI: %s", e)
+        return None
+
+    # Search again after download
+    if os.path.isdir(ackn5_dir):
+        search_dirs.append(ackn5_dir)
+    return _search_kn5fixbyini(search_dirs)
+
+
+def _convert_fbx_to_kn5(kseditor_exe: str, export_dir: str,
+                        project_root: str) -> List[str]:
     """Convert all FBX files in *export_dir* to KN5 using ksEditorAt.
 
     Workflow per FBX (matching ``fbx2kn5_track.cmd``):
@@ -155,6 +240,7 @@ def _convert_fbx_to_kn5(kseditor_exe: str, export_dir: str) -> List[str]:
     2. ``kn5FixByINI.exe {batch}.kn5`` (post-fix based on INI)
 
     cwd is set to *export_dir* so the tool finds ``texture/`` and ``.fbx.ini``.
+    Progress is reported proportionally to FBX file sizes.
     Returns list of successfully created KN5 file paths.
     """
     fbx_files = sorted(glob.glob(os.path.join(export_dir, "*.fbx")))
@@ -162,21 +248,27 @@ def _convert_fbx_to_kn5(kseditor_exe: str, export_dir: str) -> List[str]:
         logger.warning("No FBX files found in %s", export_dir)
         return []
 
-    kn5fix_exe = _find_kn5fixbyini(kseditor_exe)
+    kn5fix_exe = _find_kn5fixbyini(kseditor_exe, project_root)
     if kn5fix_exe:
         logger.info("kn5FixByINI: %s", kn5fix_exe)
     else:
         logger.info("kn5FixByINI not found, skipping post-fix step")
 
-    kn5_files: List[str] = []
+    # Pre-scan: collect (path, size) for files that will actually be converted
+    convert_list: list[tuple[str, int]] = []
     for fbx_path in fbx_files:
-        # Skip very small FBX files (likely empty game object batches)
         fbx_size = os.path.getsize(fbx_path)
         if fbx_size < 1024:
             logger.info("Skipping tiny FBX (%d bytes): %s",
                         fbx_size, os.path.basename(fbx_path))
             continue
+        convert_list.append((fbx_path, fbx_size))
 
+    total_bytes = sum(sz for _, sz in convert_list)
+    processed_bytes = 0
+
+    kn5_files: List[str] = []
+    for fbx_path, fbx_size in convert_list:
         basename = os.path.splitext(os.path.basename(fbx_path))[0]
         kn5_name = basename + ".kn5"
         kn5_path = os.path.join(export_dir, kn5_name)
@@ -184,6 +276,11 @@ def _convert_fbx_to_kn5(kseditor_exe: str, export_dir: str) -> List[str]:
         cmd = [kseditor_exe, "kn5track", kn5_path, fbx_path]
         logger.info("KN5 converting: %s -> %s (%.1f MB)",
                     os.path.basename(fbx_path), kn5_name, fbx_size / 1e6)
+
+        # Report progress before conversion starts
+        frac = processed_bytes / total_bytes if total_bytes else 0
+        pct = int(_PCT_KN5_START + frac * (_PCT_KN5_END - _PCT_KN5_START))
+        report_progress(pct, f"KN5 {os.path.basename(fbx_path)}")
 
         try:
             result = subprocess.run(
@@ -220,6 +317,8 @@ def _convert_fbx_to_kn5(kseditor_exe: str, export_dir: str) -> List[str]:
             logger.warning("  TIMEOUT: %s (>300s)", kn5_name)
         except Exception as e:
             logger.warning("  ERROR: %s -- %s", kn5_name, e)
+
+        processed_bytes += fbx_size
 
     return kn5_files
 
@@ -306,8 +405,33 @@ def run(config: PipelineConfig) -> None:
     cmd.extend(["--ks-diffuse", str(config.s10_ks_diffuse)])
     cmd.extend(["--ks-emissive", str(config.s10_ks_emissive)])
 
+    report_progress(_PCT_BLENDER_START, "Blender export starting")
     logger.info("Running Blender export: %s", " ".join(cmd))
-    subprocess.run(cmd, check=True)
+
+    # Run Blender with stdout interception to remap progress lines
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, bufsize=1,
+    )
+    for line in proc.stdout:
+        line = line.rstrip("\n\r")
+        m = _RE_PROGRESS.search(line)
+        if m:
+            # Remap Blender's 0-100 → _PCT_BLENDER_START.._PCT_BLENDER_END
+            raw_pct = int(m.group(1))
+            frac = max(0.0, min(1.0, raw_pct / 100))
+            mapped = int(_PCT_BLENDER_START
+                         + frac * (_PCT_BLENDER_END - _PCT_BLENDER_START))
+            report_progress(mapped, m.group(2) or "Blender export")
+        else:
+            # Pass through non-progress output for logging
+            if line:
+                logger.info("[blender] %s", line)
+    rc = proc.wait()
+    if rc != 0:
+        raise subprocess.CalledProcessError(rc, cmd)
+
+    report_progress(_PCT_BLENDER_END, "Copying textures")
 
     # Copy textures from 09_result/texture/ to 10_model_export/texture/
     src_texture_dir = os.path.join(config.blender_result_dir, "texture")
@@ -327,15 +451,17 @@ def run(config: PipelineConfig) -> None:
         shutil.copy2(null_dds_src, os.path.join(dst_texture_dir, "NULL.dds"))
         logger.info("Copied NULL.dds to %s", dst_texture_dir)
 
-    # KN5 conversion (FBX → KN5 via ksEditorAT)
+    # KN5 conversion (FBX → KN5 via ksEditorAt)
+    report_progress(_PCT_KN5_START, "Preparing KN5 conversion")
     kseditor = _ensure_kseditor(config, project_root)
     if kseditor:
-        logger.info("Using ksEditorAT: %s", kseditor)
-        kn5_files = _convert_fbx_to_kn5(kseditor, config.export_dir)
+        logger.info("Using ksEditorAt: %s", kseditor)
+        kn5_files = _convert_fbx_to_kn5(kseditor, config.export_dir, project_root)
         logger.info("Converted %d KN5 files", len(kn5_files))
     else:
-        logger.warning("ksEditorAT not found, skipping KN5 conversion")
+        logger.warning("ksEditorAt not found, skipping KN5 conversion")
 
+    report_progress(100, "Stage 10 complete")
     logger.info("=== Stage 10 complete: %s ===", config.export_dir)
 
 

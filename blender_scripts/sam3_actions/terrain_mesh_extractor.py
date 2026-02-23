@@ -51,6 +51,21 @@ from surface_extraction import (  # noqa: E402
 from config import ROOT_POLYGON_COLLECTION_NAME  # noqa: E402
 
 # ---------------------------------------------------------------------------
+# Progress reporting (set by blender_automate before invoking)
+# ---------------------------------------------------------------------------
+PROGRESS_RANGE = None  # (start_pct, end_pct) set by blender_automate
+
+
+def _report_sub_progress(sub_frac, msg=""):
+    """Report sub-progress within PROGRESS_RANGE."""
+    if PROGRESS_RANGE is None:
+        return
+    start, end = PROGRESS_RANGE
+    pct = int(start + sub_frac * (end - start))
+    print(f"@@PROGRESS@@ {max(0,min(100,pct))} {msg}".rstrip(), flush=True)
+
+
+# ---------------------------------------------------------------------------
 # Logging / formatting helpers
 # ---------------------------------------------------------------------------
 
@@ -379,6 +394,9 @@ def extract_terrain_for_road_kerb(
                  f"{total_terrain_tris:,} tris scanned, "
                  f"road={len(road_faces):,} kerb={len(kerb_faces):,} "
                  f"({_fmt_time(elapsed)})")
+            _report_sub_progress(
+                (oi + 1) / max(len(terrain_objs), 1),
+                f"Terrain scan: {oi+1}/{len(terrain_objs)} objects")
 
     _log(f"Face classification done: "
          f"road={len(road_faces):,}, kerb={len(kerb_faces):,} "

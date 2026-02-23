@@ -98,13 +98,15 @@ def convert_file(b3dm_path: str, output_path: str) -> str:
     return output_path
 
 
-def convert_directory(input_dir: str, output_dir: str, max_workers: int = 1) -> list:
+def convert_directory(input_dir: str, output_dir: str, max_workers: int = 1,
+                      on_progress=None) -> list:
     """Batch convert all .b3dm files in a directory (recursively) to GLB.
 
     Args:
         input_dir: Root directory containing .b3dm files.
         output_dir: Root directory for output .glb files (mirrors input structure).
         max_workers: Number of threads for parallel conversion (1 = serial).
+        on_progress: Optional callback ``(current, total)`` called after each file.
 
     Returns:
         List of (b3dm_path, glb_path) tuples for successfully converted files.
@@ -149,6 +151,8 @@ def convert_directory(input_dir: str, output_dir: str, max_workers: int = 1) -> 
             except (B3dmConversionError, FileNotFoundError) as e:
                 logger.error("Failed to convert %s: %s", b3dm_path, e)
                 errors.append((b3dm_path, str(e)))
+            if on_progress:
+                on_progress(i + 1, total)
     else:
         logger.info("Converting %d B3DM files with %d workers", total, max_workers)
         done_count = 0
@@ -168,6 +172,8 @@ def convert_directory(input_dir: str, output_dir: str, max_workers: int = 1) -> 
                 except (B3dmConversionError, FileNotFoundError) as e:
                     logger.error("Failed to convert %s: %s", b3dm_path, e)
                     errors.append((b3dm_path, str(e)))
+                if on_progress:
+                    on_progress(done_count, total)
 
     logger.info(
         "Batch conversion complete: %d converted, %d errors",

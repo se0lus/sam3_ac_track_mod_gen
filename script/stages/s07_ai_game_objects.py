@@ -20,6 +20,7 @@ if _script_dir not in sys.path:
     sys.path.insert(0, _script_dir)
 
 from pipeline_config import PipelineConfig
+from progress import report_progress
 
 
 def run(config: PipelineConfig) -> None:
@@ -55,15 +56,22 @@ def run(config: PipelineConfig) -> None:
         if layouts:
             logger.info("Multi-layout mode: %d layout(s)", len(layouts))
             layouts_dir = result_dir  # layout mask PNGs are in the same dir
-            for layout in layouts:
+            for li, layout in enumerate(layouts):
+                report_progress(
+                    5 + int(li / max(len(layouts), 1) * 85),
+                    f"Layout {li+1}/{len(layouts)}: {layout.get('name', '?')}")
                 _generate_for_layout(config, layout, layouts_dir, out_dir, image_path,
                                      modelscale_img=modelscale_img)
+            report_progress(95, "Merging layouts...")
             _merge_all_layouts(out_dir, config.game_objects_json)
             _write_geo_metadata(config, out_dir)
+            report_progress(100, "Game objects complete")
             return
 
     # Single-layout fallback
+    report_progress(5, "Single-layout generation...")
     _generate_single(config, out_dir, image_path, modelscale_img=modelscale_img)
+    report_progress(100, "Game objects complete")
 
 
 def _load_layouts(layouts_json_path: str):
@@ -154,11 +162,18 @@ def _generate_for_layout(config, layout, layouts_dir, out_dir, image_path,
 
     # Sequential VLM generation (4 per-type calls with validation + retry)
     vlm_result = {"hotlap": [], "pits": [], "starts": [], "timing_0_raw": [], "validation": {}}
+    _vlm_pct_map = {"hotlap": 15, "pit": 35, "start": 55, "timing_0": 75}
+
+    def _vlm_progress(step, total, label):
+        pct = _vlm_pct_map.get(label, 5 + step * 20)
+        report_progress(pct, f"VLM: {label}")
+
     try:
         vlm_result = generate_all_vlm_sequential(
             image_path, mask_path, direction, masks,
             api_key=config.gemini_api_key, model_name=config.gemini_model,
             modelscale_size=modelscale_size,
+            on_progress=_vlm_progress,
         )
         logger.info("VLM validation: %s", json.dumps(vlm_result.get("validation", {})))
     except Exception as e:

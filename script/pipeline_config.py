@@ -312,7 +312,7 @@ class PipelineConfig:
     s10_ks_ambient: float = 0.5            # ksAmbient FLOAT1 for visible materials
     s10_ks_diffuse: float = 0.1            # ksDiffuse FLOAT1 for visible materials
     s10_ks_emissive: float = 0.1           # ksEmissive FLOAT3 (same value x3)
-    s10_kseditor_exe: str = ""             # Path to ksEditorAT.exe (auto-detected if empty)
+    s10_kseditor_exe: str = ""             # Path to ksEditorAt.exe (auto-detected / auto-downloaded)
 
     # --- Stage 11 options (track packaging) ---
     s11_track_name: str = ""               # Track folder name for AC (default: derived from geotiff)

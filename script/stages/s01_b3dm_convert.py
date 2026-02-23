@@ -14,6 +14,7 @@ if _script_dir not in sys.path:
     sys.path.insert(0, _script_dir)
 
 from pipeline_config import PipelineConfig
+from progress import ProgressTracker
 
 
 def run(config: PipelineConfig) -> None:
@@ -27,8 +28,16 @@ def run(config: PipelineConfig) -> None:
         return
 
     os.makedirs(config.glb_dir, exist_ok=True)
+    tracker = ProgressTracker(total=1, pct_start=5, pct_end=95)
+
+    def _on_progress(current, total):
+        tracker.total = max(1, total)
+        tracker.update(current, f"Converting {current}/{total}")
+
     converted = convert_directory(config.tiles_dir, config.glb_dir,
-                                  max_workers=config.max_workers)
+                                  max_workers=config.max_workers,
+                                  on_progress=_on_progress)
+    tracker.complete("B3DM conversion complete")
     logger.info("Converted %d B3DM files to GLB in %s", len(converted), config.glb_dir)
 
 

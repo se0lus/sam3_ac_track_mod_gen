@@ -55,6 +55,7 @@ Thumbs.db
 desktop.ini
 
 # 外部克隆的第三方工具
+ac_toolbox/ksEditorAt/
 ac_toolbox/ac_tools_cmd/ackn5/
 
 # 临时文件

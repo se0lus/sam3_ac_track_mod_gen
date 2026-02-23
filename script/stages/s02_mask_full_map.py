@@ -20,6 +20,7 @@ if _script_dir not in sys.path:
     sys.path.insert(0, _script_dir)
 
 from pipeline_config import PipelineConfig
+from progress import report_progress
 
 
 def run(config: PipelineConfig) -> None:
@@ -38,11 +39,13 @@ def run(config: PipelineConfig) -> None:
     if not config.geotiff_path:
         raise ValueError("geotiff_path is required for mask_full_map stage")
 
+    report_progress(2, "Loading GeoTIFF...")
     geo_image = _mask_full_map(config.geotiff_path, config.mask_full_map_dir, config)
     if geo_image is None:
         raise RuntimeError("Failed to generate mask for full map")
 
     # Generate per-tag masks for wall generation reference
+    report_progress(50, "Generating per-tag masks...")
     _generate_fullmap_tag_masks(
         geo_image,
         config.mask_full_map_dir,
@@ -51,12 +54,15 @@ def run(config: PipelineConfig) -> None:
     )
 
     # Generate VLM-scale image (higher resolution for VLM input in stage 8)
+    report_progress(85, "Generating VLM-scale image...")
     _generate_vlmscale_image(geo_image, config)
 
     # Generate default layout + geo_metadata for downstream stages
+    report_progress(93, "Generating metadata...")
     _generate_default_layout(config)
     _generate_geo_metadata(config)
 
+    report_progress(100, "Full map segmentation complete")
     logger.info("Full map segmentation complete. Output: %s", config.mask_full_map_dir)
 
 
@@ -91,6 +97,7 @@ def _mask_full_map(src_img_file: str, output_dir: str, config: PipelineConfig | 
         )
         if hole_mask is not None:
             hole_pct = np.sum(hole_mask > 0) / hole_mask.size * 100
+            report_progress(5, "Center holes detected, inpainting...")
             logger.info(
                 "Center holes detected (%.1f%%), inpainting with %s...",
                 hole_pct, config.inpaint_model,
@@ -112,8 +119,10 @@ def _mask_full_map(src_img_file: str, output_dir: str, config: PipelineConfig | 
             geo_image.model_scale_image.save(
                 os.path.join(output_dir, "result_modelscale_inpainted.png")
             )
+            report_progress(15, "Inpainting complete")
             logger.info("Inpainting complete")
         else:
+            report_progress(15, "No holes detected")
             logger.info("No center holes detected, skipping inpainting")
 
     need_inference = not geo_image.has_masks()
@@ -206,11 +215,13 @@ def _generate_fullmap_tag_masks(
 
     image = geo_image.model_scale_image
 
-    for tag in tags_to_generate:
+    for ti, tag in enumerate(tags_to_generate):
         cfg = prompt_lookup[tag]
         threshold = cfg.get("threshold", 0.4)
         prompt_text = cfg["prompt"]
 
+        tag_pct = 50 + int((ti / max(len(tags_to_generate), 1)) * 30)
+        report_progress(tag_pct, f"SAM3 tag: {tag}")
         logger.info("Running SAM3 for tag '%s' (prompt='%s', threshold=%.2f)", tag, prompt_text, threshold)
 
         processor = Sam3Processor(model, confidence_threshold=threshold)

@@ -21,6 +21,11 @@ if _this_script_dir not in sys.path:
 from config import ROOT_CURVE_COLLECTION_NAME, ROOT_POLYGON_COLLECTION_NAME
 
 
+def _emit_progress(pct, msg=""):
+    """Emit structured progress line for webtools dashboard."""
+    print(f"@@PROGRESS@@ {max(0,min(100,int(pct)))} {msg}".rstrip(), flush=True)
+
+
 def _sanitize_name(s: str, *, max_len: int = 63) -> str:
     s2 = re.sub(r"[^0-9A-Za-z_\-]+", "_", str(s)).strip("_")
     if not s2:
@@ -672,7 +677,11 @@ def _generate_from_pretriangulated(
     root_poly = _get_or_create_root_collection(ROOT_POLYGON_COLLECTION_NAME)
 
     created = 0
-    for tag in sorted(tag_groups.keys()):
+    tag_names = sorted(tag_groups.keys())
+    _emit_progress(5, "Creating polygon meshes...")
+    for tag_i, tag in enumerate(tag_names):
+        _emit_progress(5 + int(tag_i / max(len(tag_names), 1) * 80),
+                       f"Tag: {tag}")
         groups = tag_groups[tag]
         tag_poly_col = _get_or_create_child_collection(root_poly, f"mask_polygon_{tag}")
 
@@ -707,11 +716,14 @@ def _generate_from_pretriangulated(
     print(f"[generate_polygons] Pre-triangulated: {created} mesh objects created")
 
     # Merge all fragments per tag into one mesh
+    _emit_progress(88, "Merging tag meshes...")
     merged_tags = _merge_tag_polygon_meshes(root_poly)
     if merged_tags:
         print(f"[generate_polygons] Merged {merged_tags} tags")
 
+    _emit_progress(95, "Saving blend file...")
     bpy.ops.wm.save_as_mainfile(filepath=output_file)
+    _emit_progress(100, "Polygons complete")
     print(f"[generate_polygons] Saved: {output_file}")
 
 
@@ -794,11 +806,14 @@ def _generate_from_legacy(
     print(f"[generate_polygons] Legacy: curves={created_curve_objects}, meshes={created_mesh_objects}")
 
     # 3) Merge per-tag
+    _emit_progress(88, "Merging tag meshes...")
     merged_tags = _merge_tag_polygon_meshes(root_poly)
     if merged_tags:
         print(f"[generate_polygons] Merged {merged_tags} tags")
 
+    _emit_progress(95, "Saving blend file...")
     bpy.ops.wm.save_as_mainfile(filepath=output_file)
+    _emit_progress(100, "Polygons complete")
     print(f"[generate_polygons] Saved: {output_file}")
 
 

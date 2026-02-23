@@ -64,6 +64,35 @@ log = logging.getLogger("blender_automate")
 
 
 # ---------------------------------------------------------------------------
+# Progress reporting (structured lines for webtools dashboard)
+# ---------------------------------------------------------------------------
+def _emit_progress(pct, msg=""):
+    """Emit structured progress line for webtools dashboard."""
+    print(f"@@PROGRESS@@ {max(0,min(100,int(pct)))} {msg}".rstrip(), flush=True)
+
+
+# Step time-weights (seconds, from real profiling).
+# Step 4 (tile import) dominates; Step 5 (surface extraction) is second.
+_STEP_WEIGHT = {1: 2, 2: 2, 3: 5, 4: 120, 5: 40, 6: 2, 7: 3, 8: 20}
+_TOTAL_WEIGHT = sum(_STEP_WEIGHT.values())  # 194
+
+# Cumulative weight at the *start* of each step (0-based fraction).
+_STEP_START: dict[int, float] = {}
+_cum = 0.0
+for _sn in sorted(_STEP_WEIGHT):
+    _STEP_START[_sn] = _cum / _TOTAL_WEIGHT
+    _cum += _STEP_WEIGHT[_sn]
+del _cum, _sn
+
+
+def _step_pct(step: int, sub_frac: float = 0.0) -> int:
+    """Map step number + intra-step fraction (0-1) to global 0-100 pct."""
+    start = _STEP_START.get(step, 0)
+    weight = _STEP_WEIGHT.get(step, 10) / _TOTAL_WEIGHT
+    return int((start + weight * min(max(sub_frac, 0.0), 1.0)) * 100)
+
+
+# ---------------------------------------------------------------------------
 # Geo-conversion helpers
 # ---------------------------------------------------------------------------
 
@@ -766,12 +795,14 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Step 1: Open the input .blend file
     # ------------------------------------------------------------------
+    _emit_progress(_step_pct(1), "Opening blend file...")
     log.info("Step 1/8: Opening blend file: %s", blend_input)
     bpy.ops.wm.open_mainfile(filepath=blend_input)
 
     # ------------------------------------------------------------------
     # Step 2: Register all SAM3 operators
     # ------------------------------------------------------------------
+    _emit_progress(_step_pct(2), "Registering operators...")
     log.info("Step 2/8: Registering SAM3 operators...")
     import blender_helpers
     blender_helpers.register()
@@ -803,6 +834,7 @@ def main() -> None:
 
         if polygon_dir and os.path.isdir(polygon_dir):
             # New plan-based approach: pre-compute which tiles to load
+            _emit_progress(_step_pct(3), "Computing tile load plan...")
             log.info("Step 3/8: Computing tile load plan (base=%d, target=%d)...",
                      args.base_level, args.target_level)
             log.info("  polygon_dir: %s", polygon_dir)
@@ -851,19 +883,33 @@ def main() -> None:
                 _mf.write("\n".join(manifest_lines) + "\n")
             log.info("Tile load plan saved to %s", manifest_path)
 
-            # Load all tiles in one pass (emit Step 4 header so Dashboard
-            # tracks tile-loading progress under Step 4's weight band)
+            # Load all tiles in one pass
+            _emit_progress(_step_pct(4), "Loading tiles...")
             log.info("Step 4/8: Loading %d planned tiles...", total_tiles)
             # Emit "need to load" lines for Dashboard progress parser
             # (load_glb_tiles_by_dic_level_array doesn't print these;
             #  they're normally emitted by import_fullscene_with_ctile)
             for lv in sorted(plan.keys()):
                 print("need to load level {}:{} tiles".format(lv, len(plan[lv])))
+            _tiles_loaded_count = [0]
+
+            def _tile_progress_cb():
+                _tile_redraw()
+                _tiles_loaded_count[0] += 1
+                if total_tiles > 0 and _tiles_loaded_count[0] % 5 == 0:
+                    # Quadratic mapping: per-tile import time grows linearly
+                    # with scene size, so elapsed time T(i) ∝ i².
+                    # Use sub = (i/N)² so progress advances at constant speed.
+                    sub = (_tiles_loaded_count[0] / total_tiles) ** 2
+                    _emit_progress(_step_pct(4, sub),
+                                   f"Tiles {_tiles_loaded_count[0]}/{total_tiles}")
+
             _t4 = _time.time()
-            load_glb_tiles_by_dic_level_array(glb_dir, plan, on_tile_loaded=_tile_redraw)
+            load_glb_tiles_by_dic_level_array(glb_dir, plan, on_tile_loaded=_tile_progress_cb)
             log.info("All tiles loaded in %.1fs.", _time.time() - _t4)
         else:
             # Fallback: no polygon dir → load all base tiles (old Step 3 only)
+            _emit_progress(_step_pct(3), "Loading base tiles...")
             log.info("Step 3/8: Loading base tiles (level=%d, no polygon plan)...",
                      args.base_level)
             from sam3_actions.c_tiles import CTile
@@ -876,6 +922,7 @@ def main() -> None:
             log.info("Base tiles loaded in %.1fs.", _time.time() - _t3)
 
             # Old Step 4: iterative refinement (fallback when no polygon dir)
+            _emit_progress(_step_pct(4), "Refining tiles by mask...")
             log.info("Step 4/8: Refining tiles by mask to level %d...", args.target_level)
             from sam3_actions.load_base_tiles import refine_by_mask_sync
 
@@ -932,7 +979,14 @@ def main() -> None:
         # Step 5: Extract collision surfaces
         # --------------------------------------------------------------
         if not args.skip_surfaces:
+            _emit_progress(_step_pct(5), "Extracting collision surfaces...")
             log.info("Step 5/8: Extracting collision surfaces...")
+
+            # Set sub-progress ranges for sub-modules
+            import sam3_actions.terrain_mesh_extractor as _tme
+            _tme.PROGRESS_RANGE = (_step_pct(5, 0.0), _step_pct(5, 0.45))
+            import sam3_actions.boolean_mesh_generator as _bmg
+            _bmg.PROGRESS_RANGE = (_step_pct(5, 0.5), _step_pct(5, 1.0))
 
             log.info("  Step 5a: Terrain extraction (road + kerb)...")
             result_a = bpy.ops.sam3.extract_terrain_surfaces()
@@ -946,6 +1000,7 @@ def main() -> None:
             result_b = bpy.ops.sam3.generate_boolean_surfaces()
             log.info("  Boolean surfaces result: %s", result_b)
         else:
+            _emit_progress(_step_pct(5), "Skipped surfaces")
             log.info("Step 5/8: Skipped (--skip-surfaces)")
         _force_redraw()
 
@@ -953,6 +1008,7 @@ def main() -> None:
         # Step 6: Import virtual walls (optional)
         # --------------------------------------------------------------
         if not args.skip_walls and walls_json and os.path.isfile(walls_json):
+            _emit_progress(_step_pct(6), "Importing walls...")
             log.info("Step 6/8: Importing walls from %s...", walls_json)
             if geo_meta is not None and tf_info is not None:
                 wall_bottom = terrain_min_y
@@ -976,6 +1032,7 @@ def main() -> None:
         # Step 7: Import game objects (optional)
         # --------------------------------------------------------------
         if not args.skip_game_objects and go_json and os.path.isfile(go_json):
+            _emit_progress(_step_pct(7), "Importing game objects...")
             log.info("Step 7/8: Importing game objects from %s...", go_json)
             if geo_meta is not None and tf_info is not None:
                 created = _import_game_objects_geo(go_json, geo_meta, tf_info)
@@ -1003,20 +1060,26 @@ def main() -> None:
         # --------------------------------------------------------------
         # Step 8: Texture processing + final save
         # --------------------------------------------------------------
+        _emit_progress(_step_pct(8), "Processing textures and saving...")
         log.info("Step 8/8: Processing textures and saving...")
 
         os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
+        _emit_progress(_step_pct(8, 0.3), "Saving blend file...")
         bpy.ops.wm.save_as_mainfile(filepath=output)
 
         if not args.skip_textures:
+            _emit_progress(_step_pct(8, 0.5), "Unpacking textures...")
             bpy.ops.sam3.unpack_textures()
+            _emit_progress(_step_pct(8, 0.7), "Converting textures...")
             bpy.ops.sam3.convert_textures_png()
+            _emit_progress(_step_pct(8, 0.85), "Converting materials...")
             bpy.ops.sam3.convert_materials_bsdf()
         else:
             log.info("Texture processing skipped (--skip-textures)")
 
         # Final save
         bpy.ops.wm.save_as_mainfile(filepath=output)
+        _emit_progress(100, "Done")
         log.info("Done! Output saved to: %s", output)
 
     # ------------------------------------------------------------------
