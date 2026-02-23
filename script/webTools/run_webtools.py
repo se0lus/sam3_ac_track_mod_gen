@@ -2501,6 +2501,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
         "manual_walls":       "06a_manual_walls",
         "manual_game_objects": "07a_manual_game_objects",
         "manual_blender":     "09a_manual_blender",
+        "camera_editor":      "11a_manual_track_info",
     }
 
     def _serve_manual_stages(self):
@@ -2627,6 +2628,10 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 from stages.s09a_manual_blender import run as run_s09a
                 run_s09a(pc)
                 print("[pipeline] Re-initialised manual_blender from stage 9")
+            elif sid == "camera_editor":
+                from stages.s11a_manual_track_info import run as run_s11a
+                run_s11a(pc)
+                print("[pipeline] Re-initialised camera_editor from stage 11")
         except Exception as e:
             print(f"[pipeline] WARNING: Failed to re-init {sid}: {e}")
 
