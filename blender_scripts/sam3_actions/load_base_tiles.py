@@ -271,15 +271,24 @@ def import_fullscene_with_ctile(root:CTile, path, min_level = 0, select_file_lis
     load_glb_tiles_by_dic_level_array(path, tiles_need_load, on_tile_loaded=on_tile_loaded)
 
 def load_glb_tiles_by_dic_level_array(path, tiles_need_load, on_tile_loaded=None):
+    # GLB-level dedup: build set of GLB names already in scene (cross-call dedup).
+    # Each GLB corresponds to one geographic tile; objects from the same GLB share
+    # a name prefix like "BlockXXX_L16_11.glb" (with possible ".Node_0" suffixes).
+    loaded_glb_prefixes: set[str] = set()
+    for obj_name in bpy.data.objects.keys():
+        glb_idx = obj_name.find(".glb")
+        if glb_idx >= 0:
+            loaded_glb_prefixes.add(obj_name[:glb_idx + 4])
+
     # make load order stable (e.g. 0 -> 17)
     for current_level in sorted(tiles_need_load.keys()):
-        
+
         #log files from new
-        objects_imported = [] 
-        
+        objects_imported = []
+
         #get files in the same level
         for tile in tiles_need_load[current_level]:
-            
+
             # Convert tileset content (.b3dm) to glb filename.
             # NOTE: tile.content may contain subfolders; keep it as relative path.
             content = tile.content or ""
@@ -318,30 +327,31 @@ def load_glb_tiles_by_dic_level_array(path, tiles_need_load, on_tile_loaded=None
                 if not found:
                     print("WARNING: glb not found, skip:", filepath)
                     continue
-        
-            #test
-            #current_level = 16
-            #file_names = [{"name":"Block_L16_3.glb"},{"name":"Block_L16_4.glb"}]
-        
+
+            # GLB-level dedup: skip if this GLB was already imported
+            if name in loaded_glb_prefixes:
+                print(f"  [GLB dedup] '{name}' already in scene, skip")
+                continue
+            loaded_glb_prefixes.add(name)
+
             #import gltf
             orig_objects = bpy.data.objects.keys()
             bpy.ops.import_scene.gltf(filepath=filepath, filter_glob='*.glb;*.gltf', loglevel=0, import_pack_images=True)
             #find new objects imported
             now_objects = bpy.data.objects.keys();
             add_objects = set(now_objects) - set(orig_objects)
-            
+
             #rename the new object to file name
             for object_key in add_objects:
                 object = bpy.data.objects[object_key]
-                
+
                 if object_key.find("Node") < 0 or name in objects_imported:
-                    object.name = "{0}.{1}".format(name, object_key)    
+                    object.name = "{0}.{1}".format(name, object_key)
                     objects_imported.append(object.name)
                     continue
-                
+
                 object.name = name
                 objects_imported.append(name)
-                #node_name_map[object_key] = name
 
             # Notify caller after each tile (e.g. to redraw viewport)
             if on_tile_loaded is not None:

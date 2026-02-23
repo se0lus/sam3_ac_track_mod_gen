@@ -370,8 +370,9 @@ import time as _progress_time  # avoid name clash
 
 # Stage 9 step time-weights (seconds, from real profiling).
 # Keys are step numbers 1-8.
-_S9_STEP_WEIGHT = {1: 2, 2: 5, 3: 30, 4: 90, 5: 20, 6: 2, 7: 3, 8: 15}
-_S9_TOTAL_WEIGHT = sum(_S9_STEP_WEIGHT.values())  # 167
+# Step 4 (tile import) dominates; Step 5 (surface extraction) is second.
+_S9_STEP_WEIGHT = {1: 2, 2: 2, 3: 5, 4: 120, 5: 40, 6: 2, 7: 3, 8: 20}
+_S9_TOTAL_WEIGHT = sum(_S9_STEP_WEIGHT.values())  # 194
 
 # Cumulative weight at the *start* of each step (0-based fraction).
 _S9_STEP_START: dict[int, float] = {}
@@ -400,6 +401,8 @@ _RE_REFINE = re.compile(r"\[(\d+)/(\d+)\] refine.*?(\d+)s remaining")
 _RE_REFINE_NO_ETA = re.compile(r"\[(\d+)/(\d+)\] refine")
 _RE_PROJECTION = re.compile(r"Projection:\s*(\d+)%")
 _RE_B3DM_PROGRESS = re.compile(r"Converting (\d+)/(\d+)")
+_RE_TERRAIN_SCAN = re.compile(r"Terrain scan:\s*(\d+)/(\d+)\s*objects")
+_RE_BOOL_TAG = re.compile(r"\[(\d+)/(\d+)\].*=====\s*(\w+)\s*=====")
 _RE_CLIP_PROGRESS = re.compile(r"Clipping (\d+)/(\d+)")
 _RE_CLIP_FOUND = re.compile(r"Found (\d+) clips(?:, (\d+) tags)?")
 _RE_S4_CLIP = re.compile(r"\[(\w+)\] Clip (\d+)/(\d+)")
@@ -542,7 +545,7 @@ def _parse_s9(line: str, state: dict) -> dict | None:
             total = state.get("s9_tile_total", 1)
             sub = state["s9_tile_loaded"] / max(total, 1)
             frac = step_start + step_w * min(sub, 1.0)
-            if state["s9_tile_loaded"] % 20 == 0 or sub >= 0.99:
+            if state["s9_tile_loaded"] % 5 == 0 or sub >= 0.99:
                 return {"pct": round(frac * 100), "eta": _eta_from_tile_rate(state)}
             return None
 
@@ -574,16 +577,59 @@ def _parse_s9(line: str, state: dict) -> dict | None:
             total = state.get("s9_tile_total", 1)
             sub = state["s9_tile_loaded"] / max(total, 1)
             frac = step_start + step_w * min(sub, 1.0)
-            if state["s9_tile_loaded"] % 20 == 0 or sub >= 0.99:
+            if state["s9_tile_loaded"] % 5 == 0 or sub >= 0.99:
                 return {"pct": round(frac * 100), "eta": _eta_from_tile_rate(state)}
             return None
 
-    # Step 5: projection percentage
+    # Step 5: surface extraction (5a terrain ~50%, 5b boolean ~50%)
     if step == 5:
+        # 5a: Terrain extraction — "Terrain scan: X/Y objects"
+        m = _RE_TERRAIN_SCAN.search(line)
+        if m:
+            cur, total = int(m.group(1)), int(m.group(2))
+            sub = cur / max(total, 1) * 0.5  # terrain = first 50% of step 5
+            frac = step_start + step_w * sub
+            return {"pct": round(frac * 100), "eta": _eta_from_pct(state, frac)}
+
+        # 5b: Boolean surfaces — tag header [N/M] ===== tag =====
+        m = _RE_BOOL_TAG.search(line)
+        if m:
+            tag_idx, tag_count = int(m.group(1)), int(m.group(2))
+            state["s9_s5b_tag_idx"] = tag_idx
+            state["s9_s5b_tag_count"] = tag_count
+            # 50%–100% of step 5, divided among tags
+            tag_start = 0.5 + 0.5 * (tag_idx - 1) / max(tag_count, 1)
+            frac = step_start + step_w * tag_start
+            return {"pct": round(frac * 100), "eta": _eta_from_pct(state, frac)}
+
+        # 5b: Projection: X% within current tag
         m = _RE_PROJECTION.search(line)
         if m:
-            sub = int(m.group(1)) / 100
+            tag_idx = state.get("s9_s5b_tag_idx", 1)
+            tag_count = state.get("s9_s5b_tag_count", 1) or 1
+            proj_pct = int(m.group(1)) / 100
+            tag_start = 0.5 + 0.5 * (tag_idx - 1) / tag_count
+            tag_w = 0.5 / tag_count
+            sub = tag_start + tag_w * proj_pct
             frac = step_start + step_w * sub
+            return {"pct": round(frac * 100), "eta": _eta_from_pct(state, frac)}
+
+    # Steps 6, 7: detect completion milestones
+    if step in (6, 7):
+        if "Created" in line or "Projected" in line or "result" in line:
+            frac = step_start + step_w * 0.9
+            return {"pct": round(frac * 100), "eta": _eta_from_pct(state, frac)}
+
+    # Step 8: save + texture milestones
+    if step == 8:
+        if "save_as_mainfile" in line or "Saving:" in line:
+            frac = step_start + step_w * 0.3
+            return {"pct": round(frac * 100), "eta": _eta_from_pct(state, frac)}
+        if "unpack_textures" in line or "convert_textures" in line:
+            frac = step_start + step_w * 0.6
+            return {"pct": round(frac * 100), "eta": _eta_from_pct(state, frac)}
+        if "convert_materials" in line:
+            frac = step_start + step_w * 0.8
             return {"pct": round(frac * 100), "eta": _eta_from_pct(state, frac)}
 
     return None

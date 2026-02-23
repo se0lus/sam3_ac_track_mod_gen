@@ -27,6 +27,7 @@ from tile_plan import (
     extract_polygon_aabbs_for_tags,
     load_tileset_tree,
     tile_aabb_xz,
+    validate_plan_no_ancestor_overlap,
 )
 from c_tiles import CTile
 
@@ -441,6 +442,135 @@ class TestComputeTileLoadPlan:
         assert 17 not in plan
         assert 18 not in plan
 
+    def test_redirect_nodes_no_ancestor_overlap(self):
+        """Non-mesh redirect nodes between mesh parent and mesh children.
+
+        Tree:
+            root (virtual)
+            └── A (L15, mesh, overlaps polygon)
+                ├── redirect_1 (no mesh, canRefine)
+                │   └── D (L19, mesh, leaf)
+                └── redirect_2 (no mesh, canRefine)
+                    └── E (L19, mesh, leaf)
+
+        Before fix: A (L15) was added to plan alongside D,E (L19) because
+        redirect nodes returned False from _walk, making A think no
+        children loaded.
+        After fix: only D,E should appear in the plan.
+        """
+        root = CTile()
+        root.canRefine = True
+
+        a = CTile()
+        a.hasMesh = True
+        a.meshLevel = 15
+        a.canRefine = True
+        a.content = "A_L15_0.b3dm"
+        a.boxBoundingVolume = [0, 0, 0, 50, 0, 0, 0, 50, 0, 0, 0, 0]
+        a.parent = root
+        root.children.append(a)
+
+        # redirect_1: no mesh, just a container (simulates JSON redirect)
+        r1 = CTile()
+        r1.hasMesh = False
+        r1.canRefine = True
+        r1.parent = a
+        a.children.append(r1)
+
+        d = CTile()
+        d.hasMesh = True
+        d.meshLevel = 19
+        d.canRefine = False
+        d.content = "D_L19_0.b3dm"
+        d.boxBoundingVolume = [-25, -25, 0, 25, 0, 0, 0, 25, 0, 0, 0, 0]
+        d.parent = r1
+        r1.children.append(d)
+
+        # redirect_2: another non-mesh container
+        r2 = CTile()
+        r2.hasMesh = False
+        r2.canRefine = True
+        r2.parent = a
+        a.children.append(r2)
+
+        e = CTile()
+        e.hasMesh = True
+        e.meshLevel = 19
+        e.canRefine = False
+        e.content = "E_L19_1.b3dm"
+        e.boxBoundingVolume = [25, 25, 0, 25, 0, 0, 0, 25, 0, 0, 0, 0]
+        e.parent = r2
+        r2.children.append(e)
+
+        poly_aabbs = [(-100.0, 100.0, -100.0, 100.0)]
+        plan = compute_tile_load_plan(root, poly_aabbs,
+                                       base_level=17, target_level=19,
+                                       axis_map="XY")
+
+        # Only D and E should be in the plan, NOT A
+        assert 19 in plan
+        assert len(plan[19]) == 2
+        assert 15 not in plan, "L15 parent should NOT be in plan (replaced by children via redirect)"
+
+        # Validation check
+        errors = validate_plan_no_ancestor_overlap(plan)
+        assert errors == [], f"Plan has ancestor overlap: {errors}"
+
+    def test_nested_redirects_no_ancestor_overlap(self):
+        """Multiple layers of non-mesh redirects between mesh parent and children.
+
+        Tree:
+            root (virtual)
+            └── A (L15, mesh)
+                └── redirect_1 (no mesh)
+                    └── redirect_2 (no mesh)
+                        └── D (L19, mesh, leaf)
+        """
+        root = CTile()
+        root.canRefine = True
+
+        a = CTile()
+        a.hasMesh = True
+        a.meshLevel = 15
+        a.canRefine = True
+        a.content = "A_L15_0.b3dm"
+        a.boxBoundingVolume = [0, 0, 0, 50, 0, 0, 0, 50, 0, 0, 0, 0]
+        a.parent = root
+        root.children.append(a)
+
+        r1 = CTile()
+        r1.hasMesh = False
+        r1.canRefine = True
+        r1.parent = a
+        a.children.append(r1)
+
+        r2 = CTile()
+        r2.hasMesh = False
+        r2.canRefine = True
+        r2.parent = r1
+        r1.children.append(r2)
+
+        d = CTile()
+        d.hasMesh = True
+        d.meshLevel = 19
+        d.canRefine = False
+        d.content = "D_L19_0.b3dm"
+        d.boxBoundingVolume = [0, 0, 0, 25, 0, 0, 0, 25, 0, 0, 0, 0]
+        d.parent = r2
+        r2.children.append(d)
+
+        poly_aabbs = [(-100.0, 100.0, -100.0, 100.0)]
+        plan = compute_tile_load_plan(root, poly_aabbs,
+                                       base_level=17, target_level=19,
+                                       axis_map="XY")
+
+        assert 19 in plan
+        assert len(plan[19]) == 1
+        assert 15 not in plan, "L15 should NOT be in plan"
+
+        errors = validate_plan_no_ancestor_overlap(plan)
+        assert errors == [], f"Plan has ancestor overlap: {errors}"
+
     def test_tile_without_children_stops(self):
         """Tile that can't refine → loads at its own level."""
         root = CTile()
@@ -553,6 +683,26 @@ class TestWithRealData:
         # Selective should have more tiles than base-only (due to refining road areas)
         assert total_selective >= total_base
 
+    def test_plan_no_ancestor_overlap(self):
+        """Verify no tile in the plan is an ancestor of another tile."""
+        if not self._has_real_data():
+            pytest.skip("Real data not available")
+
+        plan = compute_plan_from_config(
+            tiles_dir=self._tiles_dir,
+            polygon_dir=self._polygon_dir,
+            tags=["road"],
+            base_level=17,
+            target_level=19,
+            padding_m=0.5,
+        )
+
+        errors = validate_plan_no_ancestor_overlap(plan)
+        if errors:
+            for e in errors[:10]:
+                print(f"  ERROR: {e}")
+        assert errors == [], f"Plan has {len(errors)} ancestor overlap(s)"
+
     def test_plan_selective_vs_full_refinement(self):
         """Selective plan should have fewer tiles than refining everything to target."""
         if not self._has_real_data():
@@ -579,6 +729,63 @@ class TestWithRealData:
         assert total_sel <= total_full, (
             f"Selective ({total_sel}) should not exceed full ({total_full})"
         )
+
+
+class TestWithShajingData:
+    """Use actual tileset data from test_images_shajing/b3dm."""
+
+    _tiles_dir = os.path.join(_project_root, "test_images_shajing", "b3dm")
+
+    def test_load_tree_and_validate_plan(self):
+        """Load shajing tileset, compute plan, verify no ancestor overlap."""
+        if not os.path.isdir(self._tiles_dir):
+            pytest.skip("test_images_shajing/b3dm not available")
+
+        root = load_tileset_tree(self._tiles_dir)
+        assert len(root.children) > 0, "Expected children in tileset tree"
+
+        # Full refinement plan (all areas refined to L19)
+        huge_aabb = [(-100000000.0, 100000000.0, -100000000.0, 100000000.0)]
+        plan = compute_tile_load_plan(root, huge_aabb,
+                                       base_level=14, target_level=19,
+                                       axis_map="XY")
+
+        total = sum(len(v) for v in plan.values())
+        print(f"\n=== Shajing Plan (L14→L19, full refine) ===")
+        for lv in sorted(plan.keys()):
+            print(f"  Level {lv}: {len(plan[lv])} tiles")
+        print(f"  Total: {total} tiles")
+
+        # Must have tiles
+        assert total > 0
+
+        # Critical: no ancestor overlap
+        errors = validate_plan_no_ancestor_overlap(plan)
+        if errors:
+            print(f"\n  OVERLAP ERRORS ({len(errors)}):")
+            for e in errors[:20]:
+                print(f"    {e}")
+        assert errors == [], f"Plan has {len(errors)} ancestor overlap(s)"
+
+    def test_base_only_no_ancestor_overlap(self):
+        """Base level load (no refinement) should have no overlaps."""
+        if not os.path.isdir(self._tiles_dir):
+            pytest.skip("test_images_shajing/b3dm not available")
+
+        root = load_tileset_tree(self._tiles_dir)
+        # No polygons → all tiles load at base_level
+        plan = compute_tile_load_plan(root, [],
+                                       base_level=17, target_level=19,
+                                       axis_map="XY")
+
+        total = sum(len(v) for v in plan.values())
+        print(f"\n=== Shajing Plan (L17 base, no refine) ===")
+        for lv in sorted(plan.keys()):
+            print(f"  Level {lv}: {len(plan[lv])} tiles")
+        print(f"  Total: {total} tiles")
+
+        errors = validate_plan_no_ancestor_overlap(plan)
+        assert errors == [], f"Plan has {len(errors)} ancestor overlap(s)"
 
 
 if __name__ == "__main__":
