@@ -679,8 +679,9 @@ def step4_batch_organise(max_batch_mb: int) -> List[str]:
       1. Road collision (track_core)
       2. Game objects — per-layout (``go_{LayoutName}``) or single (``game_objects``)
       3. Other collision (kerb, grass, sand, road2, walls)
-      4. Fine terrain tiles (all L{N} except the lowest level)
-      5. Base terrain tiles (lowest L{N} level)
+      4. Fine terrain tiles — label ``L{min}-L{max}`` (e.g. ``L18-L19``)
+      5. Base terrain tiles — label ``L{N}`` (e.g. ``L17``)
+      6. Custom user objects — anything not collected above (label ``custom``)
     """
     log.info("Step 4/6: Batch organisation (max %d MB per batch)", max_batch_mb)
 
@@ -742,7 +743,8 @@ def step4_batch_organise(max_batch_mb: int) -> List[str]:
         if col:
             g3.extend(o for o in col.objects if o.type == "MESH")
     if g3:
-        groups.append(("terrain_fine", g3))
+        fine_label = f"L{min(fine_levels)}-L{max(fine_levels)}" if len(fine_levels) > 1 else f"L{fine_levels[0]}"
+        groups.append((fine_label, g3))
 
     # Group 4: Base terrain tiles
     if base_level is not None:
@@ -751,7 +753,33 @@ def step4_batch_organise(max_batch_mb: int) -> List[str]:
         if base_col:
             g4.extend(o for o in base_col.objects if o.type == "MESH")
         if g4:
-            groups.append(("terrain_base", g4))
+            groups.append((f"L{base_level}", g4))
+
+    # Group 5: Custom user objects (not already assigned to any group)
+    assigned_objects: Set[str] = set()
+    for _, objs in groups:
+        for o in objs:
+            assigned_objects.add(o.name)
+
+    custom_objs: List[bpy.types.Object] = []
+    for obj in bpy.data.objects:
+        if obj.name in assigned_objects:
+            continue
+        if obj.type not in ("MESH", "EMPTY"):
+            continue
+        cols = _get_object_collections(obj)
+        skip = False
+        for c in cols:
+            if c.name in _MASK_COLLECTIONS or c.name.startswith("export_batch"):
+                skip = True
+                break
+        if skip:
+            continue
+        custom_objs.append(obj)
+
+    if custom_objs:
+        groups.append(("custom", custom_objs))
+        log.info("  Custom user objects: %d", len(custom_objs))
 
     # Track which objects are assigned to batches
     batched_objects: Set[str] = set()
@@ -859,7 +887,11 @@ def step5_final_cleanup(batch_names: List[str]) -> None:
 # ===================================================================
 
 def _classify_batch(batch_name: str) -> str:
-    """Classify batch type: 'collision', 'game_objects', or 'terrain'."""
+    """Classify batch type: 'collision', 'game_objects', or 'terrain'.
+
+    Labels like ``L17``, ``L18-L19``, ``custom``, ``terrain_fine``,
+    ``terrain_base`` all fall through to the ``"terrain"`` default.
+    """
     suffix = batch_name.split("_", 3)[-1] if "_" in batch_name else batch_name
     if "collision" in suffix or suffix == "track_core":
         return "collision"
