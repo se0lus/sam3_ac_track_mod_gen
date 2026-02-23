@@ -15,6 +15,11 @@ import sys
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from dotenv import load_dotenv
+
+# 加载项目根目录下的 .env 文件（API Key 等敏感信息）
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
+
 logger = logging.getLogger("sam3_pipeline.config")
 
 
@@ -65,6 +70,31 @@ MANUAL_STAGE_PAIRS: Dict[str, str] = {
     "ai_game_objects": "manual_game_objects",
     "blender_automate": "manual_blender",  # 09 → 09a
 }
+
+# ---------------------------------------------------------------------------
+# Manual stage module mapping (for auto-populate)
+# ---------------------------------------------------------------------------
+_MANUAL_STAGE_MODULES: Dict[str, str] = {
+    "track_layouts": "stages.s02a_track_layouts",
+    "manual_surface_masks": "stages.s05a_manual_surface_masks",
+    "manual_walls": "stages.s06a_manual_walls",
+    "manual_game_objects": "stages.s07a_manual_game_objects",
+    "manual_blender": "stages.s09a_manual_blender",
+}
+
+
+def _populate_manual_stage(manual_name: str, config: "PipelineConfig") -> None:
+    """Run the manual stage's init module to populate from its base stage."""
+    mod_name = _MANUAL_STAGE_MODULES.get(manual_name)
+    if not mod_name:
+        return
+    try:
+        import importlib
+        mod = importlib.import_module(mod_name)
+        mod.run(config)
+        logger.info("Auto-populated %s from base stage", manual_name)
+    except Exception as e:
+        logger.warning("Failed to populate %s: %s", manual_name, e)
 
 
 # ---------------------------------------------------------------------------
@@ -194,7 +224,7 @@ class PipelineConfig:
     max_workers: int = 4  # Thread pool size for parallel stages (1, 3)
 
     # --- AI ---
-    gemini_api_key: str = "***REDACTED_GEMINI_KEY***"
+    gemini_api_key: str = os.environ.get("GEMINI_API_KEY", "")
     gemini_model: str = "gemini-2.5-pro"
 
     # --- Inpainting (center hole repair) ---
@@ -361,6 +391,14 @@ class PipelineConfig:
             # Determine target
             manual_enabled = manual_stages.get(manual_name, False)
             manual_has_data = os.path.isdir(manual_dir) and bool(os.listdir(manual_dir))
+
+            # Auto-populate empty manual stage from base when enabled
+            if manual_enabled and not manual_has_data:
+                auto_has_data = os.path.isdir(auto_dir) and bool(os.listdir(auto_dir))
+                if auto_has_data:
+                    _populate_manual_stage(manual_name, self)
+                    manual_has_data = os.path.isdir(manual_dir) and bool(os.listdir(manual_dir))
+
             use_manual = manual_enabled and manual_has_data
 
             target = manual_dir if use_manual else auto_dir

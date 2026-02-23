@@ -15,11 +15,17 @@ import webbrowser
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
+from dotenv import load_dotenv
+
 
 def repo_root_from_here() -> str:
     # script/webTools -> script -> repo root
     here = os.path.dirname(os.path.abspath(__file__))
     return os.path.abspath(os.path.join(here, "..", ".."))
+
+
+# 加载项目根目录 .env
+load_dotenv(os.path.join(repo_root_from_here(), ".env"))
 
 
 def find_free_port(host: str, start_port: int, max_tries: int) -> int:
@@ -393,9 +399,10 @@ _RE_STEP = re.compile(r"Step (\d+)/(\d+)")
 _RE_REFINE = re.compile(r"\[(\d+)/(\d+)\] refine.*?(\d+)s remaining")
 _RE_REFINE_NO_ETA = re.compile(r"\[(\d+)/(\d+)\] refine")
 _RE_PROJECTION = re.compile(r"Projection:\s*(\d+)%")
+_RE_B3DM_PROGRESS = re.compile(r"Converting (\d+)/(\d+)")
 _RE_CLIP_PROGRESS = re.compile(r"Clipping (\d+)/(\d+)")
-_RE_CLIP_FOUND = re.compile(r"Found (\d+) clips")
-_RE_CLIP_TAG = re.compile(r"\[(\w+)\] (\d+)/(\d+) clips have no masks")
+_RE_CLIP_FOUND = re.compile(r"Found (\d+) clips(?:, (\d+) tags)?")
+_RE_S4_CLIP = re.compile(r"\[(\w+)\] Clip (\d+)/(\d+)")
 _RE_VLM_TYPE = re.compile(r"VLM \[(\w+)\] attempt")
 _RE_TILE_IMPORT = re.compile(r"import level \d+,")
 _RE_TILE_NEED = re.compile(r"need to load level \d+:(\d+) tiles")
@@ -457,6 +464,15 @@ def _parse_progress(line: str, state: dict) -> dict | None:
     Returns ``{"pct": 0-100, "eta": "~2m30s"}`` or None.
     """
     sid = state.get("_stage_id", "")
+
+    # ── Stage 1: B3DM -> GLB conversion ──────────────────────────────
+    if sid == "b3dm_convert":
+        m = _RE_B3DM_PROGRESS.search(line)
+        if m:
+            cur, total = int(m.group(1)), int(m.group(2))
+            frac = cur / max(total, 1)
+            return {"pct": round(frac * 100), "eta": _eta_from_pct(state, frac)}
+        return None
 
     # ── Stage 9: Blender automation (time-weighted steps) ─────────────
     if sid == "blender_automate":
@@ -594,23 +610,36 @@ def _parse_s2(line: str, state: dict) -> dict | None:
 
 
 def _parse_s4(line: str, state: dict) -> dict | None:
-    """Parse Stage 4 (per-clip SAM3) progress."""
+    """Parse Stage 4 (per-clip SAM3) progress.
+
+    Log lines matched:
+    - ``Found 38 clips, 4 tags``  → 1%
+    - ``[road] Clip 3/38``        → per-clip progress (2%-92%)
+    - ``Fallback complete``       → 95%
+    - ``Per-clip segmentation complete`` → 100%
+    """
     m = _RE_CLIP_FOUND.search(line)
     if m:
         state["s4_total_clips"] = int(m.group(1))
-        return {"pct": 2, "eta": ""}
+        if m.group(2):
+            state["s4_total_tags"] = int(m.group(2))
+        state["s4_tags_seen"] = []
+        return {"pct": 1, "eta": ""}
 
-    m = _RE_CLIP_TAG.search(line)
+    m = _RE_S4_CLIP.search(line)
     if m:
-        # tag processing indicator; rough milestone
-        state["s4_tags_done"] = state.get("s4_tags_done", 0) + 1
-        frac = min(state["s4_tags_done"] * 0.18, 0.90)
+        tag, cur, total = m.group(1), int(m.group(2)), int(m.group(3))
+        tags_seen = state.setdefault("s4_tags_seen", [])
+        if tag not in tags_seen:
+            tags_seen.append(tag)
+        tag_idx = tags_seen.index(tag)
+        total_tags = state.get("s4_total_tags", max(4, len(tags_seen)))
+        overall = (tag_idx * total + cur) / (total_tags * total)
+        frac = 0.02 + overall * 0.90  # 2% – 92%
         return {"pct": round(frac * 100), "eta": _eta_from_pct(state, frac)}
 
     if "Fallback complete" in line:
-        state["s4_tags_done"] = state.get("s4_tags_done", 0) + 1
-        frac = min(state["s4_tags_done"] * 0.18 + 0.05, 0.95)
-        return {"pct": round(frac * 100), "eta": _eta_from_pct(state, frac)}
+        return {"pct": 95, "eta": _eta_from_pct(state, 0.95)}
 
     if "Per-clip segmentation complete" in line:
         return {"pct": 100, "eta": ""}
@@ -1067,7 +1096,7 @@ def _load_webtools_config():
         "blender_exe": r"C:\Program Files\Blender Foundation\Blender 5.0\blender.exe",
         "track_direction": "clockwise",
         "inpaint_model": "gemini-2.5-flash-image",
-        "gemini_api_key": "***REDACTED_GEMINI_KEY***",
+        "gemini_api_key": os.environ.get("GEMINI_API_KEY", ""),
     }
 
 
@@ -2393,6 +2422,13 @@ class ApiHandler(SimpleHTTPRequestHandler):
             if enabled:
                 os.makedirs(full, exist_ok=True)
 
+            # Auto-populate empty manual stage from base on first enable
+            if enabled and not reset:
+                if not os.listdir(full):  # directory is empty
+                    _pipeline_runner._broadcast("stage_start", {"stage": sid})
+                    self._reinit_manual_stage(sid, cfg)
+                    _pipeline_runner._broadcast("stage_complete", {"stage": sid})
+
             # After reset, re-initialise from upstream stage data
             if reset:
                 self._reinit_manual_stage(sid, cfg)
@@ -2437,18 +2473,9 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 run_s02a(pc)
                 print("[pipeline] Re-initialised track_layouts from stage 2")
             elif sid == "manual_walls":
-                # Create 06a dir and copy from 06
-                src = pc.stage_dir("ai_walls")
-                dst = pc.stage_dir("manual_walls")
-                if os.path.isdir(src):
-                    os.makedirs(dst, exist_ok=True)
-                    for f in ["walls.json", "geo_metadata.json"]:
-                        s = os.path.join(src, f)
-                        d = os.path.join(dst, f)
-                        if os.path.isfile(s) and not os.path.isfile(d):
-                            import shutil as _sh
-                            _sh.copy2(s, d)
-                    print("[pipeline] Re-initialised manual_walls from stage 6")
+                from stages.s06a_manual_walls import run as run_s06a
+                run_s06a(pc)
+                print("[pipeline] Re-initialised manual_walls from stage 6")
             elif sid == "manual_game_objects":
                 from stages.s07a_manual_game_objects import run as run_s07a
                 run_s07a(pc)

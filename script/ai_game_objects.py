@@ -710,7 +710,7 @@ def generate_all_vlm_sequential(
     from gemini_client import GeminiClient
 
     if api_key is None:
-        api_key = "***REDACTED_GEMINI_KEY***"
+        api_key = os.environ.get("GEMINI_API_KEY", "")
 
     client = GeminiClient(api_key=api_key, model_name=model_name)
 
@@ -812,7 +812,7 @@ def generate_single_type_vlm(
     from gemini_client import GeminiClient
 
     if api_key is None:
-        api_key = "***REDACTED_GEMINI_KEY***"
+        api_key = os.environ.get("GEMINI_API_KEY", "")
 
     client = GeminiClient(api_key=api_key, model_name=model_name)
 
@@ -927,7 +927,7 @@ def generate_vlm_objects(
     from gemini_client import GeminiClient
 
     if api_key is None:
-        api_key = "***REDACTED_GEMINI_KEY***"
+        api_key = os.environ.get("GEMINI_API_KEY", "")
 
     client = GeminiClient(api_key=api_key, model_name=model_name)
 

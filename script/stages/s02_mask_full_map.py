@@ -75,7 +75,7 @@ def _mask_full_map(src_img_file: str, output_dir: str, config: PipelineConfig | 
 
     os.makedirs(output_dir, exist_ok=True)
 
-    sam3_root = os.path.join(os.path.dirname(sam3.__file__), "..")
+    sam3_pkg_dir = os.path.dirname(sam3.__file__)  # sam3/sam3/
 
     geo_image = GeoSam3Image(src_img_file)
     if not geo_image.has_model_scale_image():
@@ -120,8 +120,8 @@ def _mask_full_map(src_img_file: str, output_dir: str, config: PipelineConfig | 
     inference_state = None
 
     if need_inference:
-        bpe_path = f"{sam3_root}/assets/bpe_simple_vocab_16e6.txt.gz"
-        checkpoint_path = f"{sam3_root}/../model/sam3.pt"
+        bpe_path = os.path.join(sam3_pkg_dir, "assets", "bpe_simple_vocab_16e6.txt.gz")
+        checkpoint_path = os.path.join(sam3_pkg_dir, "..", "..", "sam3_model", "sam3.pt")
         model = build_sam3_image_model(bpe_path=bpe_path, checkpoint_path=checkpoint_path, load_from_HF=False)
 
         image = geo_image.model_scale_image
@@ -199,9 +199,9 @@ def _generate_fullmap_tag_masks(
     from sam3 import build_sam3_image_model
     from sam3.model.sam3_image_processor import Sam3Processor
 
-    sam3_root = os.path.join(os.path.dirname(sam3.__file__), "..")
-    bpe_path = f"{sam3_root}/assets/bpe_simple_vocab_16e6.txt.gz"
-    checkpoint_path = f"{sam3_root}/../model/sam3.pt"
+    sam3_pkg_dir = os.path.dirname(sam3.__file__)  # sam3/sam3/
+    bpe_path = os.path.join(sam3_pkg_dir, "assets", "bpe_simple_vocab_16e6.txt.gz")
+    checkpoint_path = os.path.join(sam3_pkg_dir, "..", "..", "sam3_model", "sam3.pt")
     model = build_sam3_image_model(bpe_path=bpe_path, checkpoint_path=checkpoint_path, load_from_HF=False)
 
     image = geo_image.model_scale_image

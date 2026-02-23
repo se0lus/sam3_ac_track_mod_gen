@@ -141,6 +141,8 @@ def convert_directory(input_dir: str, output_dir: str, max_workers: int = 1) -> 
     if max_workers == 1:
         # Serial path — no thread overhead
         for i, (b3dm_path, glb_path) in enumerate(tasks):
+            logger.info("Converting %d/%d: %s", i + 1, total,
+                        os.path.basename(b3dm_path))
             try:
                 convert_file(b3dm_path, glb_path)
                 converted.append((b3dm_path, glb_path))
@@ -149,6 +151,7 @@ def convert_directory(input_dir: str, output_dir: str, max_workers: int = 1) -> 
                 errors.append((b3dm_path, str(e)))
     else:
         logger.info("Converting %d B3DM files with %d workers", total, max_workers)
+        done_count = 0
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             future_map = {
                 pool.submit(convert_file, b3dm_path, glb_path): (b3dm_path, glb_path)
@@ -156,6 +159,9 @@ def convert_directory(input_dir: str, output_dir: str, max_workers: int = 1) -> 
             }
             for future in as_completed(future_map):
                 b3dm_path, glb_path = future_map[future]
+                done_count += 1
+                logger.info("Converting %d/%d: %s", done_count, total,
+                            os.path.basename(b3dm_path))
                 try:
                     future.result()
                     converted.append((b3dm_path, glb_path))

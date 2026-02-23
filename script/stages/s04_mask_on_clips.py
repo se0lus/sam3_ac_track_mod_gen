@@ -56,7 +56,7 @@ def _generate_mask_on_clips(
 
     os.makedirs(output_dir, exist_ok=True)
 
-    sam3_root = os.path.join(os.path.dirname(sam3.__file__), "..")
+    sam3_pkg_dir = os.path.dirname(sam3.__file__)  # sam3/sam3/
 
     if prompts is None:
         prompts = [
@@ -71,9 +71,9 @@ def _generate_mask_on_clips(
         logger.warning("No clips found in %s", clips_dir)
         return
 
-    logger.info("Found %d clips", len(clips))
-    bpe_path = f"{sam3_root}/assets/bpe_simple_vocab_16e6.txt.gz"
-    checkpoint_path = f"{sam3_root}/../model/sam3.pt"
+    logger.info("Found %d clips, %d tags", len(clips), len(prompts))
+    bpe_path = os.path.join(sam3_pkg_dir, "assets", "bpe_simple_vocab_16e6.txt.gz")
+    checkpoint_path = os.path.join(sam3_pkg_dir, "..", "..", "sam3_model", "sam3.pt")
     model = build_sam3_image_model(bpe_path=bpe_path, checkpoint_path=checkpoint_path, load_from_HF=False)
 
     for inp in prompts:
@@ -86,7 +86,7 @@ def _generate_mask_on_clips(
         # Track clips that got no masks from the primary prompt
         no_mask_clips = []
 
-        for clip in clips:
+        for idx, clip in enumerate(clips):
             geo_image = GeoSam3Image(os.path.join(clips_dir, clip))
             if not geo_image.has_model_scale_image():
                 geo_image.generate_model_scale_image()
@@ -106,6 +106,7 @@ def _generate_mask_on_clips(
                 no_mask_clips.append(clip)
 
             geo_image.save(save_masks=True, overwrite=True, output_dir=target_path)
+            logger.info("[%s] Clip %d/%d", tag, idx + 1, len(clips))
 
         # Fallback: retry clips with no masks using alternative prompts
         if no_mask_clips and fallback_prompts:

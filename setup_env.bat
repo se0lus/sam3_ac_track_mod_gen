@@ -5,13 +5,32 @@ REM ============================================================================
 REM Prerequisites: Miniconda/Anaconda installed, NVIDIA GPU with CUDA support
 REM
 REM Usage:
-REM   1. Open Anaconda Prompt
+REM   1. Open any terminal (cmd, PowerShell, or Anaconda Prompt)
 REM   2. cd to project root
 REM   3. Run: setup_env.bat
 REM =============================================================================
 
 echo ===== SAM3 Track Seg Environment Setup =====
 echo.
+
+REM --- Step 0: Initialize conda for this shell session ---
+REM   "call conda activate" only works if conda's shell hook is loaded.
+REM   In a plain cmd.exe it is NOT loaded, so we run conda's own init script
+REM   first.  We try several common install locations.
+set "_CONDA_HOOK="
+if exist "%USERPROFILE%\miniconda3\condabin\conda_hook.bat" (
+    set "_CONDA_HOOK=%USERPROFILE%\miniconda3\condabin\conda_hook.bat"
+) else if exist "%USERPROFILE%\anaconda3\condabin\conda_hook.bat" (
+    set "_CONDA_HOOK=%USERPROFILE%\anaconda3\condabin\conda_hook.bat"
+) else if exist "%PROGRAMDATA%\miniconda3\condabin\conda_hook.bat" (
+    set "_CONDA_HOOK=%PROGRAMDATA%\miniconda3\condabin\conda_hook.bat"
+)
+if defined _CONDA_HOOK (
+    echo [0/5] Initializing conda shell hook...
+    call "%_CONDA_HOOK%"
+) else (
+    echo [0/5] conda_hook.bat not found — assuming Anaconda Prompt
+)
 
 REM --- Step 1: Create conda env ---
 echo [1/5] Creating conda environment (Python 3.12)...
@@ -21,10 +40,19 @@ if errorlevel 1 (
 )
 call conda activate sam3
 
-REM --- Step 2: Install PyTorch with CUDA 12.6 ---
+REM --- Verify activation succeeded ---
+python --version 2>nul | findstr /C:"3.12" >nul
+if errorlevel 1 (
+    echo ERROR: conda activate sam3 did not switch to Python 3.12
+    echo        Please run this script from Anaconda Prompt, or check your conda installation.
+    pause
+    exit /b 1
+)
+
+REM --- Step 2: Install PyTorch with CUDA 12.8 (required for RTX 50xx / Blackwell) ---
 echo.
-echo [2/5] Installing PyTorch with CUDA 12.6...
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+echo [2/5] Installing PyTorch with CUDA 12.8...
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 
 REM --- Step 3: Install project dependencies ---
 echo.
