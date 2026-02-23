@@ -364,6 +364,8 @@ class PipelineConfig:
             return os.path.join(self.output_dir, "07a_manual_game_objects")
         if stage_name == "manual_blender":
             return os.path.join(self.output_dir, "09a_manual_blender")
+        if stage_name == "manual_track_info":
+            return os.path.join(self.output_dir, "11a_manual_track_info")
         idx = STAGE_ORDER.get(stage_name, 0)
         return os.path.join(self.output_dir, f"{idx:02d}_{stage_name}")
 

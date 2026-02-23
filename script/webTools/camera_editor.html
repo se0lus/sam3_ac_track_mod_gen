@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Track Info Editor — Camera</title>
+
+  <!-- Cesium -->
+  <script src="https://cesium.com/downloads/cesiumjs/releases/1.124/Build/Cesium/Cesium.js"></script>
+  <link href="https://cesium.com/downloads/cesiumjs/releases/1.124/Build/Cesium/Widgets/widgets.css" rel="stylesheet" />
+
+  <!-- Project styles -->
+  <link rel="stylesheet" href="./style.css" />
+  <link rel="stylesheet" href="./camera_editor.css" />
+</head>
+<body>
+  <div class="app">
+    <!-- ===== Left panel ===== -->
+    <aside class="panel">
+      <header class="panel__header">
+        <div class="title">Track Info Editor</div>
+        <div class="subtitle">TV Camera 3D Visualization</div>
+      </header>
+
+      <!-- Toolbar -->
+      <section class="panel__section cam-toolbar">
+        <button id="btnSave" class="btn btn--primary" disabled>Save</button>
+        <button id="btnUndo" class="btn" disabled>Undo</button>
+        <button id="btnRedo" class="btn" disabled>Redo</button>
+        <span id="dirtyFlag" class="cam-dirty" hidden>*Unsaved</span>
+      </section>
+
+      <!-- Layout selector -->
+      <section class="panel__section">
+        <div class="section__title">Layout</div>
+        <select id="layoutSelect" class="cam-layout-select"></select>
+      </section>
+
+      <!-- Editor tabs -->
+      <section class="panel__section">
+        <div class="cam-tabs" id="editorTabs">
+          <button class="cam-tab cam-tab--active" data-tab="camera">Camera</button>
+        </div>
+      </section>
+
+      <!-- Scrollable content -->
+      <div class="panel__scroll">
+        <!-- Camera list -->
+        <section class="panel__section" id="cameraListSection">
+          <div class="section__title">Cameras</div>
+          <div id="cameraList" class="cam-list"></div>
+          <button id="btnAddCamera" class="cam-add-btn">+ Add Camera</button>
+        </section>
+
+        <!-- Selected camera properties -->
+        <section class="panel__section" id="propsSection" hidden>
+          <div class="section__title">Properties</div>
+          <div class="cam-props">
+            <!-- Name -->
+            <div class="prop-group">
+              <div class="prop-group__title">Name</div>
+              <div class="prop-row">
+                <input id="propName" class="prop-input" type="text" />
+              </div>
+            </div>
+            <!-- Position -->
+            <div class="prop-group">
+              <div class="prop-group__title">Position (AC coords)</div>
+              <div class="prop-row">
+                <span class="prop-label">X</span>
+                <input id="propPosX" class="prop-input" type="number" step="0.1" />
+              </div>
+              <div class="prop-row">
+                <span class="prop-label">Y</span>
+                <input id="propPosY" class="prop-input" type="number" step="0.1" />
+              </div>
+              <div class="prop-row">
+                <span class="prop-label">Z</span>
+                <input id="propPosZ" class="prop-input" type="number" step="0.1" />
+              </div>
+            </div>
+            <!-- Forward -->
+            <div class="prop-group">
+              <div class="prop-group__title">Forward Direction</div>
+              <div class="prop-row">
+                <span class="prop-label">X</span>
+                <input id="propFwdX" class="prop-input" type="number" step="0.01" />
+              </div>
+              <div class="prop-row">
+                <span class="prop-label">Y</span>
+                <input id="propFwdY" class="prop-input" type="number" step="0.01" />
+              </div>
+              <div class="prop-row">
+                <span class="prop-label">Z</span>
+                <input id="propFwdZ" class="prop-input" type="number" step="0.01" />
+              </div>
+            </div>
+            <!-- FOV -->
+            <div class="prop-group">
+              <div class="prop-group__title">Field of View</div>
+              <div class="prop-row">
+                <span class="prop-label" style="width:auto;min-width:50px;text-align:left">Min</span>
+                <input id="propFovMin" class="prop-input" type="number" step="1" />
+              </div>
+              <div class="prop-row">
+                <span class="prop-label" style="width:auto;min-width:50px;text-align:left">Max</span>
+                <input id="propFovMax" class="prop-input" type="number" step="1" />
+              </div>
+            </div>
+            <!-- IN/OUT POINT -->
+            <div class="prop-group">
+              <div class="prop-group__title">Track Coverage</div>
+              <div class="prop-row">
+                <span class="prop-label" style="width:auto;min-width:50px;text-align:left">In</span>
+                <input id="propInPoint" class="prop-input" type="number" step="0.01" min="0" max="1" />
+              </div>
+              <div class="prop-row">
+                <span class="prop-label" style="width:auto;min-width:50px;text-align:left">Out</span>
+                <input id="propOutPoint" class="prop-input" type="number" step="0.01" min="0" max="1" />
+              </div>
+            </div>
+            <!-- Track Position Preview -->
+            <div class="prop-group">
+              <div class="prop-group__title">Track Position Preview</div>
+              <div class="prop-row">
+                <input id="trackPosSlider" type="range" min="0" max="1" step="0.001" value="0" class="cam-slider" />
+                <span id="trackPosLabel" class="prop-label" style="width:40px;text-align:center">0.00</span>
+              </div>
+            </div>
+            <!-- FOV Preview -->
+            <div class="prop-group">
+              <div class="prop-group__title">FOV Preview</div>
+              <div class="prop-row">
+                <input id="fovPreviewSlider" type="range" min="10" max="60" step="1" value="60" class="cam-slider" />
+                <span id="fovPreviewLabel" class="prop-label" style="width:40px;text-align:center">60°</span>
+              </div>
+            </div>
+            <!-- Extra -->
+            <div class="prop-group">
+              <div class="prop-group__title">Advanced</div>
+              <div class="prop-row">
+                <span class="prop-label" style="width:auto;min-width:50px;text-align:left">Fixed</span>
+                <input id="propIsFixed" class="prop-input" type="number" step="1" min="0" max="1" style="width:60px;flex:none" />
+              </div>
+            </div>
+
+            <!-- Delete -->
+            <button id="btnDeleteCamera" class="btn btn--danger" style="margin-top:8px;width:100%">Delete Camera</button>
+          </div>
+        </section>
+      </div>
+
+      <footer style="padding:8px 16px;border-top:1px solid var(--border);font-size:11px;color:var(--muted)">
+        Click to select &middot; Dbl-click list to fly &middot; Drag axis to move &middot; Ctrl+S save
+      </footer>
+    </aside>
+
+    <!-- ===== Right: Cesium 3D viewer ===== -->
+    <main class="viewer-wrap">
+      <div id="cesiumContainer"></div>
+      <div id="status" class="cam-status">Loading...</div>
+    </main>
+  </div>
+
+  <script src="./camera_editor.js"></script>
+</body>
+</html>

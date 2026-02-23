@@ -1,0 +1,347 @@
+/* camera_editor.css — Cesium 3D Camera Editor styles */
+
+.app {
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+}
+
+/* ---- Left panel ---- */
+.panel {
+  width: 320px;
+  min-width: 320px;
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(180deg, var(--panel), #0b1220);
+  border-right: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.panel__header {
+  padding: 16px 16px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.panel__header .title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+}
+.panel__header .subtitle {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.panel__section {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel__scroll {
+  flex: 1;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #333 transparent;
+}
+
+.section__title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+/* ---- Toolbar ---- */
+.cam-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.btn {
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--btn);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.btn:hover { background: #2a3548; }
+.btn--primary {
+  background: #2563eb;
+  border-color: #3b82f6;
+}
+.btn--primary:hover { background: #1d4ed8; }
+.btn--danger {
+  background: #7f1d1d;
+  border-color: #991b1b;
+  color: #fca5a5;
+}
+.btn--danger:hover { background: #991b1b; }
+
+.cam-dirty {
+  font-size: 12px;
+  color: #f59e0b;
+  margin-left: 4px;
+}
+
+/* ---- Layout selector ---- */
+.cam-layout-select {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--btn);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' stroke='%2394a3b8' fill='none' stroke-width='1.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
+
+/* ---- Editor tabs (pill selector) ---- */
+.cam-tabs {
+  display: flex;
+  gap: 4px;
+  background: rgba(0,0,0,0.25);
+  border-radius: 8px;
+  padding: 3px;
+}
+.cam-tab {
+  flex: 1;
+  padding: 5px 12px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+  text-align: center;
+}
+.cam-tab--active {
+  background: rgba(96, 165, 250, 0.18);
+  color: #60a5fa;
+}
+.cam-tab:hover:not(.cam-tab--active) {
+  color: var(--text);
+}
+
+/* ---- Camera list ---- */
+.cam-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.cam-list-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s;
+  font-size: 13px;
+  color: var(--text);
+}
+.cam-list-item:hover { background: rgba(255,255,255,0.05); }
+.cam-list-item--selected {
+  background: rgba(96, 165, 250, 0.15);
+  border: 1px solid rgba(96, 165, 250, 0.3);
+}
+.cam-list-item__num {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #2563eb;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.cam-list-item__name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cam-list-item__fov {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.cam-add-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 6px;
+  margin-top: 4px;
+  border: 1px dashed rgba(148,163,184,0.3);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+  width: 100%;
+}
+.cam-add-btn:hover {
+  border-color: #60a5fa;
+  color: #60a5fa;
+}
+
+/* ---- Properties panel ---- */
+.cam-props {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.prop-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.prop-group__title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+.prop-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.prop-label {
+  font-size: 12px;
+  color: var(--muted);
+  width: 20px;
+  text-align: right;
+  flex-shrink: 0;
+}
+.prop-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(0,0,0,0.3);
+  color: var(--text);
+  font-size: 12px;
+  font-family: monospace;
+}
+.prop-input:focus {
+  outline: none;
+  border-color: #60a5fa;
+}
+
+.prop-row-wide {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.prop-row-wide .prop-label {
+  width: auto;
+  min-width: 60px;
+  text-align: left;
+}
+
+/* ---- Right area: Cesium viewer ---- */
+.viewer-wrap {
+  flex: 1;
+  position: relative;
+  background: #000;
+}
+#cesiumContainer {
+  width: 100%;
+  height: 100%;
+}
+
+/* Status bar */
+.cam-status {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  background: rgba(0,0,0,0.6);
+  padding: 4px 10px;
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 10;
+}
+
+/* Override Cesium default widget styles for dark theme */
+.cesium-viewer-bottom { display: none !important; }
+.cesium-viewer .cesium-widget-credits { display: none !important; }
+
+/* ---- Toast notifications ---- */
+.cam-toast {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  padding: 10px 18px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #fff;
+  z-index: 9999;
+  opacity: 0;
+  transform: translateY(-10px);
+  transition: all 0.3s;
+  pointer-events: none;
+}
+.cam-toast--show {
+  opacity: 1;
+  transform: translateY(0);
+}
+.cam-toast--ok { background: #065f46; }
+.cam-toast--err { background: #7f1d1d; }
+
+/* ---- No data placeholder ---- */
+.cam-empty {
+  text-align: center;
+  padding: 24px 16px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* ---- Slider controls (track position + FOV preview) ---- */
+.cam-slider {
+  flex: 1;
+  min-width: 0;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: rgba(255,255,255,0.1);
+  border-radius: 2px;
+  outline: none;
+}
+.cam-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #60a5fa;
+  cursor: pointer;
+  border: 2px solid #1e3a5f;
+}
+.cam-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #60a5fa;
+  cursor: pointer;
+  border: 2px solid #1e3a5f;
+}

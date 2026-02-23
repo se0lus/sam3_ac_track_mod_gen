@@ -69,6 +69,8 @@ _MANUAL_SURFACE_MASKS_EDIT_DIR = os.path.join(_REPO_ROOT, "output", "05a_manual_
 _STAGE5_PREVIEW_DIR = os.path.join(_REPO_ROOT, "output", "05_merge_segments", "merge_preview")
 _TILES_DIR = os.path.join(_REPO_ROOT, "test_images_shajing", "map")
 _CONFIG_JSON = os.path.join(_REPO_ROOT, "output", "webtools_config.json")
+_PACKAGING_DIR = os.path.join(_REPO_ROOT, "output", "11_track_packaging")
+_MANUAL_TRACK_INFO_DIR = os.path.join(_REPO_ROOT, "output", "11a_manual_track_info")
 
 # --- Result junction directories (downstream stages read from these) ---
 _02_RESULT_DIR = os.path.join(_REPO_ROOT, "output", "02_result")
@@ -251,6 +253,160 @@ def _layout_write_path(layout_name: str, filename: str) -> str:
     return p
 
 
+def _cameras_read_path(layout_name: str) -> str:
+    """Find cameras.ini: 11a (manual edits) > 11 (stage output)."""
+    safe = _safe_layout_name(layout_name)
+    # 1. Manual track info directory (11a)
+    p = os.path.join(_MANUAL_TRACK_INFO_DIR, safe, "cameras.ini")
+    if os.path.isfile(p):
+        return p
+    # 2. Stage 11 packaging output — search for track folder
+    if os.path.isdir(_PACKAGING_DIR):
+        for entry in os.listdir(_PACKAGING_DIR):
+            candidate = os.path.join(_PACKAGING_DIR, entry, safe, "data", "cameras.ini")
+            if os.path.isfile(candidate):
+                return candidate
+    return os.path.join(_MANUAL_TRACK_INFO_DIR, safe, "cameras.ini")
+
+
+def _cameras_write_path(layout_name: str) -> str:
+    """Write cameras.ini always goes to 11a."""
+    safe = _safe_layout_name(layout_name)
+    p = os.path.join(_MANUAL_TRACK_INFO_DIR, safe, "cameras.ini")
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    return p
+
+
+def _cameras_centerline_path(layout_name: str) -> str:
+    """Find centerline.json for camera editor: 11a > 07_result > 07."""
+    safe = _safe_layout_name(layout_name)
+    # 1. 11a manual track info
+    p = os.path.join(_MANUAL_TRACK_INFO_DIR, safe, "centerline.json")
+    if os.path.isfile(p):
+        return p
+    # 2. 07_result junction
+    result_dir = _result_or_fallback(_07_RESULT_DIR, _GAME_OBJECTS_DIR)
+    p = os.path.join(result_dir, safe, "centerline.json")
+    if os.path.isfile(p):
+        return p
+    # 3. Direct 07 directory (case-sensitive name match)
+    p = os.path.join(_GAME_OBJECTS_DIR, safe, "centerline.json")
+    return p
+
+
+def _parse_cameras_ini(text: str) -> dict:
+    """Parse AC cameras.ini text into JSON-friendly dict.
+
+    Returns: {"header": {VERSION, CAMERA_COUNT, SET_NAME}, "cameras": [{...}, ...]}
+    """
+    header = {}
+    cameras = []
+    current_section = None
+    current_cam = {}
+
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith(";") or line.startswith("#"):
+            continue
+        # Section header
+        m = re.match(r'^\[(.+)\]$', line)
+        if m:
+            section = m.group(1)
+            if current_section and current_section.startswith("CAMERA_") and current_cam:
+                cameras.append(current_cam)
+                current_cam = {}
+            current_section = section
+            continue
+        # Key=value
+        if "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key = key.strip()
+        val = val.strip()
+        if current_section == "HEADER":
+            if key in ("VERSION", "CAMERA_COUNT"):
+                header[key] = int(val)
+            else:
+                header[key] = val
+        elif current_section and current_section.startswith("CAMERA_"):
+            # Parse value: try vector (comma-separated), then number, then string
+            if "," in val:
+                parts = [p.strip() for p in val.split(",")]
+                try:
+                    current_cam[key] = [float(p) for p in parts]
+                except ValueError:
+                    current_cam[key] = val
+            else:
+                try:
+                    if "." in val:
+                        current_cam[key] = float(val)
+                    else:
+                        current_cam[key] = int(val)
+                except ValueError:
+                    current_cam[key] = val
+
+    # Append last camera
+    if current_section and current_section.startswith("CAMERA_") and current_cam:
+        cameras.append(current_cam)
+
+    return {"header": header, "cameras": cameras}
+
+
+def _serialize_cameras_ini(data: dict) -> str:
+    """Convert JSON cameras data back to AC cameras.ini text format."""
+    lines = []
+    header = data.get("header", {})
+    cameras = data.get("cameras", [])
+
+    # Update camera count
+    header["CAMERA_COUNT"] = len(cameras)
+
+    lines.append("[HEADER]")
+    lines.append(f"VERSION={header.get('VERSION', 3)}")
+    lines.append(f"CAMERA_COUNT={header['CAMERA_COUNT']}")
+    lines.append(f"SET_NAME={header.get('SET_NAME', 'TV1')}")
+    lines.append("")
+
+    for i, cam in enumerate(cameras):
+        lines.append(f"[CAMERA_{i}]")
+        # Write fields in AC standard order
+        field_order = [
+            "NAME", "POSITION", "FORWARD", "UP",
+            "MIN_FOV", "MAX_FOV", "IN_POINT", "OUT_POINT",
+            "SHADOW_SPLIT0", "SHADOW_SPLIT1", "SHADOW_SPLIT2",
+            "NEAR_PLANE", "FAR_PLANE", "MIN_EXPOSURE", "MAX_EXPOSURE",
+            "DOF_FACTOR", "DOF_RANGE", "DOF_FOCUS", "DOF_MANUAL",
+            "SPLINE", "SPLINE_ROTATION", "FOV_GAMMA",
+            "SPLINE_ANIMATION_LENGTH", "IS_FIXED",
+        ]
+        written = set()
+        for key in field_order:
+            if key in cam:
+                val = cam[key]
+                if isinstance(val, list):
+                    val_str = " ,".join(f"{v:.3f}" if isinstance(v, float) else str(v) for v in val)
+                elif isinstance(val, float):
+                    # Use minimal decimal places
+                    val_str = f"{val:g}" if val == int(val) else f"{val}"
+                else:
+                    val_str = str(val)
+                lines.append(f"{key}={val_str}")
+                written.add(key)
+        # Write any extra fields not in standard order
+        for key, val in cam.items():
+            if key not in written:
+                if isinstance(val, list):
+                    val_str = " ,".join(f"{v:.3f}" if isinstance(v, float) else str(v) for v in val)
+                elif isinstance(val, float):
+                    val_str = f"{val:g}" if val == int(val) else f"{val}"
+                else:
+                    val_str = str(val)
+                lines.append(f"{key}={val_str}")
+        lines.append("")
+
+    return "\n".join(lines) + "\n"
+
+
 def _auto_merge_manual() -> None:
     """After any write to 7a, re-merge all layouts into top-level game_objects.json."""
     if not os.path.isdir(_MANUAL_GAME_OBJECTS_DIR):
@@ -335,6 +491,10 @@ PIPELINE_STAGE_META = [
     {"id": "track_packaging",   "num": "11", "name": "赛道打包",    "type": "auto",
      "desc": "组装最终 AC 赛道 Mod 文件夹（KN5 + INI + UI + 地图）",
      "output_dir": "11_track_packaging"},
+    {"id": "camera_editor",     "num": "11a", "name": "摄像头编辑",  "type": "manual",
+     "desc": "3D 可视化编辑 TV 摄像头位置、方向、FOV（Cesium + 3D Tiles）",
+     "output_dir": "11a_manual_track_info",
+     "editor": "camera_editor.html"},
 ]
 
 # Map auto stage ids to sam3_track_gen stage names
@@ -1047,6 +1207,21 @@ class ApiHandler(SimpleHTTPRequestHandler):
         elif self.path == "/api/pipeline/manual_stages":
             self._serve_manual_stages()
 
+        # --- 3D Tiles & Camera editor ---
+        elif self.path == "/api/tiles_dir_info":
+            self._serve_tiles_dir_info()
+
+        elif self.path.startswith("/3dtiles/"):
+            self._serve_3dtiles()
+
+        elif self.path.startswith("/api/cameras/"):
+            layout = self.path[len("/api/cameras/"):]
+            self._serve_cameras(layout)
+
+        elif self.path.startswith("/api/cameras_centerline/"):
+            layout = self.path[len("/api/cameras_centerline/"):]
+            self._serve_cameras_centerline(layout)
+
         else:
             super().do_GET()
 
@@ -1110,6 +1285,11 @@ class ApiHandler(SimpleHTTPRequestHandler):
 
         elif self.path == "/api/regenerate_from_start":
             self._regenerate_from_start_point()
+
+        # --- Camera editor ---
+        elif self.path.startswith("/api/cameras/"):
+            layout = self.path[len("/api/cameras/"):]
+            self._save_cameras(layout)
 
         # --- Pipeline control ---
         elif self.path == "/api/pipeline/run":
@@ -1519,6 +1699,202 @@ class ApiHandler(SimpleHTTPRequestHandler):
 
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
+
+            self._send_json_ok()
+        except json.JSONDecodeError as e:
+            self.send_error(400, f"Invalid JSON: {e}")
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    # --- 3D Tiles & Camera editor handlers ---
+
+    def _serve_tiles_dir_info(self):
+        """GET /api/tiles_dir_info — check if 3D tiles are available.
+
+        Searches for tileset.json at tiles_dir root and one level deep
+        (e.g. tiles_dir/Model_0/tileset.json). Returns the relative URL.
+
+        Also computes coordinate transform info from geo_metadata.json:
+        - origin_lat/lon: NW corner of the image (pixel origin)
+        - meters_per_pixel: scale factor for pixel-to-meter conversion
+        """
+        try:
+            cfg = _load_webtools_config()
+            tiles_dir = cfg.get("tiles_dir", "")
+            has_tileset = False
+            tileset_url = ""
+            if tiles_dir and os.path.isdir(tiles_dir):
+                # Check root
+                if os.path.isfile(os.path.join(tiles_dir, "tileset.json")):
+                    has_tileset = True
+                    tileset_url = "/3dtiles/tileset.json"
+                else:
+                    # Search one level deep
+                    for entry in os.listdir(tiles_dir):
+                        sub = os.path.join(tiles_dir, entry, "tileset.json")
+                        if os.path.isfile(sub):
+                            has_tileset = True
+                            tileset_url = f"/3dtiles/{entry}/tileset.json"
+                            break
+
+            # Compute coordinate transform from geo_metadata
+            result = {
+                "has_tileset": has_tileset,
+                "tileset_url": tileset_url,
+            }
+            geo_meta = self._find_geo_metadata_for_camera()
+            if geo_meta:
+                corners = geo_meta.get("corners", {})
+                img_w = geo_meta.get("image_width", 1)
+                img_h = geo_meta.get("image_height", 1)
+                tl = corners.get("top_left")      # [lat, lon]
+                tr = corners.get("top_right")      # [lat, lon]
+                bl = corners.get("bottom_left")    # [lat, lon]
+                if tl and tr and bl:
+                    # Provide corner coordinates and image size
+                    # so the frontend can build an exact affine transform
+                    result["geo_corners"] = {
+                        "tl": tl, "tr": tr, "bl": bl,
+                        "img_w": img_w, "img_h": img_h,
+                    }
+
+            resp = json.dumps(result).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(resp)))
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(resp)
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def _find_geo_metadata_for_camera(self):
+        """Find geo_metadata.json for camera coordinate transform."""
+        for candidate in [
+            os.path.join(_result_or_fallback(_02_RESULT_DIR, _MASK_FULL_MAP_DIR), "geo_metadata.json"),
+            os.path.join(_MASK_FULL_MAP_DIR, "geo_metadata.json"),
+        ]:
+            if os.path.isfile(candidate):
+                try:
+                    with open(candidate, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    data = _ensure_wgs84_bounds(data)
+                    return data
+                except Exception:
+                    continue
+        return None
+
+    def _serve_3dtiles(self):
+        """GET /3dtiles/** — serve 3D Tiles files (tileset.json, .b3dm, .glb) from tiles_dir."""
+        try:
+            cfg = _load_webtools_config()
+            tiles_dir = cfg.get("tiles_dir", "")
+            if not tiles_dir or not os.path.isdir(tiles_dir):
+                self.send_error(404, "3D tiles directory not configured")
+                return
+
+            # Extract relative path after /3dtiles/
+            rel_path = self.path[len("/3dtiles/"):]
+            # Strip query string
+            rel_path = rel_path.split("?", 1)[0]
+            # Security: prevent path traversal
+            rel_path = rel_path.replace("\\", "/")
+            if ".." in rel_path.split("/"):
+                self.send_error(403, "Path traversal not allowed")
+                return
+
+            file_path = os.path.join(tiles_dir, rel_path)
+            if not os.path.isfile(file_path):
+                self.send_error(404, f"Tile file not found: {rel_path}")
+                return
+
+            # Determine content type
+            ext = os.path.splitext(file_path)[1].lower()
+            content_types = {
+                ".json": "application/json",
+                ".b3dm": "application/octet-stream",
+                ".glb": "model/gltf-binary",
+                ".gltf": "model/gltf+json",
+                ".png": "image/png",
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+            }
+            content_type = content_types.get(ext, "application/octet-stream")
+
+            with open(file_path, "rb") as f:
+                data = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            # Cache tileset.json loosely, b3dm more aggressively
+            if ext == ".json":
+                self.send_header("Cache-Control", "no-cache")
+            else:
+                self.send_header("Cache-Control", "max-age=3600")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def _serve_cameras(self, layout: str):
+        """GET /api/cameras/{layout} — parse cameras.ini and return JSON."""
+        try:
+            safe = _safe_layout_name(layout)
+            ini_path = _cameras_read_path(safe)
+            if not os.path.isfile(ini_path):
+                # Return empty cameras data (no cameras yet)
+                resp = json.dumps({
+                    "header": {"VERSION": 3, "CAMERA_COUNT": 0, "SET_NAME": "TV1"},
+                    "cameras": [],
+                }).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(resp)))
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                self.wfile.write(resp)
+                return
+
+            with open(ini_path, "r", encoding="utf-8") as f:
+                text = f.read()
+            data = _parse_cameras_ini(text)
+            resp = json.dumps(data).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(resp)))
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(resp)
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def _serve_cameras_centerline(self, layout: str):
+        """GET /api/cameras_centerline/{layout} — serve centerline.json for camera editor."""
+        safe = _safe_layout_name(layout)
+        cl_path = _cameras_centerline_path(safe)
+        self._serve_json_file(cl_path)
+
+    def _save_cameras(self, layout: str):
+        """POST /api/cameras/{layout} — save cameras JSON back to cameras.ini."""
+        try:
+            body = self._read_body()
+            data = json.loads(body)
+
+            if "cameras" not in data or not isinstance(data["cameras"], list):
+                self.send_error(400, "Invalid cameras JSON: missing 'cameras' array")
+                return
+
+            safe = _safe_layout_name(layout)
+            ini_path = _cameras_write_path(safe)
+
+            # Backup existing file
+            if os.path.isfile(ini_path):
+                shutil.copy2(ini_path, ini_path + ".bak")
+
+            ini_text = _serialize_cameras_ini(data)
+            with open(ini_path, "w", encoding="utf-8") as f:
+                f.write(ini_text)
 
             self._send_json_ok()
         except json.JSONDecodeError as e:
