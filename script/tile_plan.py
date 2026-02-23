@@ -307,10 +307,16 @@ def compute_tile_load_plan(
                 plan.setdefault(tile.meshLevel, []).append(tile)
             return True
 
-        # Non-mesh node (virtual root, JSON redirect) → recurse
+        # Non-mesh node (virtual root, JSON redirect) → recurse.
+        # Must propagate True if any descendant was added to the plan,
+        # otherwise the parent mesh node will incorrectly add itself
+        # as a fallback (causing parent-child overlap).
         if tile.canRefine and tile.children:
+            any_child = False
             for child in tile.children:
-                _walk(child)
+                if _walk(child):
+                    any_child = True
+            return any_child
         return False
 
     _walk(root)
@@ -370,6 +376,13 @@ def compute_plan_from_config(
         log.info("  Level %d: %d tiles", level, count)
     log.info("  Total tiles to load: %d", total)
 
+    # 6. Validate — no ancestor should coexist with descendant
+    overlap_errors = validate_plan_no_ancestor_overlap(plan)
+    if overlap_errors:
+        log.warning("TILE PLAN VALIDATION: %d ancestor overlap(s) detected!", len(overlap_errors))
+        for err in overlap_errors[:20]:
+            log.warning("  %s", err)
+
     return plan
 
 
@@ -381,3 +394,39 @@ def log_plan_summary(plan: Dict[int, List[CTile]]) -> None:
         total += count
         log.info("  Level %d: %d tiles", level, count)
     log.info("  Total tiles to load: %d", total)
+
+
+def validate_plan_no_ancestor_overlap(plan: Dict[int, List[CTile]]) -> List[str]:
+    """Check that no tile in the plan is an ancestor of another.
+
+    If a tile A is in the plan *and* A is an ancestor of tile B which is
+    also in the plan, they cover the same geographic area → the coarser
+    tile (A) should have been replaced by the finer one (B), not loaded
+    alongside it.
+
+    Returns a list of error descriptions (empty means valid).
+    """
+    all_tiles = []
+    for level in plan:
+        for tile in plan[level]:
+            all_tiles.append(tile)
+
+    # Build set of tile ids for O(1) membership check
+    plan_ids = {id(t) for t in all_tiles}
+
+    errors: List[str] = []
+    for tile in all_tiles:
+        # Walk up the parent chain — if any ancestor is also in the plan,
+        # that's an overlap error
+        ancestor = tile.parent
+        while ancestor is not None:
+            if id(ancestor) in plan_ids:
+                errors.append(
+                    f"Overlap: '{tile.content}' (L{tile.meshLevel}) and "
+                    f"ancestor '{ancestor.content}' (L{ancestor.meshLevel}) "
+                    f"are both in the plan"
+                )
+                break
+            ancestor = ancestor.parent
+
+    return errors
