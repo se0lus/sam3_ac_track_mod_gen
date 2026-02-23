@@ -702,14 +702,15 @@ function updateInOutHighlight() {
   const startIdx = Math.floor(trackTToCenterlineIndex(inPt, pts));
   const endIdx = Math.floor(trackTToCenterlineIndex(outPt, pts));
 
-  // Collect points walking from startIdx to endIdx around the loop
+  // Collect points walking from startIdx to endIdx in driving direction
   const segPts = [];
   const n = pts.length;
+  const forward = drivingFollowsIndex();
   let i = startIdx;
   while (true) {
     segPts.push(pts[i]);
     if (i === endIdx) break;
-    i = (i + 1) % n;
+    i = forward ? (i + 1) % n : ((i - 1) + n) % n;
     if (segPts.length > n) break; // safety
   }
   if (segPts.length < 2) return;
@@ -1139,31 +1140,68 @@ function onPropChange() {
 function addCamera() {
   if (!camerasData) return;
 
-  // Default position: center of existing cameras or origin
+  // Determine a default position along the centerline
   let px = 0, py = -8, pz = 0;
-  if (camerasData.cameras.length > 0) {
-    const last = camerasData.cameras[camerasData.cameras.length - 1];
+  let fwdX = 1, fwdY = -0.15, fwdZ = 0;
+  let inPoint = 0, outPoint = 1;
+
+  const hasCenterline = centerlineData && centerlineData.centerline && centerlineData.centerline.length > 2;
+  const numCams = camerasData.cameras.length;
+
+  if (hasCenterline) {
+    const pts = centerlineData.centerline;
+    const n = pts.length;
+    const forward = drivingFollowsIndex();
+
+    // Evenly distribute new camera: place at fraction (numCams)/(numCams+1) of the track
+    // so each new camera fills a gap
+    const t = numCams > 0 ? numCams / (numCams + 1) : 0.5;
+    const fracIdx = trackTToCenterlineIndex(t, pts);
+    const [cx, cz] = interpolateCenterline(pts, fracIdx);
+
+    // Offset camera 15m to the side of the centerline (perpendicular to driving direction)
+    const i0 = ((Math.floor(fracIdx) % n) + n) % n;
+    const i1 = forward ? (i0 + 1) % n : ((i0 - 1) + n) % n;
+    const tangX = pts[i1][0] - pts[i0][0];
+    const tangZ = pts[i1][1] - pts[i0][1];
+    const tangLen = Math.sqrt(tangX * tangX + tangZ * tangZ) || 1;
+    // Perpendicular (rotate 90°): (-tangZ, tangX), pick the side
+    const perpX = -tangZ / tangLen;
+    const perpZ = tangX / tangLen;
+
+    px = cx + perpX * 15;
+    pz = cz + perpZ * 15;
+    py = -8; // 8m above ground (AC Y is negative-up)
+
+    // FORWARD: point from camera toward the centerline point
+    const dx = cx - px, dz = cz - pz;
+    const dLen = Math.sqrt(dx * dx + dz * dz) || 1;
+    fwdX = dx / dLen;
+    fwdY = -0.1; // slight downward look
+    fwdZ = dz / dLen;
+
+    // Coverage: assign a proportional segment around the camera's track position
+    const segLen = 1 / Math.max(numCams + 1, 2);
+    inPoint = Math.max(0, t - segLen / 2);
+    outPoint = Math.min(1, t + segLen / 2);
+  } else if (numCams > 0) {
+    const last = camerasData.cameras[numCams - 1];
     const lp = last.POSITION || [0, 0, 0];
     px = lp[0] + 20;
     py = lp[1];
     pz = lp[2];
-  } else if (centerlineData && centerlineData.centerline && centerlineData.centerline.length > 0) {
-    const mid = centerlineData.centerline[Math.floor(centerlineData.centerline.length / 2)];
-    px = mid[0];
-    pz = mid[1];
-    py = -8;
   }
 
-  const idx = camerasData.cameras.length;
+  const idx = numCams;
   const newCam = {
     NAME: String(idx + 1),
     POSITION: [px, py, pz],
-    FORWARD: [1, -0.15, 0],
+    FORWARD: [fwdX, fwdY, fwdZ],
     UP: [0, 1, 0],
     MIN_FOV: 10,
     MAX_FOV: 60,
-    IN_POINT: 0,
-    OUT_POINT: 1,
+    IN_POINT: parseFloat(inPoint.toFixed(3)),
+    OUT_POINT: parseFloat(outPoint.toFixed(3)),
     SHADOW_SPLIT0: 1.8,
     SHADOW_SPLIT1: 20,
     SHADOW_SPLIT2: 180,
@@ -1288,24 +1326,57 @@ async function save() {
    ========================================================================= */
 
 /**
+ * Determine if driving direction follows increasing centerline indices.
+ * Mirrors the Python logic: signed_area > 0 ⇒ centerline is CW,
+ * then driving_follows_index = (centerline_is_cw == track_is_cw).
+ */
+function drivingFollowsIndex() {
+  if (!centerlineData) return true;
+  const pts = centerlineData.centerline;
+  if (!pts || pts.length < 3) return true;
+
+  // Shoelace signed area (same convention as Python road_centerline.py)
+  let signedArea = 0;
+  for (let i = 0; i < pts.length - 1; i++) {
+    signedArea += pts[i][0] * pts[i + 1][1] - pts[i + 1][0] * pts[i][1];
+  }
+  signedArea += pts[pts.length - 1][0] * pts[0][1] - pts[0][0] * pts[pts.length - 1][1];
+  signedArea *= 0.5;
+
+  const centerlineIsCW = signedArea > 0;
+  const trackDir = centerlineData.track_direction
+    || (layouts.find((l) => l.short === currentLayout) || {}).direction
+    || "clockwise";
+  const trackIsCW = trackDir === "clockwise";
+  return centerlineIsCW === trackIsCW;
+}
+
+/**
  * Convert a track fraction t (0~1, starting from timer_0) to a
- * fractional centerline array index, accounting for time0_idx offset.
- * The centerline is treated as a closed loop.
+ * fractional centerline array index, accounting for time0_idx offset
+ * and driving direction.
  */
 function trackTToCenterlineIndex(t, pts) {
   const time0 = centerlineData.time0_idx || 0;
-  // raw index (float) = time0 + t * totalLength, wrapped around
-  const raw = time0 + t * pts.length;
-  return ((raw % pts.length) + pts.length) % pts.length; // always positive
+  const n = pts.length;
+  const forward = drivingFollowsIndex();
+  // forward: index increases with t; reverse: index decreases with t
+  const raw = forward
+    ? time0 + t * n
+    : time0 - t * n;
+  return ((raw % n) + n) % n; // always positive
 }
 
 /**
  * Interpolate centerline position at a fractional index (wrapping).
+ * The interpolation step direction matches the driving direction.
  * Returns [x, z] in AC / pixel coords.
  */
 function interpolateCenterline(pts, fracIdx) {
-  const i0 = Math.floor(fracIdx) % pts.length;
-  const i1 = (i0 + 1) % pts.length;
+  const n = pts.length;
+  const i0 = ((Math.floor(fracIdx) % n) + n) % n;
+  const forward = drivingFollowsIndex();
+  const i1 = forward ? (i0 + 1) % n : ((i0 - 1) + n) % n;
   const frac = fracIdx - Math.floor(fracIdx);
   const px = pts[i0][0] + (pts[i1][0] - pts[i0][0]) * frac;
   const pz = pts[i0][1] + (pts[i1][1] - pts[i0][1]) * frac;
