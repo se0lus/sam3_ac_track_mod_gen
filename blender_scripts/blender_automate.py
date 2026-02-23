@@ -443,7 +443,7 @@ def _create_game_object_empty(
     if forward_blender is not None:
         fdx, fdz = forward_blender
         forward = Vector((fdx, 0.0, fdz)).normalized()
-        up = Vector((0.0, 1.0, 0.0))
+        up = Vector((0.0, -1.0, 0.0))
         right = up.cross(forward).normalized()
         up = forward.cross(right).normalized()
         # Rotation matrix: columns = local axes in world space.

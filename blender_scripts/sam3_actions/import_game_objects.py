@@ -54,7 +54,7 @@ def _orient_empty(
 
     # Blender forward direction in X-Z plane
     forward = Vector((dx, 0.0, -dy)).normalized()
-    up = Vector((0.0, 1.0, 0.0))
+    up = Vector((0.0, -1.0, 0.0))
     right = up.cross(forward).normalized()
     # Re-orthogonalize up
     up = forward.cross(right).normalized()
