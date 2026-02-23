@@ -59,12 +59,13 @@ def _orient_empty(
     # Re-orthogonalize up
     up = forward.cross(right).normalized()
 
-    # Build rotation matrix (columns = right, up, forward)
+    # Rotation matrix: columns = local axes in world space.
+    # Col 0 = local X (right), Col 1 = local Y (up), Col 2 = local Z (forward).
     rot = Matrix((
         (right.x, up.x, forward.x),
         (right.y, up.y, forward.y),
         (right.z, up.z, forward.z),
-    )).transposed()
+    ))
 
     obj.rotation_euler = rot.to_euler()
 

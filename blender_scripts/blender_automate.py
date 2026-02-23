@@ -446,11 +446,13 @@ def _create_game_object_empty(
         up = Vector((0.0, 1.0, 0.0))
         right = up.cross(forward).normalized()
         up = forward.cross(right).normalized()
+        # Rotation matrix: columns = local axes in world space.
+        # Col 0 = local X (right), Col 1 = local Y (up), Col 2 = local Z (forward).
         rot = Matrix((
             (right.x, up.x, forward.x),
             (right.y, up.y, forward.y),
             (right.z, up.z, forward.z),
-        )).transposed()
+        ))
         empty.rotation_euler = rot.to_euler()
 
     return empty
