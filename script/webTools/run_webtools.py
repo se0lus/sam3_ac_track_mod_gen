@@ -338,7 +338,7 @@ def _parse_cameras_ini(text: str) -> dict:
                     current_cam[key] = val
             else:
                 try:
-                    if "." in val:
+                    if "." in val or "e" in val or "E" in val:
                         current_cam[key] = float(val)
                     else:
                         current_cam[key] = int(val)
@@ -350,6 +350,17 @@ def _parse_cameras_ini(text: str) -> dict:
         cameras.append(current_cam)
 
     return {"header": header, "cameras": cameras}
+
+
+def _fmt_cam_float(val: float) -> str:
+    """Format a float for cameras.ini, avoiding scientific notation."""
+    if val == int(val):
+        return str(int(val))
+    s = f"{val}"
+    if "e" in s or "E" in s:
+        # Avoid scientific notation — use enough decimal places
+        s = f"{val:.10f}".rstrip("0").rstrip(".")
+    return s
 
 
 def _serialize_cameras_ini(data: dict) -> str:
@@ -386,8 +397,7 @@ def _serialize_cameras_ini(data: dict) -> str:
                 if isinstance(val, list):
                     val_str = " ,".join(f"{v:.3f}" if isinstance(v, float) else str(v) for v in val)
                 elif isinstance(val, float):
-                    # Use minimal decimal places
-                    val_str = f"{val:g}" if val == int(val) else f"{val}"
+                    val_str = _fmt_cam_float(val)
                 else:
                     val_str = str(val)
                 lines.append(f"{key}={val_str}")
@@ -398,7 +408,7 @@ def _serialize_cameras_ini(data: dict) -> str:
                 if isinstance(val, list):
                     val_str = " ,".join(f"{v:.3f}" if isinstance(v, float) else str(v) for v in val)
                 elif isinstance(val, float):
-                    val_str = f"{val:g}" if val == int(val) else f"{val}"
+                    val_str = _fmt_cam_float(val)
                 else:
                     val_str = str(val)
                 lines.append(f"{key}={val_str}")
@@ -1708,6 +1718,23 @@ class ApiHandler(SimpleHTTPRequestHandler):
 
     # --- 3D Tiles & Camera editor handlers ---
 
+    @staticmethod
+    def _find_child_tileset_transform(tiles_dir):
+        """Find first child tileset.json with a root.transform (16-element col-major)."""
+        for root_dir, _dirs, files in os.walk(tiles_dir):
+            for f in files:
+                if f.lower() == "tileset.json":
+                    p = os.path.join(root_dir, f)
+                    try:
+                        with open(p, "r", encoding="utf-8") as fh:
+                            obj = json.load(fh)
+                        tf = (obj.get("root") or {}).get("transform")
+                        if isinstance(tf, list) and len(tf) == 16:
+                            return [float(x) for x in tf]
+                    except Exception:
+                        continue
+        return None
+
     def _serve_tiles_dir_info(self):
         """GET /api/tiles_dir_info — check if 3D tiles are available.
 
@@ -1757,6 +1784,12 @@ class ApiHandler(SimpleHTTPRequestHandler):
                         "tl": tl, "tr": tr, "bl": bl,
                         "img_w": img_w, "img_h": img_h,
                     }
+
+            # Include child tileset transform if root has identity transform
+            if has_tileset and tiles_dir:
+                child_tf = self._find_child_tileset_transform(tiles_dir)
+                if child_tf:
+                    result["child_transform"] = child_tf
 
             resp = json.dumps(result).encode("utf-8")
             self.send_response(200)

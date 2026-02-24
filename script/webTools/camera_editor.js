@@ -12,7 +12,8 @@
    ========================================================================= */
 let viewer = null;               // Cesium.Viewer
 let tileset = null;              // Cesium.Cesium3DTileset
-let acTransform = null;          // ACToGeoTransform instance
+let acTransform = null;          // ACToGeoTransform instance (tileset_local or pixel)
+let pixelTransform = null;       // ACToGeoTransform for pixel→ECEF (centerline rendering)
 
 let layouts = [];                // [{name, short, ...}]
 let currentLayout = "";          // current layout short name
@@ -154,6 +155,18 @@ class ACToGeoTransform {
     const local = new Cesium.Cartesian3(dx_b, dy_b, dz_b);
     return Cesium.Matrix3.multiplyByVector(this.rotation, local, new Cesium.Cartesian3());
   }
+}
+
+/** Pixel coordinate → AC coordinate (via ECEF round-trip when dual-transform is active). */
+function pixelToAC(px, pz) {
+  if (!pixelTransform || pixelTransform === acTransform) return [px, 0, pz];
+  const ecef = pixelTransform.acToCartesian3(px, 0, pz);
+  return acTransform.cartesian3ToAC(ecef);
+}
+
+/** Get the transform to use for centerline/pixel data rendering. */
+function getCenterlineTransform() {
+  return pixelTransform || acTransform;
 }
 
 /* =========================================================================
@@ -300,33 +313,52 @@ async function initCesium() {
         t, Cesium.Matrix4.IDENTITY, Cesium.Math.EPSILON10
       );
 
-      if (isIdentity && info.geo_corners) {
-        // No root.transform — geometry is already in ECEF.
-        // AC coordinates are in pixel space: origin at NW corner (top-left),
-        // X increases east, Z increases south, Y is height in meters.
-        //
-        // Use actual corner coordinates for exact affine transform
-        // (accounts for UTM grid convergence / image rotation).
+      if (isIdentity && info.child_transform) {
+        // Root has identity but child tilesets share a common transform.
+        // Use child transform for acTransform (tileset_local → ECEF).
+        // No column swap needed: ACToGeoTransform's AC↔Blender remap
+        // gives x_ac=local_x, y_ac=-local_z, z_ac=local_y = Blender coords.
+        acTransform = new ACToGeoTransform(info.child_transform);
+
+        // Also build pixel affine for centerline rendering (centerline is pixel coords)
+        if (info.geo_corners) {
+          const gc = info.geo_corners;
+          const tlEcef = Cesium.Cartesian3.fromDegrees(gc.tl[1], gc.tl[0], 0);
+          const trEcef = Cesium.Cartesian3.fromDegrees(gc.tr[1], gc.tr[0], 0);
+          const blEcef = Cesium.Cartesian3.fromDegrees(gc.bl[1], gc.bl[0], 0);
+
+          const vecX = Cesium.Cartesian3.subtract(trEcef, tlEcef, new Cesium.Cartesian3());
+          Cesium.Cartesian3.divideByScalar(vecX, gc.img_w, vecX);
+          const vecY = Cesium.Cartesian3.subtract(blEcef, tlEcef, new Cesium.Cartesian3());
+          Cesium.Cartesian3.divideByScalar(vecY, gc.img_h, vecY);
+
+          const enuAtTL = Cesium.Transforms.eastNorthUpToFixedFrame(tlEcef);
+          const upVec = new Cesium.Cartesian3(enuAtTL[8], enuAtTL[9], enuAtTL[10]);
+
+          const m = new Float64Array(16);
+          m[0] = vecX.x; m[1] = vecX.y; m[2] = vecX.z; m[3] = 0;
+          m[4] = vecY.x; m[5] = vecY.y; m[6] = vecY.z; m[7] = 0;
+          m[8] = upVec.x; m[9] = upVec.y; m[10] = upVec.z; m[11] = 0;
+          m[12] = tlEcef.x; m[13] = tlEcef.y; m[14] = tlEcef.z; m[15] = 1;
+          pixelTransform = new ACToGeoTransform(m);
+        }
+        console.log("Using child tileset transform (tileset_local mode)");
+
+      } else if (isIdentity && info.geo_corners) {
+        // No root.transform and no child transform — use pixel affine directly.
         const gc = info.geo_corners;
         const tlEcef = Cesium.Cartesian3.fromDegrees(gc.tl[1], gc.tl[0], 0);
         const trEcef = Cesium.Cartesian3.fromDegrees(gc.tr[1], gc.tr[0], 0);
         const blEcef = Cesium.Cartesian3.fromDegrees(gc.bl[1], gc.bl[0], 0);
 
-        // Per-pixel ECEF vectors along image X and Y axes
         const vecX = Cesium.Cartesian3.subtract(trEcef, tlEcef, new Cesium.Cartesian3());
         Cesium.Cartesian3.divideByScalar(vecX, gc.img_w, vecX);
         const vecY = Cesium.Cartesian3.subtract(blEcef, tlEcef, new Cesium.Cartesian3());
         Cesium.Cartesian3.divideByScalar(vecY, gc.img_h, vecY);
 
-        // Up vector at TL for height (1 unit = 1 meter)
         const enuAtTL = Cesium.Transforms.eastNorthUpToFixedFrame(tlEcef);
         const upVec = new Cesium.Cartesian3(enuAtTL[8], enuAtTL[9], enuAtTL[10]);
 
-        // Build 4x4 column-major transform:
-        //   col0 = vecX  (x_ac pixels → ECEF along image X)
-        //   col1 = vecY  (z_ac pixels → ECEF along image Y / south)
-        //   col2 = upVec (-y_ac meters → ECEF upward)
-        //   col3 = tlEcef (origin = NW corner)
         const m = new Float64Array(16);
         m[0] = vecX.x; m[1] = vecX.y; m[2] = vecX.z; m[3] = 0;
         m[4] = vecY.x; m[5] = vecY.y; m[6] = vecY.z; m[7] = 0;
@@ -334,6 +366,7 @@ async function initCesium() {
         m[12] = tlEcef.x; m[13] = tlEcef.y; m[14] = tlEcef.z; m[15] = 1;
 
         acTransform = new ACToGeoTransform(m);
+        pixelTransform = acTransform;  // same transform
         console.log("Using corner-based affine transform (" + gc.img_w + "x" + gc.img_h + " px)");
       } else if (!isIdentity) {
         // Has root.transform — use it directly (tileset_local mode)
@@ -668,9 +701,9 @@ function renderCenterline() {
   if (!pts || pts.length < 2) return;
 
   // Convert centerline points to Cartesian3
-  // Centerline coords are in Blender pixel space (x, z in XZ plane, y=0)
-  // These are the same coordinate space as AC x, z with y=0
-  const positions = pts.map((p) => acTransform.acToCartesian3(p[0], 0, p[1]));
+  // Centerline coords are always in pixel space — use pixelTransform when available
+  const clTransform = getCenterlineTransform();
+  const positions = pts.map((p) => clTransform.acToCartesian3(p[0], 0, p[1]));
 
   centerlineEntity = viewer.entities.add({
     polyline: {
@@ -715,7 +748,8 @@ function updateInOutHighlight() {
   }
   if (segPts.length < 2) return;
 
-  const positions = segPts.map((p) => acTransform.acToCartesian3(p[0], 0, p[1]));
+  const clTransform = getCenterlineTransform();
+  const positions = segPts.map((p) => clTransform.acToCartesian3(p[0], 0, p[1]));
 
   inOutEntity = viewer.entities.add({
     polyline: {
@@ -1392,13 +1426,16 @@ function updateTrackPositionPreview(t) {
   // Interpolate position along centerline (offset by time0_idx)
   const fracIdx = trackTToCenterlineIndex(t, pts);
   const [px, pz] = interpolateCenterline(pts, fracIdx);
-  const cartesian = acTransform.acToCartesian3(px, 0, pz);
+
+  // Centerline is in pixel coords — use pixelTransform for visual marker
+  const clTransform = getCenterlineTransform();
+  const cartesian = clTransform.acToCartesian3(px, 0, pz);
 
   // Since slider range is clamped to IN_POINT~OUT_POINT, always in coverage
   const markerColor = Cesium.Color.LIME;
 
   // Vertical line marker
-  const topCartesian = acTransform.acToCartesian3(px, -20, pz);
+  const topCartesian = clTransform.acToCartesian3(px, -20, pz);
   trackPosMarker = viewer.entities.add({
     position: cartesian,
     point: {
@@ -1421,10 +1458,11 @@ function updateTrackPositionPreview(t) {
     const cam = camerasData.cameras[selectedIndex];
     const camPos = cam.POSITION || [0, 0, 0];
 
-    // Direction from camera to track point (in AC coords)
-    const dx = px - camPos[0];
-    const dy = 0 - camPos[1]; // track is at y=0
-    const dz = pz - camPos[2];
+    // Convert pixel track position to AC coords for FORWARD calculation
+    const [tAcX, tAcY, tAcZ] = pixelToAC(px, pz);
+    const dx = tAcX - camPos[0];
+    const dy = tAcY - camPos[1];
+    const dz = tAcZ - camPos[2];
     const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
     if (len > 0.001) {
       cam.FORWARD = [dx / len, dy / len, dz / len];
