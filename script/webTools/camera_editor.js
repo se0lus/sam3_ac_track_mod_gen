@@ -39,6 +39,7 @@ let dragEntity = null;
 
 // Gizmo state (Feature 1)
 let gizmoEntities = null;   // { x: Entity, y: Entity, z: Entity }
+let gizmoHitZones = null;   // { x: Entity, y: Entity, z: Entity } — wide invisible pick targets
 let dragAxis = null;         // 'x'|'y'|'z' or null
 let dragStartScreenPos = null;
 let dragStartACPos = null;
@@ -115,17 +116,18 @@ class ACToGeoTransform {
   /**
    * AC coords (x_ac, y_ac, z_ac) → Cesium Cartesian3 (ECEF).
    *
-   * AC coordinate system: X right, Y up (negative in INI = height), Z forward.
-   * Blender coordinate system: X right, Y forward, Z up.
+   * AC coordinate system: X right, Y up, Z forward.
+   * Blender coordinate system: X right, Y down (gravity), Z forward.
    *
-   * The tileset root.transform maps Blender local coords to ECEF.
-   * AC to Blender: x_b = x_ac, y_b = z_ac, z_b = -y_ac
+   * The tileset root.transform maps tileset_local (glTF) coords to ECEF.
+   * Chain: AC → Blender (-x,-y,z) → glTF (x,z,-y) → tileset_local
+   * Combined: x_b = -x_ac, y_b = z_ac, z_b = y_ac
    */
   acToCartesian3(x_ac, y_ac, z_ac) {
-    // AC → Blender local
-    const x_b = x_ac;
+    // AC → tileset_local (glTF coords)
+    const x_b = -x_ac;
     const y_b = z_ac;
-    const z_b = -y_ac;
+    const z_b = y_ac;
 
     // Local → ECEF: origin + rotation * local
     const local = new Cesium.Cartesian3(x_b, y_b, z_b);
@@ -141,17 +143,17 @@ class ACToGeoTransform {
     const diff = Cesium.Cartesian3.subtract(cartesian3, this.origin, new Cesium.Cartesian3());
     const local = Cesium.Matrix3.multiplyByVector(this.rotationInv, diff, new Cesium.Cartesian3());
 
-    // Blender → AC: x_ac = x_b, y_ac = -z_b, z_ac = y_b
-    return [local.x, -local.z, local.y];
+    // tileset_local → AC: x_ac = -x_b, y_ac = z_b, z_ac = y_b
+    return [-local.x, local.z, local.y];
   }
 
   /**
    * Transform a direction vector from AC to ECEF (rotation only, no translation).
    */
   acDirectionToECEF(dx_ac, dy_ac, dz_ac) {
-    const dx_b = dx_ac;
+    const dx_b = -dx_ac;
     const dy_b = dz_ac;
-    const dz_b = -dy_ac;
+    const dz_b = dy_ac;
     const local = new Cesium.Cartesian3(dx_b, dy_b, dz_b);
     return Cesium.Matrix3.multiplyByVector(this.rotation, local, new Cesium.Cartesian3());
   }
@@ -297,6 +299,13 @@ async function initCesium() {
   viewer.scene.backgroundColor = Cesium.Color.fromCssColorString("#0b0f17");
   viewer.scene.globe.show = false;
 
+  // Camera controls: right-drag to orbit/translate, wheel to zoom, middle-drag to tilt
+  const controller = viewer.scene.screenSpaceCameraController;
+  controller.rotateEventTypes = Cesium.CameraEventType.RIGHT_DRAG;
+  controller.translateEventTypes = Cesium.CameraEventType.RIGHT_DRAG;
+  controller.zoomEventTypes = [Cesium.CameraEventType.WHEEL];
+  controller.tiltEventTypes = Cesium.CameraEventType.MIDDLE_DRAG;
+
   // Load 3D Tiles
   try {
     const info = await fetch("/api/tiles_dir_info").then((r) => r.json());
@@ -321,6 +330,8 @@ async function initCesium() {
         acTransform = new ACToGeoTransform(info.child_transform);
 
         // Also build pixel affine for centerline rendering (centerline is pixel coords)
+        // acToCartesian3(px, 0, pz) → origin + col0*(-px) + col1*(pz) + col2*0
+        // Need: origin + vecX*px + vecY*pz → col0 = -vecX, col1 = vecY, col2 = upVec
         if (info.geo_corners) {
           const gc = info.geo_corners;
           const tlEcef = Cesium.Cartesian3.fromDegrees(gc.tl[1], gc.tl[0], 0);
@@ -335,8 +346,9 @@ async function initCesium() {
           const enuAtTL = Cesium.Transforms.eastNorthUpToFixedFrame(tlEcef);
           const upVec = new Cesium.Cartesian3(enuAtTL[8], enuAtTL[9], enuAtTL[10]);
 
+          // col0 = -vecX, col1 = vecY, col2 = upVec
           const m = new Float64Array(16);
-          m[0] = vecX.x; m[1] = vecX.y; m[2] = vecX.z; m[3] = 0;
+          m[0] = -vecX.x; m[1] = -vecX.y; m[2] = -vecX.z; m[3] = 0;
           m[4] = vecY.x; m[5] = vecY.y; m[6] = vecY.z; m[7] = 0;
           m[8] = upVec.x; m[9] = upVec.y; m[10] = upVec.z; m[11] = 0;
           m[12] = tlEcef.x; m[13] = tlEcef.y; m[14] = tlEcef.z; m[15] = 1;
@@ -346,6 +358,7 @@ async function initCesium() {
 
       } else if (isIdentity && info.geo_corners) {
         // No root.transform and no child transform — use pixel affine directly.
+        // Columns: [-vecX | vecY | upVec] to match AC→tileset_local mapping
         const gc = info.geo_corners;
         const tlEcef = Cesium.Cartesian3.fromDegrees(gc.tl[1], gc.tl[0], 0);
         const trEcef = Cesium.Cartesian3.fromDegrees(gc.tr[1], gc.tr[0], 0);
@@ -360,7 +373,7 @@ async function initCesium() {
         const upVec = new Cesium.Cartesian3(enuAtTL[8], enuAtTL[9], enuAtTL[10]);
 
         const m = new Float64Array(16);
-        m[0] = vecX.x; m[1] = vecX.y; m[2] = vecX.z; m[3] = 0;
+        m[0] = -vecX.x; m[1] = -vecX.y; m[2] = -vecX.z; m[3] = 0;
         m[4] = vecY.x; m[5] = vecY.y; m[6] = vecY.z; m[7] = 0;
         m[8] = upVec.x; m[9] = upVec.y; m[10] = upVec.z; m[11] = 0;
         m[12] = tlEcef.x; m[13] = tlEcef.y; m[14] = tlEcef.z; m[15] = 1;
@@ -442,15 +455,15 @@ function setupInteraction() {
       return;
     }
 
-    // Check if picked a camera marker
+    // Check if picked a camera marker — only drag if ALREADY selected
     if (picked.id._camIndex !== undefined) {
-      dragActive = true;
-      dragEntity = picked.id;
-      selectCamera(picked.id._camIndex);
-      // For camera markers, set up gizmo axis drag on next move
-      // (or just keep old XZ-surface drag as fallback)
-      viewer.scene.screenSpaceCameraController.enableRotate = false;
-      viewer.scene.screenSpaceCameraController.enableTranslate = false;
+      if (picked.id._camIndex === selectedIndex) {
+        dragActive = true;
+        dragEntity = picked.id;
+        viewer.scene.screenSpaceCameraController.enableRotate = false;
+        viewer.scene.screenSpaceCameraController.enableTranslate = false;
+      }
+      // Selection happens in LEFT_CLICK handler, not here
     }
   }, Cesium.ScreenSpaceEventType.LEFT_DOWN);
 
@@ -523,25 +536,25 @@ function setupInteraction() {
       return;
     }
 
-    // --- Fallback: camera marker XZ surface drag ---
+    // --- Fallback: camera marker XZ drag via horizontal plane intersection ---
     if (!dragEntity) return;
-    const ray = viewer.camera.getPickRay(movement.endPosition);
-    if (!ray) return;
-
-    let cartesian = viewer.scene.pickPosition(movement.endPosition);
-    if (!cartesian || !Cesium.defined(cartesian)) {
-      cartesian = viewer.scene.globe.show
-        ? viewer.scene.globe.pick(ray, viewer.scene)
-        : viewer.camera.pickEllipsoid(movement.endPosition, viewer.scene.globe.ellipsoid);
-    }
-    if (!cartesian) return;
-
-    const acCoords = acTransform.cartesian3ToAC(cartesian);
     const cam = camerasData.cameras[dragEntity._camIndex];
     if (!cam) return;
 
     const oldPos = cam.POSITION || [0, 0, 0];
-    cam.POSITION = [acCoords[0], oldPos[1], acCoords[2]];
+    // Build a horizontal plane at camera's current AC Y (height)
+    const planeOrigin = acTransform.acToCartesian3(oldPos[0], oldPos[1], oldPos[2]);
+    const planeNormal = acTransform.acDirectionToECEF(0, 1, 0); // AC Y-up
+    Cesium.Cartesian3.normalize(planeNormal, planeNormal);
+    const plane = Cesium.Plane.fromPointNormal(planeOrigin, planeNormal);
+
+    const ray = viewer.camera.getPickRay(movement.endPosition);
+    if (!ray) return;
+    const hitPoint = Cesium.IntersectionTests.rayPlane(ray, plane);
+    if (!hitPoint) return;
+
+    const acCoords = acTransform.cartesian3ToAC(hitPoint);
+    cam.POSITION = [acCoords[0], oldPos[1], acCoords[2]]; // Y stays fixed
 
     const newCartesian = acTransform.acToCartesian3(acCoords[0], oldPos[1], acCoords[2]);
     dragEntity.position = newCartesian;
@@ -779,6 +792,7 @@ function renderGizmo() {
   ];
 
   gizmoEntities = {};
+  gizmoHitZones = {};
   for (const ax of axes) {
     const dir = acTransform.acDirectionToECEF(ax.ac[0], ax.ac[1], ax.ac[2]);
     Cesium.Cartesian3.normalize(dir, dir);
@@ -788,10 +802,11 @@ function renderGizmo() {
       new Cesium.Cartesian3()
     );
 
+    // Visible gizmo line (thicker)
     const entity = viewer.entities.add({
       polyline: {
         positions: [origin, end],
-        width: 4,
+        width: 8,
         material: ax.color,
         clampToGround: false,
         disableDepthTestDistance: Number.POSITIVE_INFINITY,
@@ -799,6 +814,19 @@ function renderGizmo() {
     });
     entity._gizmoAxis = ax.key;
     gizmoEntities[ax.key] = entity;
+
+    // Invisible wide hit zone for easier picking
+    const hitZone = viewer.entities.add({
+      polyline: {
+        positions: [origin, end],
+        width: 20,
+        material: ax.color.withAlpha(0.01),
+        clampToGround: false,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      },
+    });
+    hitZone._gizmoAxis = ax.key;
+    gizmoHitZones[ax.key] = hitZone;
   }
 }
 
@@ -808,6 +836,12 @@ function clearGizmo() {
       viewer.entities.remove(gizmoEntities[key]);
     }
     gizmoEntities = null;
+  }
+  if (gizmoHitZones) {
+    for (const key in gizmoHitZones) {
+      viewer.entities.remove(gizmoHitZones[key]);
+    }
+    gizmoHitZones = null;
   }
 }
 
@@ -836,6 +870,10 @@ function updateGizmoPositions() {
       new Cesium.Cartesian3()
     );
     entity.polyline.positions = [origin, end];
+    // Also update hit zone
+    if (gizmoHitZones && gizmoHitZones[ax.key]) {
+      gizmoHitZones[ax.key].polyline.positions = [origin, end];
+    }
   }
 }
 
@@ -879,6 +917,7 @@ function updateFrustum() {
         ),
         clampToGround: false,
       },
+      allowPicking: false,
     })
   );
 
@@ -940,7 +979,7 @@ function updateFrustum() {
     ),
   ];
 
-  // Draw frustum edges
+  // Draw frustum edges (not pickable so they don't block gizmo)
   const frustumColor = Cesium.Color.fromCssColorString("#60a5fa").withAlpha(0.5);
   for (const c of corners) {
     frustumEntities.push(
@@ -951,6 +990,7 @@ function updateFrustum() {
           material: frustumColor,
           clampToGround: false,
         },
+        allowPicking: false,
       })
     );
   }
@@ -963,10 +1003,11 @@ function updateFrustum() {
         material: frustumColor,
         clampToGround: false,
       },
+      allowPicking: false,
     })
   );
 
-  // Semi-transparent frustum polygon
+  // Semi-transparent frustum polygon (not pickable)
   frustumEntities.push(
     viewer.entities.add({
       polygon: {
@@ -974,6 +1015,7 @@ function updateFrustum() {
         material: Cesium.Color.fromCssColorString("#60a5fa").withAlpha(0.08),
         perPositionHeight: true,
       },
+      allowPicking: false,
     })
   );
 
@@ -1496,9 +1538,10 @@ function updateFrustumProjection() {
   Cesium.Cartesian3.normalize(fwdDir, fwdDir);
 
   const fov = ((previewFOV || cam.MAX_FOV || 60) * Math.PI) / 180;
-  const maxDist = 200; // max ray distance in meters
+  const halfH = Math.tan(fov / 2);
+  const halfW = halfH;
 
-  // Build right and up vectors
+  // Build right and up vectors in ECEF
   const upDir = acTransform.acDirectionToECEF(0, 1, 0);
   Cesium.Cartesian3.normalize(upDir, upDir);
   const rightDir = Cesium.Cartesian3.cross(fwdDir, upDir, new Cesium.Cartesian3());
@@ -1506,16 +1549,14 @@ function updateFrustumProjection() {
   const realUp = Cesium.Cartesian3.cross(rightDir, fwdDir, new Cesium.Cartesian3());
   Cesium.Cartesian3.normalize(realUp, realUp);
 
-  const halfH = Math.tan(fov / 2);
-  const halfW = halfH; // assume ~1:1 aspect for horizontal
-  const aspectRatio = 16 / 9;
-  const halfWAdjusted = halfH * aspectRatio / 2;
-
-  // Sample rays along frustum boundary
-  // Bottom edge: 8 samples, left/right edges: 3 each, top edge: 8 samples
+  const maxDist = 500;
   const hitPoints = [];
+
+  // Check if scene.pickFromRay is available (Cesium 1.56+)
+  const canPickFromRay = typeof viewer.scene.pickFromRay === "function";
+
   const sampleRay = (hFrac, vFrac) => {
-    // hFrac: -1..1 horizontal, vFrac: -1..1 vertical
+    // Build ray direction in ECEF space
     const dir = new Cesium.Cartesian3();
     Cesium.Cartesian3.add(
       Cesium.Cartesian3.multiplyByScalar(fwdDir, 1, new Cesium.Cartesian3()),
@@ -1528,52 +1569,40 @@ function updateFrustumProjection() {
     );
     Cesium.Cartesian3.normalize(dir, dir);
 
-    const rayEnd = Cesium.Cartesian3.add(
-      origin,
-      Cesium.Cartesian3.multiplyByScalar(dir, maxDist, new Cesium.Cartesian3()),
-      new Cesium.Cartesian3()
-    );
-
-    // Try to pick surface via screen-space projection
-    const screenPos = Cesium.SceneTransforms.worldToWindowCoordinates(viewer.scene, rayEnd);
-    if (screenPos) {
-      const hitPos = viewer.scene.pickPosition(screenPos);
-      if (hitPos && Cesium.defined(hitPos)) {
-        // Validate the hit point is roughly in the right direction
-        const hitDist = Cesium.Cartesian3.distance(origin, hitPos);
-        if (hitDist < maxDist * 1.5 && hitDist > 1) {
-          hitPoints.push(hitPos);
+    // Primary: raycast against 3D Tiles model
+    if (canPickFromRay) {
+      const ray = new Cesium.Ray(origin, dir);
+      const result = viewer.scene.pickFromRay(ray);
+      if (result && result.position) {
+        const hitDist = Cesium.Cartesian3.distance(origin, result.position);
+        if (hitDist > 1 && hitDist < maxDist) {
+          hitPoints.push(Cesium.Cartesian3.clone(result.position));
           return;
         }
       }
     }
 
-    // Fallback: intersect with ground plane (y=0 in AC coords)
-    // AC ground plane: y_ac = 0 → find t where origin + t*dir hits y_ac=0
-    const acOrigin = pos;
-    const acDirArr = [
-      fwd[0] + halfW * hFrac * (fwd[2] || 0.001),
-      fwd[1] + halfH * 0.6 * vFrac,
-      fwd[2] + halfW * hFrac * (fwd[0] || 0.001),
-    ];
-    // Simpler fallback: just use rayEnd as-is projected to y=0
-    const acEnd = acTransform.cartesian3ToAC(rayEnd);
-    const groundHit = acTransform.acToCartesian3(acEnd[0], 0, acEnd[2]);
-    hitPoints.push(groundHit);
+    // Fallback: no model hit — place point at 500m along ray direction
+    const fallbackDist = 500;
+    const farPoint = Cesium.Cartesian3.add(
+      origin,
+      Cesium.Cartesian3.multiplyByScalar(dir, fallbackDist, new Cesium.Cartesian3()),
+      new Cesium.Cartesian3()
+    );
+    hitPoints.push(farPoint);
   };
 
-  // Bottom edge (8 samples)
-  for (let i = 0; i <= 7; i++) sampleRay(-1 + (2 * i) / 7, -1);
-  // Right edge (3 samples)
-  for (let i = 1; i <= 2; i++) sampleRay(1, -1 + (2 * i) / 3);
-  // Top edge (8 samples, reversed)
-  for (let i = 7; i >= 0; i--) sampleRay(-1 + (2 * i) / 7, 1);
-  // Left edge (3 samples, reversed)
-  for (let i = 2; i >= 1; i--) sampleRay(-1, -1 + (2 * i) / 3);
+  // Sample boundary with higher density: bottom 16, right 6, top 16, left 6
+  const nEdge = 15; // 0..15 → 16 samples per horizontal edge
+  const nSide = 5;  // 1..5  → 5 samples per vertical edge
+  for (let i = 0; i <= nEdge; i++) sampleRay(-1 + (2 * i) / nEdge, -1);
+  for (let i = 1; i <= nSide; i++) sampleRay(1, -1 + (2 * i) / (nSide + 1));
+  for (let i = nEdge; i >= 0; i--) sampleRay(-1 + (2 * i) / nEdge, 1);
+  for (let i = nSide; i >= 1; i--) sampleRay(-1, -1 + (2 * i) / (nSide + 1));
 
   if (hitPoints.length < 3) return;
 
-  // Render projection polygon
+  // Render projection polygon on model surface (not pickable)
   projectionEntities.push(
     viewer.entities.add({
       polygon: {
@@ -1581,10 +1610,11 @@ function updateFrustumProjection() {
         material: Cesium.Color.fromCssColorString("#60a5fa").withAlpha(0.12),
         perPositionHeight: true,
       },
+      allowPicking: false,
     })
   );
 
-  // Projection outline
+  // Projection outline (not pickable)
   projectionEntities.push(
     viewer.entities.add({
       polyline: {
@@ -1593,6 +1623,7 @@ function updateFrustumProjection() {
         material: Cesium.Color.fromCssColorString("#60a5fa").withAlpha(0.4),
         clampToGround: false,
       },
+      allowPicking: false,
     })
   );
 }

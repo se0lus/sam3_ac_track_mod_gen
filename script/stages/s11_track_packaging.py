@@ -496,11 +496,13 @@ def _generate_cameras_ini(centerline_path: str, num_cameras: int = 5) -> str:
         in_point = round(i / num_cameras, 2)
         out_point = round((i + 1) / num_cameras, 2) if i < num_cameras - 1 else 0.1
 
+        # Blender → AC mapping: ac_x = -blender_x, ac_y = -blender_y, ac_z = blender_z
+        # cam_x/cam_z are Blender X/Z; height 8m above ground → Blender Y = -8 → AC Y = 8
         lines.extend([
             f"[CAMERA_{i}]",
             f"NAME={i + 1}",
-            f"POSITION={cam_x:.3f} ,{-height:.3f} ,{cam_z:.3f}",
-            f"FORWARD={dx:.6f} ,-0.15 ,{dz:.6f}",
+            f"POSITION={-cam_x:.3f} ,{height:.3f} ,{cam_z:.3f}",
+            f"FORWARD={-dx:.6f} ,-0.15 ,{dz:.6f}",
             f"UP=0 ,1 ,0",
             "MIN_FOV=10",
             "MAX_FOV=60",

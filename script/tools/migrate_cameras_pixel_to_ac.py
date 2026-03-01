@@ -302,9 +302,9 @@ def _build_pixel_affine(geo_meta: dict):
 def _pixel_ac_to_ecef(pos, vecX, vecY, upVec, origin):
     """Convert pixel AC coords (x_ac, y_ac, z_ac) to ECEF.
 
-    ACToGeoTransform maps: x_b = x_ac, y_b = z_ac, z_b = -y_ac
-    Then: ecef = origin + col0*x_b + col1*y_b + col2*z_b
-    Where: col0=vecX, col1=vecY, col2=upVec
+    Old pixel AC convention: x_b = x_ac, y_b = z_ac, z_b = -y_ac
+    Pixel affine columns: col0=vecX, col1=vecY, col2=upVec
+    ecef = origin + vecX*x_ac + vecY*z_ac + upVec*(-y_ac)
     """
     x_ac, y_ac, z_ac = pos
     x_b = x_ac
@@ -393,10 +393,10 @@ def migrate(layout: str = "default", dry_run: bool = False):
             old_pos = list(pos)
             # pixel AC → ECEF
             ecef = _pixel_ac_to_ecef(pos, vecX, vecY, upVec, origin)
-            # ECEF → tileset_local
+            # ECEF → tileset_local (glTF coords)
             local = _mat4_mul_point(ts_inv, ecef)
-            # tileset_local → AC: x_ac = lx, y_ac = -lz, z_ac = ly
-            new_pos = [local[0], -local[2], local[1]]
+            # tileset_local → AC: x_ac = -x_b, y_ac = z_b, z_ac = y_b
+            new_pos = [-local[0], local[2], local[1]]
             cam["POSITION"] = new_pos
             print(f"  [{name}] POSITION: ({old_pos[0]:.1f}, {old_pos[1]:.1f}, {old_pos[2]:.1f})"
                   f" → ({new_pos[0]:.1f}, {new_pos[1]:.1f}, {new_pos[2]:.1f})")
@@ -407,10 +407,10 @@ def migrate(layout: str = "default", dry_run: bool = False):
             old_fwd = list(fwd)
             # pixel dir → ECEF dir
             ecef_dir = _pixel_dir_to_ecef(fwd, vecX, vecY, upVec)
-            # ECEF dir → local dir (rotation only)
+            # ECEF dir → tileset_local dir (rotation only)
             local_dir = _mat3_mul_vec(ts_inv_rot, ecef_dir)
-            # local → AC dir, normalize
-            ac_dir = _vec_normalize((local_dir[0], -local_dir[2], local_dir[1]))
+            # tileset_local → AC dir: (-x_b, z_b, y_b), normalize
+            ac_dir = _vec_normalize((-local_dir[0], local_dir[2], local_dir[1]))
             cam["FORWARD"] = list(ac_dir)
             print(f"  [{name}] FORWARD: ({old_fwd[0]:.3f}, {old_fwd[1]:.3f}, {old_fwd[2]:.3f})"
                   f" → ({ac_dir[0]:.3f}, {ac_dir[1]:.3f}, {ac_dir[2]:.3f})")
@@ -421,7 +421,7 @@ def migrate(layout: str = "default", dry_run: bool = False):
             old_up = list(up)
             ecef_dir = _pixel_dir_to_ecef(up, vecX, vecY, upVec)
             local_dir = _mat3_mul_vec(ts_inv_rot, ecef_dir)
-            ac_dir = _vec_normalize((local_dir[0], -local_dir[2], local_dir[1]))
+            ac_dir = _vec_normalize((-local_dir[0], local_dir[2], local_dir[1]))
             cam["UP"] = list(ac_dir)
             print(f"  [{name}] UP: ({old_up[0]:.3f}, {old_up[1]:.3f}, {old_up[2]:.3f})"
                   f" → ({ac_dir[0]:.3f}, {ac_dir[1]:.3f}, {ac_dir[2]:.3f})")
