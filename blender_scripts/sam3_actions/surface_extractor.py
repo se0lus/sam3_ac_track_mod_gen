@@ -116,20 +116,24 @@ def _build_excluded_set() -> set[str]:
     return excluded
 
 
-def _get_terrain_max_y() -> float:
+def _get_terrain_min_y() -> float:
+    """Find the minimum Y (world-space) among non-excluded mesh objects.
+
+    In the Y-down coordinate system, min Y = physically highest point.
+    """
     excluded = _build_excluded_set()
-    max_y = 0.0
+    min_y = float("inf")
     for obj in bpy.data.objects:
         if obj.type != "MESH" or obj.name in excluded:
             continue
         try:
             for corner in obj.bound_box:
                 w = obj.matrix_world @ Vector(corner)
-                if w.y > max_y:
-                    max_y = w.y
+                if w.y < min_y:
+                    min_y = w.y
         except Exception:
             continue
-    return max_y
+    return min_y if min_y != float("inf") else 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +223,7 @@ def extract_surface_for_mask(
 
     # ---- 3. Raycast each vertex to terrain ----
     bm.verts.ensure_lookup_table()
-    direction = Vector((0.0, -1.0, 0.0))
+    direction = Vector((0.0, 1.0, 0.0))   # +Y = gravity, cast downward
     hit_count = 0
     miss_verts: list = []
     total_v = len(bm.verts)
@@ -329,7 +333,7 @@ class SAM3_OT_extract_surfaces(bpy.types.Operator):
         excluded = _build_excluded_set()
         _log(f"Excluded {len(excluded)} objects from raycast")
 
-        ray_origin_y = _get_terrain_max_y() + 100.0
+        ray_origin_y = _get_terrain_min_y() - 100.0
         _log(f"Ray origin Y = {ray_origin_y:.1f}")
 
         total_created = 0
@@ -389,7 +393,7 @@ class SAM3_OT_extract_surface_selected(bpy.types.Operator):
         depsgraph = context.evaluated_depsgraph_get()
         scene = context.scene
         excluded = _build_excluded_set()
-        ray_origin_y = _get_terrain_max_y() + 100.0
+        ray_origin_y = _get_terrain_min_y() - 100.0
 
         total_created = 0
         t_all = time.monotonic()

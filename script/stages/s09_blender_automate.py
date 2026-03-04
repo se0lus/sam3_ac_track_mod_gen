@@ -94,6 +94,14 @@ def run(config: PipelineConfig) -> None:
     cmd.extend(["--density-sand", str(config.surface_density_sand)])
     cmd.extend(["--density-road2", str(config.surface_density_road2)])
 
+    # Road/Kerb extraction method
+    if config.s9_road_kerb_method == "bool":
+        cmd.append("--road-kerb-bool")
+
+    # Boolean mesh debug saves
+    if config.s9_debug_boolean:
+        cmd.append("--debug-boolean")
+
     # Mesh simplification
     if config.s9_mesh_simplify:
         cmd.append("--mesh-simplify")

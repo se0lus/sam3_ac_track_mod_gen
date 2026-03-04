@@ -689,6 +689,11 @@ class PipelineRunner:
                 cmd.extend(["--mesh-weld-distance", str(config_dict["s9_mesh_weld_distance"])])
             if config_dict.get("s9_mesh_decimate_ratio"):
                 cmd.extend(["--mesh-decimate-ratio", str(config_dict["s9_mesh_decimate_ratio"])])
+        road_kerb_method = config_dict.get("s9_road_kerb_method", "copy")
+        if road_kerb_method == "bool":
+            cmd.append("--road-kerb-bool")
+        if config_dict.get("s9_debug_boolean"):
+            cmd.append("--debug-boolean")
         for dtag in ["road", "kerb", "grass", "sand", "road2"]:
             val = config_dict.get(f"s9_density_{dtag}")
             if val:

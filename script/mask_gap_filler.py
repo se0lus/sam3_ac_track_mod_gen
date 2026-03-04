@@ -105,6 +105,11 @@ def fill_mask_gaps(
         kernel_radius, mpp, gap_threshold_m,
     )
 
+    # Tags to skip during dilation — kerb is excluded from outward
+    # expansion to avoid re-introducing narrow strips that Stage 5
+    # explicitly removed.  Closing (internal hole fill) is kept.
+    _NO_DILATE_TAGS = {"kerb"}
+
     # Step 2: Morphological closing — fill same-tag holes (high→low priority)
     for tag_name in reversed(SURFACE_TAGS):
         tag_id = TAG_NAME_TO_ID[tag_name]
@@ -131,6 +136,8 @@ def fill_mask_gaps(
     # Step 3: Priority dilation — fill cross-tag gaps (high→low priority)
     if remaining_after_close > 0:
         for tag_name in reversed(SURFACE_TAGS):
+            if tag_name in _NO_DILATE_TAGS:
+                continue
             tag_id = TAG_NAME_TO_ID[tag_name]
             tag_mask = (filled == tag_id).astype(np.uint8) * 255
             if np.count_nonzero(tag_mask) == 0:

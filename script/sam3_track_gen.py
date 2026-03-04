@@ -241,6 +241,12 @@ Available stages: """ + ", ".join(PIPELINE_STAGES)
     p.add_argument("--density-road2", type=float, default=0.0,
                     help="Sampling density for road2 surfaces in metres (0 = use config default)")
 
+    # --- Road/Kerb extraction method ---
+    p.add_argument("--road-kerb-bool", action="store_true",
+                    help="Use boolean method for road/kerb surfaces (default: terrain copy)")
+    p.add_argument("--debug-boolean", action="store_true",
+                    help="Save intermediate .blend files for boolean mesh debugging")
+
     # --- Mesh simplification options ---
     p.add_argument("--mesh-simplify", action="store_true",
                     help="Enable weld + decimate for terrain collision meshes (road/kerb)")
@@ -355,6 +361,12 @@ def config_from_args(args: argparse.Namespace) -> PipelineConfig:
         config.surface_density_sand = args.density_sand
     if args.density_road2 > 0:
         config.surface_density_road2 = args.density_road2
+
+    # Road/Kerb extraction method
+    if args.road_kerb_bool:
+        config.s9_road_kerb_method = "bool"
+    if args.debug_boolean:
+        config.s9_debug_boolean = True
 
     # Mesh simplification options
     if args.mesh_simplify:

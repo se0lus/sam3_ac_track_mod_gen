@@ -304,6 +304,8 @@ class PipelineConfig:
     s9_mesh_simplify: bool = False          # Enable post-processing simplification for terrain meshes
     s9_mesh_weld_distance: float = 0.01     # Weld distance in metres (default 0.01)
     s9_mesh_decimate_ratio: float = 0.5     # Decimate ratio 0-1 (default 0.5)
+    s9_road_kerb_method: str = "copy"       # "copy" (terrain copy) or "bool" (boolean mesh)
+    s9_debug_boolean: bool = False          # Save intermediate .blend files for boolean mesh debugging
 
     # --- Stage 10 options ---
     s10_max_vertices: int = 21000           # Max vertices per MESH object

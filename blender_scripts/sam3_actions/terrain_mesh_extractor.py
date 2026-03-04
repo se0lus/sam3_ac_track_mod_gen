@@ -140,18 +140,21 @@ def _get_terrain_objects(excluded: set[str]) -> list[bpy.types.Object]:
     return objs
 
 
-def _get_terrain_max_y(terrain_objs: list[bpy.types.Object]) -> float:
-    """Find the maximum Y (world space) across terrain objects."""
-    max_y = 0.0
+def _get_terrain_min_y(terrain_objs: list[bpy.types.Object]) -> float:
+    """Find the minimum Y (world space) across terrain objects.
+
+    In the Y-down coordinate system, min Y = physically highest point.
+    """
+    min_y = float("inf")
     for obj in terrain_objs:
         try:
             for corner in obj.bound_box:
                 w = obj.matrix_world @ Vector(corner)
-                if w.y > max_y:
-                    max_y = w.y
+                if w.y < min_y:
+                    min_y = w.y
         except Exception:
             continue
-    return max_y
+    return min_y if min_y != float("inf") else 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -211,9 +214,9 @@ def _build_bvh_from_masks(
 
 
 def _point_inside_bvh(bvh: BVHTree, x: float, z: float, ray_y: float) -> bool:
-    """Test if (x, z) falls inside the mask by casting a ray from above."""
+    """Test if (x, z) falls inside the mask by casting a ray downward."""
     origin = Vector((x, ray_y, z))
-    direction = Vector((0.0, -1.0, 0.0))
+    direction = Vector((0.0, 1.0, 0.0))   # +Y = gravity, cast downward
     location, _normal, _index, _dist = bvh.ray_cast(origin, direction)
     return location is not None
 
@@ -330,8 +333,8 @@ def extract_terrain_for_road_kerb(
         _log("No valid mask BVH could be built — nothing to extract")
         return None, None
 
-    # Ray origin Y: above all terrain
-    ray_y = _get_terrain_max_y(terrain_objs) + 100.0
+    # Ray origin Y: above all terrain (-Y = sky)
+    ray_y = _get_terrain_min_y(terrain_objs) - 100.0
     _log(f"Ray origin Y = {ray_y:.1f}")
 
     road_faces: list[tuple] = []

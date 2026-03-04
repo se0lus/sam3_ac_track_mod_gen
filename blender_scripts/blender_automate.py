@@ -191,8 +191,8 @@ def _setup_viewport_topdown() -> None:
     # Far clip
     space.clip_end = 10000.0
 
-    # Orthographic, looking down from +Y onto XZ plane
-    # Rotation: +90° around X  →  view -Z maps to world +Y (camera above, looking down)
+    # Orthographic, looking down from -Y (sky) onto XZ plane
+    # Rotation: +90° around X  →  camera above looking in +Y direction (downward)
     r3d.view_perspective = "ORTHO"
     r3d.view_rotation = Quat((0.7071068, 0.7071068, 0.0, 0.0))
 
@@ -673,6 +673,10 @@ def _parse_args() -> argparse.Namespace:
                     help="Sampling density for sand surfaces in metres")
     p.add_argument("--density-road2", type=float, default=2.0,
                     help="Sampling density for road2 surfaces in metres")
+    p.add_argument("--road-kerb-bool", action="store_true",
+                    help="Use boolean method for road/kerb instead of terrain copy")
+    p.add_argument("--debug-boolean", action="store_true",
+                    help="Save intermediate .blend files for boolean mesh debugging")
     p.add_argument("--mesh-simplify", action="store_true",
                     help="Enable mesh weld + decimate for terrain collision meshes")
     p.add_argument("--mesh-weld-distance", type=float, default=0.01,
@@ -984,23 +988,36 @@ def main() -> None:
             _emit_progress(_step_pct(5), "Extracting collision surfaces...")
             log.info("Step 5/8: Extracting collision surfaces...")
 
-            # Set sub-progress ranges for sub-modules
-            import sam3_actions.terrain_mesh_extractor as _tme
-            _tme.PROGRESS_RANGE = (_step_pct(5, 0.0), _step_pct(5, 0.45))
-            import sam3_actions.boolean_mesh_generator as _bmg
-            _bmg.PROGRESS_RANGE = (_step_pct(5, 0.5), _step_pct(5, 1.0))
+            if args.road_kerb_bool:
+                # All tags use boolean method
+                log.info("  Step 5: Boolean surfaces (all tags)...")
+                import sam3_actions.boolean_mesh_generator as _bmg
+                _bmg.PROGRESS_RANGE = (_step_pct(5, 0.0), _step_pct(5, 1.0))
+                _bmg.BOOLEAN_TAGS = ["road", "kerb", "grass", "sand", "road2"]
+                if args.debug_boolean:
+                    _bmg.DEBUG_SAVE_DIR = os.path.join(os.path.dirname(output), "debug_boolean")
+                result = bpy.ops.sam3.generate_boolean_surfaces()
+                log.info("  Boolean surfaces result: %s", result)
+            else:
+                # Default: road/kerb copy + grass/sand/road2 boolean
+                import sam3_actions.terrain_mesh_extractor as _tme
+                _tme.PROGRESS_RANGE = (_step_pct(5, 0.0), _step_pct(5, 0.45))
+                import sam3_actions.boolean_mesh_generator as _bmg
+                _bmg.PROGRESS_RANGE = (_step_pct(5, 0.5), _step_pct(5, 1.0))
+                if args.debug_boolean:
+                    _bmg.DEBUG_SAVE_DIR = os.path.join(os.path.dirname(output), "debug_boolean")
 
-            log.info("  Step 5a: Terrain extraction (road + kerb)...")
-            result_a = bpy.ops.sam3.extract_terrain_surfaces()
-            log.info("  Terrain extraction result: %s", result_a)
+                log.info("  Step 5a: Terrain extraction (road + kerb)...")
+                result_a = bpy.ops.sam3.extract_terrain_surfaces()
+                log.info("  Terrain extraction result: %s", result_a)
 
-            if args.mesh_simplify:
-                log.info("  Step 5a+: Simplifying terrain meshes...")
-                _simplify_terrain_meshes(args.mesh_weld_distance, args.mesh_decimate_ratio)
+                if args.mesh_simplify:
+                    log.info("  Step 5a+: Simplifying terrain meshes...")
+                    _simplify_terrain_meshes(args.mesh_weld_distance, args.mesh_decimate_ratio)
 
-            log.info("  Step 5b: Boolean surfaces (grass/sand/road2)...")
-            result_b = bpy.ops.sam3.generate_boolean_surfaces()
-            log.info("  Boolean surfaces result: %s", result_b)
+                log.info("  Step 5b: Boolean surfaces (grass/sand/road2)...")
+                result_b = bpy.ops.sam3.generate_boolean_surfaces()
+                log.info("  Boolean surfaces result: %s", result_b)
         else:
             _emit_progress(_step_pct(5), "Skipped surfaces")
             log.info("Step 5/8: Skipped (--skip-surfaces)")

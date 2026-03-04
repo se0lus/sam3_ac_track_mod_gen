@@ -455,6 +455,7 @@ async function showStageInfo(stage) {
     const densityGrass = cfg.s9_density_grass || 2.0;
     const densitySand = cfg.s9_density_sand || 2.0;
     const densityRoad2 = cfg.s9_density_road2 || 2.0;
+    const roadKerbMethod = cfg.s9_road_kerb_method || "copy";
     const refineTags = cfg.s9_refine_tags || ["road"];
     const allTags = ["road", "grass", "sand", "kerb", "road2"];
     const tagPills = allTags.map(tag =>
@@ -467,6 +468,7 @@ async function showStageInfo(stage) {
       { key: "s9_mesh_simplify",      label: "网格简化",        desc: "对 road/kerb 地形网格执行焊接 + Decimate 简化", def: false },
       { key: "s9_convert_textures",   label: "转换纹理",        desc: "解包纹理并转换为 PNG + BSDF 材质", def: true },
       { key: "s9_background",         label: "Blender 后台运行", desc: "以 --background 无界面模式执行", def: true },
+      { key: "s9_debug_boolean",      label: "Bool Debug",       desc: "保存布尔网格各阶段的中间 .blend 文件到 debug_boolean/", def: false },
     ];
     const toggleHtml = toggles.map(t => {
       const on = cfg[t.key] !== undefined ? cfg[t.key] : t.def;
@@ -494,6 +496,13 @@ async function showStageInfo(stage) {
           <div class="config-field">
             <label>瓦片外扩 (米)</label>
             <input type="number" id="s9TilePadding" value="${tilePadding}" min="0" max="10" step="0.5" />
+          </div>
+        </div>
+        <div class="config-field">
+          <label>Road/Kerb 提取方式</label>
+          <div class="s9-tag-pills" id="s9RoadKerbMethod">
+            <div class="s9-tag-pill${roadKerbMethod === 'copy' ? ' active' : ''}" data-method="copy">Copy (地形复制)</div>
+            <div class="s9-tag-pill${roadKerbMethod === 'bool' ? ' active' : ''}" data-method="bool">Bool (布尔网格)</div>
           </div>
         </div>
         <div class="config-field">
@@ -780,9 +789,16 @@ async function showStageInfo(stage) {
       }
     });
   } else if (stage.id === "blender_automate") {
-    // Wire tag pill toggles
-    document.querySelectorAll(".s9-tag-pill").forEach(pill => {
+    // Wire tag pill toggles (refine tags — multi-select)
+    document.querySelectorAll("#s9TagPills .s9-tag-pill").forEach(pill => {
       pill.addEventListener("click", () => pill.classList.toggle("active"));
+    });
+    // Wire road/kerb method pills (mutual exclusive)
+    document.querySelectorAll("#s9RoadKerbMethod .s9-tag-pill").forEach(pill => {
+      pill.addEventListener("click", () => {
+        document.querySelectorAll("#s9RoadKerbMethod .s9-tag-pill").forEach(p => p.classList.remove("active"));
+        pill.classList.add("active");
+      });
     });
     // Wire toggle switches
     document.querySelectorAll(".s9-toggle").forEach(row => {
@@ -793,8 +809,10 @@ async function showStageInfo(stage) {
     });
     // Save handler
     $("btnSaveStageConfig").addEventListener("click", async () => {
-      const tags = Array.from(document.querySelectorAll(".s9-tag-pill.active")).map(p => p.dataset.tag);
+      const tags = Array.from(document.querySelectorAll("#s9TagPills .s9-tag-pill.active")).map(p => p.dataset.tag);
+      const methodPill = document.querySelector("#s9RoadKerbMethod .s9-tag-pill.active");
       const updated = { ...cfg };
+      updated.s9_road_kerb_method = methodPill ? methodPill.dataset.method : "copy";
       updated.s9_base_level = parseInt($("s9BaseLevel").value) || 17;
       updated.s9_target_level = parseInt($("s9TargetLevel").value) || 22;
       updated.s9_tile_padding = parseFloat($("s9TilePadding").value) || 0;

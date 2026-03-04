@@ -38,7 +38,7 @@
 - **Mask Collection**: 根 `mask_polygon_collection`，子 `mask_polygon_{tag}`。名称在 `config.ROOT_POLYGON_COLLECTION_NAME`。
 - **采样密度**: road/kerb 0.1m, grass/sand/road2 2.0m。配置在 `config.SURFACE_SAMPLING_DENSITY_*`。
 - **地形瓦片**: 在 `L{digits}` collection 中（如 L17, L18 ...）。
-- **Blender 坐标系**: Y 轴朝上，mask 在 XZ 平面，raycast 方向 (0, -1, 0)。
+- **Blender 坐标系**: Y 轴朝下（重力方向），-Y 朝天空，mask 在 XZ 平面，raycast 方向 (0, 1, 0)。
 
 ## Web 前端规范 (webTools)
 
