@@ -345,6 +345,8 @@ async function showStageInfo(stage) {
     const gapFillOn = cfg.s8_gap_fill_enabled !== false;
     const gapThreshold = cfg.s8_gap_fill_threshold_m || 0.20;
     const defaultTag = cfg.s8_gap_fill_default_tag || "road2";
+    const filterNarrowOn = cfg.s8_filter_narrow_strips !== false;
+    const minWidth = cfg.s8_min_width_m || 0.5;
     const allFillTags = ["sand", "grass", "road2", "road", "kerb"];
     stageConfigHtml = `
       <div class="db-config db-config--stage">
@@ -352,6 +354,13 @@ async function showStageInfo(stage) {
         <div class="config-field">
           <label>执行选项</label>
           <div class="s9-toggles" id="s8Toggles">
+            <div class="s9-toggle" data-key="s8_filter_narrow_strips">
+              <div>
+                <div class="s9-toggle__label">过滤窄条碎片</div>
+                <div class="s9-toggle__desc">移除过窄的 mask 碎片，避免 Boolean 运算失败</div>
+              </div>
+              <div class="s9-toggle__track${filterNarrowOn ? " active" : ""}"><div class="s9-toggle__thumb"></div></div>
+            </div>
             <div class="s9-toggle" data-key="s8_gap_fill_enabled">
               <div>
                 <div class="s9-toggle__label">自动空隙填充</div>
@@ -369,6 +378,10 @@ async function showStageInfo(stage) {
           </div>
         </div>
         <div class="s9-level-row">
+          <div class="config-field">
+            <label>最小宽度 (米)</label>
+            <input type="number" id="s8MinWidth" value="${minWidth}" min="0.1" max="5.0" step="0.1" />
+          </div>
           <div class="config-field">
             <label>空隙阈值 (米)</label>
             <input type="number" id="s8GapThreshold" value="${gapThreshold}" min="0.05" max="2.0" step="0.05" />
@@ -739,7 +752,8 @@ async function showStageInfo(stage) {
         const on = row.querySelector(".s9-toggle__track").classList.contains("active");
         updated[key] = on;
       });
-      // Gap-fill threshold + default tag
+      // Narrow strip filter + gap-fill parameters
+      updated.s8_min_width_m = parseFloat($("s8MinWidth").value) || 0.5;
       updated.s8_gap_fill_threshold_m = parseFloat($("s8GapThreshold").value) || 0.20;
       updated.s8_gap_fill_default_tag = $("s8DefaultTag").value || "road2";
       try {

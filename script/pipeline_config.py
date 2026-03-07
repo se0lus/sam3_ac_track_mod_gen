@@ -292,6 +292,8 @@ class PipelineConfig:
     s8_gap_fill_enabled: bool = True  # Auto-fill mask gaps within driveable zone
     s8_gap_fill_threshold_m: float = 0.20  # Small gap threshold in metres
     s8_gap_fill_default_tag: str = "road2"  # Default fill tag for remaining voids
+    s8_filter_narrow_strips: bool = True  # Remove narrow strips/fragments before gap-fill
+    s8_min_width_m: float = 0.5  # Minimum width in metres (strips narrower than this are removed)
 
     # --- Stage 9 options ---
     s9_no_walls: bool = False
@@ -304,7 +306,7 @@ class PipelineConfig:
     s9_mesh_simplify: bool = False          # Enable post-processing simplification for terrain meshes
     s9_mesh_weld_distance: float = 0.01     # Weld distance in metres (default 0.01)
     s9_mesh_decimate_ratio: float = 0.5     # Decimate ratio 0-1 (default 0.5)
-    s9_road_kerb_method: str = "copy"       # "copy" (terrain copy) or "bool" (boolean mesh)
+    s9_road_kerb_method: str = "bool"       # "copy" (terrain copy) or "bool" (boolean mesh)
     s9_debug_boolean: bool = False          # Save intermediate .blend files for boolean mesh debugging
 
     # --- Stage 10 options ---

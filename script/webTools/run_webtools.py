@@ -581,7 +581,21 @@ def _parse_progress(line: str, state: dict) -> dict | None:
     if not m:
         return None
     pct = max(0, min(100, int(m.group(1))))
-    return {"pct": pct, "eta": _eta_from_pct(state, pct / 100)}
+    msg = m.group(2).strip()
+
+    # Extract ETA from message if present (format: "... (ETA: 3m15s)")
+    eta = ""
+    if "(ETA:" in msg:
+        import re
+        eta_match = re.search(r'\(ETA:\s*([^)]+)\)', msg)
+        if eta_match:
+            eta = eta_match.group(1).strip()
+
+    # Fallback to computed ETA if not provided
+    if not eta:
+        eta = _eta_from_pct(state, pct / 100)
+
+    return {"pct": pct, "eta": eta}
 
 
 # ---------------------------------------------------------------------------

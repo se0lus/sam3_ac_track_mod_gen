@@ -104,6 +104,7 @@ def _run_gap_fill(
     from mask_gap_filler import (
         fill_mask_gaps, build_driveable_zone,
         SURFACE_TAGS, TAG_NAME_TO_ID, INDEPENDENT_TAGS,
+        _save_debug_colorized,
     )
     from mask_merger import (
         _read_geotiff_bounds, _compute_canvas_size, _geo_to_canvas,
@@ -114,6 +115,7 @@ def _run_gap_fill(
     logger.info("--- Phase 1: Gap filling (rasterize from blender JSONs) ---")
 
     # ---- 1. Compute canvas dimensions ----
+    logger.info("[1/8] Computing canvas dimensions...")
     if not config.geotiff_path or not os.path.isfile(config.geotiff_path):
         logger.warning("GeoTIFF not found: %s. Skipping gap-fill.", config.geotiff_path)
         return None
@@ -132,6 +134,7 @@ def _run_gap_fill(
     logger.info("Canvas: %dx%d (scale_factor=%.2f)", canvas_w, canvas_h, _scale)
 
     # ---- 2. Load walls → build driveable zone ----
+    logger.info("[2/8] Building driveable zone...")
     walls, wall_resolution = _load_walls(config)
     if walls is None:
         return None
@@ -151,22 +154,30 @@ def _run_gap_fill(
     )
 
     # ---- 3. Rasterize all tags from blender JSONs ----
+    logger.info("[3/8] Rasterizing tags from blender JSONs...")
     # Surface tags → rasterize onto canvas, will be composited
     # Independent tags → rasterize for fill_zone exclusion, also copied as-is
     surface_masks = {}  # tag -> (H, W) binary uint8 (0/255)
     independent_masks = {}  # tag -> (H, W) binary uint8 (0/255)
 
     all_tags = SURFACE_TAGS + INDEPENDENT_TAGS
-    for tag_name in all_tags:
+
+    # 并发光栅化
+    from concurrent.futures import ThreadPoolExecutor
+    def rasterize_tag(tag_name):
         json_path = os.path.join(stage5_dir, tag_name, f"{tag_name}_merged_blender.json")
         if not os.path.isfile(json_path):
+            return None
+        mask = _rasterize_blender_json(json_path, bounds_wgs84, canvas_w, canvas_h)
+        return (tag_name, mask, int(np.count_nonzero(mask)))
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        results = list(executor.map(rasterize_tag, all_tags))
+
+    for result in results:
+        if result is None:
             continue
-
-        mask = _rasterize_blender_json(
-            json_path, bounds_wgs84, canvas_w, canvas_h,
-        )
-        n_pixels = int(np.count_nonzero(mask))
-
+        tag_name, mask, n_pixels = result
         if tag_name in SURFACE_TAGS:
             surface_masks[tag_name] = mask
             logger.info("  Rasterized surface '%s': %d px", tag_name, n_pixels)
@@ -184,6 +195,7 @@ def _run_gap_fill(
             cv2.imwrite(os.path.join(debug_dir, f"00_raster_{tag}.png"), mask)
 
     # ---- 4. Build composite (priority: low→high, high overwrites) ----
+    logger.info("[4/8] Building composite (priority: sand < grass < road2 < road < kerb)...")
     #    Then clip to driveable zone so surface pixels inside inner walls
     #    (e.g. kerb inside tree/building walls) are removed.
     composite = np.zeros((canvas_h, canvas_w), dtype=np.uint8)
@@ -207,6 +219,7 @@ def _run_gap_fill(
             logger.info("  Composite '%s' (id=%d): %d px", tag_name, tag_id, n)
 
     # ---- 5. Build fill_zone = driveable AND NOT independent ----
+    logger.info("[5/8] Building fill zone (driveable - independent tags)...")
     fill_zone = driveable.copy()
     for tag_name, mask in independent_masks.items():
         n_before = int(np.count_nonzero(fill_zone))
@@ -226,8 +239,12 @@ def _run_gap_fill(
             os.path.join(debug_dir, "01c_fill_zone_final.png"),
             fill_zone.astype(np.uint8) * 255,
         )
+        # 保存 gap-fill 前的 composite
+        _save_debug_colorized(composite, "02_composite_before_gapfill", debug_dir)
 
-    # ---- 6. Run gap-fill ----
+    # ---- 6. Run gap-fill (before narrow strip filter) ----
+    logger.info("[6/8] Running gap-fill algorithm...")
+    composite_before_filter = composite.copy()  # 保存副本用于预览
     filled = fill_mask_gaps(
         composite,
         fill_zone,
@@ -236,11 +253,98 @@ def _run_gap_fill(
         default_tag=config.s8_gap_fill_default_tag,
         debug_dir=debug_dir,
     )
+    composite = filled  # 用填充后的结果替换 composite
 
-    # ---- 7. Save preview (before/after) ----
-    _save_gap_fill_preview(composite, filled, out_dir)
+    # ---- 4.5 Filter narrow strips (remove fragments < min_width_m) ----
+    logger.info("[7/8] Filtering narrow strips (min_width=%.2fm)...", config.s8_min_width_m if config.s8_filter_narrow_strips else 0)
+    if config.s8_filter_narrow_strips and config.s8_min_width_m > 0:
+        from mask_gap_filler import _compute_meters_per_pixel
+        logger.info("--- Filtering narrow strips (min_width=%.2fm) ---", config.s8_min_width_m)
+        mpp = _compute_meters_per_pixel(bounds, canvas_w, canvas_h)
+        radius = max(1, int(round(config.s8_min_width_m / 2 / mpp)))
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*radius+1, 2*radius+1))
+        probe_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        logger.info("  Filter kernel: radius=%dpx (%.4fm/px)", radius, mpp)
+
+        # Phase 1: 处理每个 tag 的窄条（从高到低优先级）
+        for tag_name in reversed(SURFACE_TAGS):
+            tag_id = TAG_NAME_TO_ID[tag_name]
+            mask = (composite == tag_id).astype(np.uint8) * 255
+            if np.count_nonzero(mask) == 0:
+                continue
+
+            opened = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+            removed = ((mask > 0) & (opened == 0))
+            n_removed = int(np.count_nonzero(removed))
+            if n_removed == 0:
+                if debug_dir:
+                    _save_debug_colorized(composite, f"01d_filter_{tag_name}_nochange", debug_dir)
+                continue
+
+            # 连通域分析：对每个窄条区域单独处理
+            removed_uint8 = removed.astype(np.uint8) * 255
+            num_labels, labels = cv2.connectedComponents(removed_uint8)
+            logger.info("  '%s': found %d connected narrow regions", tag_name, num_labels - 1)
+
+            # 预计算所有候选 tag 的 dilated mask（避免重复计算）
+            dilated_masks = {}
+            for candidate_name in SURFACE_TAGS:
+                candidate_id = TAG_NAME_TO_ID[candidate_name]
+                if candidate_id == tag_id:
+                    continue
+                candidate_mask = (composite == candidate_id).astype(np.uint8) * 255
+                if np.count_nonzero(candidate_mask) > 0:
+                    dilated_masks[candidate_id] = cv2.dilate(candidate_mask, probe_kernel, iterations=1)
+
+            # 并发处理每个连通区域
+            def process_region(region_id):
+                region_mask = (labels == region_id)
+                region_pixels = int(np.count_nonzero(region_mask))
+                adjacent_tags = []
+                for candidate_id, dilated_mask in dilated_masks.items():
+                    if np.any(region_mask & (dilated_mask > 0)):
+                        adjacent_tags.append(candidate_id)
+                if len(adjacent_tags) > 0:
+                    best_fill_id = int(max(adjacent_tags))
+                    fill_tag = [k for k, v in TAG_NAME_TO_ID.items() if v == best_fill_id][0]
+                    return (region_id, best_fill_id, region_pixels, fill_tag)
+                return None
+
+            with ThreadPoolExecutor(max_workers=config.max_workers) as executor:
+                results = list(executor.map(process_region, range(1, num_labels)))
+
+            # 应用填充结果（重新计算 region_mask 以节省内存）
+            for result in results:
+                if result is not None:
+                    region_id, best_fill_id, region_pixels, fill_tag = result
+                    region_mask = (labels == region_id)
+                    composite[region_mask] = best_fill_id
+                    logger.info("    Region %d/%d: %dpx filled with '%s'",
+                               region_id, num_labels-1, region_pixels, fill_tag)
+
+            # Debug: 保存处理后的结果
+            if debug_dir:
+                debug_composite = np.zeros_like(composite)
+                debug_composite[removed] = tag_id
+                dilated_removed = cv2.dilate(removed_uint8, probe_kernel, iterations=1)
+                neighbor_ring = (dilated_removed > 0) & ~removed
+                for cid in range(1, 6):
+                    candidate_mask = (composite == cid)
+                    debug_composite[neighbor_ring & candidate_mask] = cid
+                _save_debug_colorized(debug_composite, f"06_filter_{tag_name}_detail", debug_dir)
+
+            # Debug: 每处理完一个 tag 保存一次
+            if debug_dir:
+                _save_debug_colorized(composite, f"06_filter_{tag_name}", debug_dir)
+
+        if debug_dir:
+            _save_debug_colorized(composite, "07_after_narrow_filter", debug_dir)
+
+    # ---- 7. Save preview (before gap-fill vs after narrow filter) ----
+    _save_gap_fill_preview(composite_before_filter, composite, out_dir)
 
     # ---- 8. Re-extract contours + triangulate → Blender coords ----
+    logger.info("[8/8] Re-extracting contours and converting to Blender coordinates...")
     gap_filled_dir = os.path.join(out_dir, "gap_filled")
     if os.path.isdir(gap_filled_dir):
         shutil.rmtree(gap_filled_dir)
@@ -257,18 +361,26 @@ def _run_gap_fill(
     )
 
     # Re-extract surface tags from filled composite
-    for tag_name in SURFACE_TAGS:
+    def extract_tag(tag_name):
         tag_id = TAG_NAME_TO_ID[tag_name]
-        binary = (filled == tag_id).astype(np.uint8) * 255
+        binary = (composite == tag_id).astype(np.uint8) * 255
         n_pixels = int(np.count_nonzero(binary))
         if n_pixels == 0:
-            logger.info("  Tag '%s': no pixels, skipping", tag_name)
-            continue
-
+            return (tag_name, 0)
         _write_tag_blender_json(
             binary, tag_name, bounds_wgs84, canvas_w, canvas_h,
             tf_info, gap_filled_dir,
         )
+        return (tag_name, n_pixels)
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        results = list(executor.map(extract_tag, SURFACE_TAGS))
+
+    for tag_name, n_pixels in results:
+        if n_pixels == 0:
+            logger.info("  Tag '%s': no pixels, skipping", tag_name)
+        else:
+            logger.info("  Tag '%s': extracted %d pixels", tag_name, n_pixels)
 
     # Copy independent tag JSONs from Stage 5 as-is
     for entry in os.listdir(stage5_dir):
