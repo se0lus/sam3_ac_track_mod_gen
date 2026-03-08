@@ -16,24 +16,166 @@ if _script_dir not in sys.path:
 from pipeline_config import PipelineConfig
 
 
+def _run_parallel(config: PipelineConfig) -> None:
+    """Execute Stage 9 with parallel surface extraction."""
+    logger.info("Using parallel surface extraction (max_workers=%d)", config.max_workers)
+
+    # Step 1: Compute tile plans
+    from tile_planner import compute_tile_plans, save_tile_plan
+
+    tiles_blend = os.path.join(config.stage_dir("blender_tiles"), "tiles_loaded.blend")
+    if not os.path.isfile(tiles_blend):
+        logger.error("tiles_loaded.blend not found, parallel mode requires Stage 8.5")
+        raise FileNotFoundError(f"tiles_loaded.blend not found: {tiles_blend}")
+
+    tags = ["road", "kerb", "grass", "sand", "road2"]
+    densities = {
+        "road": config.surface_density_road,
+        "kerb": config.surface_density_kerb,
+        "grass": config.surface_density_grass,
+        "sand": config.surface_density_sand,
+        "road2": config.surface_density_road2,
+    }
+
+    logger.info("Computing tile plans...")
+    tile_plan = compute_tile_plans(
+        tiles_blend,
+        config.blender_exe,
+        tags,
+        densities
+    )
+
+    total_tiles = sum(len(tiles) for tiles in tile_plan.values())
+    logger.info("Tile plan: %d total tiles", total_tiles)
+    for tag, tiles in tile_plan.items():
+        logger.info("  %s: %d tiles", tag, len(tiles))
+
+    # Step 2: Parallel processing
+    from parallel_surface_extractor import extract_surfaces_parallel
+
+    logger.info("Extracting surfaces in parallel...")
+    tile_outputs = extract_surfaces_parallel(config, tile_plan, config.max_workers)
+    logger.info("Parallel extraction complete: %d tiles", len(tile_outputs))
+
+    # Step 3: Merge results
+    merge_script = os.path.join(
+        _script_dir, "..", "blender_scripts", "merge_tiles.py"
+    )
+    merge_script = os.path.abspath(merge_script)
+
+    logger.info("Merging tile results...")
+    merged_blend = os.path.join(config.stage_dir("blender_automate"), "surfaces_merged.blend")
+    cmd = [
+        config.blender_exe,
+        "--background",
+        "--python", merge_script,
+        "--",
+        "--base", tiles_blend,
+        "--tiles", ",".join(tile_outputs),
+        "--output", merged_blend,
+    ]
+    subprocess.run(cmd, check=True)
+    logger.info("Merge complete: %s", merged_blend)
+
+    # Step 4: Continue with walls/objects/textures
+    logger.info("Importing walls, objects, and textures...")
+    blender_script = os.path.join(_script_dir, "..", "blender_scripts", "blender_automate.py")
+    blender_script = os.path.abspath(blender_script)
+
+    blender_clips = config.merge_segments_result
+    if not os.path.isdir(blender_clips):
+        blender_clips = config.merge_segments_dir
+
+    cmd = [config.blender_exe]
+    if config.s9_background:
+        cmd.append("--background")
+    cmd.extend([
+        "--python", blender_script,
+        "--",
+        "--mode", "surfaces",
+        "--blend-input", merged_blend,  # Use merged blend as input
+        "--tiles-blend-input", merged_blend,  # Same file for tiles
+        "--glb-dir", config.glb_dir,
+        "--tiles-dir", config.tiles_dir,
+        "--consolidated-clips-dir", blender_clips,
+        "--output", config.final_blend_file,
+        "--base-level", str(config.base_level),
+        "--target-level", str(config.target_fine_level),
+        "--skip-surfaces",  # Skip surface extraction (already done)
+    ])
+
+    # Add road-kerb-bool if configured
+    if config.s9_road_kerb_method == "bool":
+        cmd.append("--road-kerb-bool")
+
+    if not config.s9_convert_textures:
+        cmd.append("--skip-textures")
+
+    # Walls
+    walls_result = config.walls_result_dir
+    if not os.path.isdir(walls_result):
+        walls_result = os.path.dirname(config.walls_json)
+    walls_json = os.path.join(walls_result, "walls.json")
+    if not config.s9_import_walls:
+        cmd.append("--skip-walls")
+    elif os.path.isfile(walls_json):
+        cmd.extend(["--walls-json", walls_json])
+
+    # Game objects
+    go_result = config.game_objects_result_dir
+    if not os.path.isdir(go_result):
+        go_result = os.path.dirname(config.game_objects_json)
+    go_json = os.path.join(go_result, "game_objects.json")
+    if not config.s9_import_game_objects:
+        cmd.append("--skip-game-objects")
+    elif os.path.isfile(go_json):
+        cmd.extend(["--game-objects-json", go_json])
+
+    # Geo metadata
+    for candidate_dir in [walls_result, go_result]:
+        candidate = os.path.join(candidate_dir, "geo_metadata.json")
+        if os.path.isfile(candidate):
+            cmd.extend(["--geo-metadata", candidate])
+            break
+
+    logger.info("Running Blender automation: %s", " ".join(cmd))
+    subprocess.run(cmd, check=True)
+    logger.info("Stage 9 parallel complete: %s", config.final_blend_file)
+
+
 def run(config: PipelineConfig) -> None:
-    """Execute Stage 9: Blender headless automation.
+    """Execute Stage 9: Blender surfaces & game objects.
 
     Reads:
-    - ``config.blend_file`` from stage 8
-    - ``config.glb_dir`` from stage 1
-    - ``config.merge_segments_dir`` from stage 5
+    - ``tiles_loaded.blend`` from stage 8.5 (or ``config.blend_file`` fallback)
     - ``config.walls_json`` from stage 6 (optional)
     - ``config.game_objects_json`` from stage 7 (optional)
 
     Writes ``final_track.blend`` to ``config.final_blend_file``.
     """
-    logger.info("=== Stage 9: Blender headless automation ===")
+    logger.info("=== Stage 9: Blender surfaces & game objects ===")
+
+    # Check for parallel mode
+    if (config.s9_parallel_surfaces
+        and config.max_workers > 1
+        and config.s9_extract_surfaces):
+        _run_parallel(config)
+        return
 
     if not config.blender_exe:
         raise ValueError("blender_exe is required for blender_automate stage")
-    if not os.path.isfile(config.blend_file):
-        raise ValueError(f"blend_file not found: {config.blend_file}")
+
+    # Input: tiles_loaded.blend from Stage 8.5
+    tiles_blend_dir = config.stage_dir("blender_tiles")
+    tiles_blend = os.path.join(tiles_blend_dir, "tiles_loaded.blend")
+
+    # Backward compatibility: fallback to full mode if Stage 8.5 not run
+    if not os.path.isfile(tiles_blend):
+        logger.warning("tiles_loaded.blend not found, using full mode")
+        tiles_blend = config.blend_file
+        mode = "full"
+    else:
+        mode = "surfaces"
 
     out_dir = os.path.dirname(config.final_blend_file)
     os.makedirs(out_dir, exist_ok=True)
@@ -49,12 +191,14 @@ def run(config: PipelineConfig) -> None:
         blender_clips = config.merge_segments_dir  # fallback
 
     cmd = [config.blender_exe]
-    if not config.s9_no_background:
+    if config.s9_background:
         cmd.append("--background")
     cmd.extend([
         "--python", blender_script,
         "--",
+        "--mode", mode,
         "--blend-input", config.blend_file,
+        "--tiles-blend-input", tiles_blend,
         "--glb-dir", config.glb_dir,
         "--tiles-dir", config.tiles_dir,
         "--consolidated-clips-dir", blender_clips,
@@ -73,9 +217,9 @@ def run(config: PipelineConfig) -> None:
                        polygon_dir)
 
     # Stage 9 skip flags
-    if config.s9_no_surfaces:
+    if not config.s9_extract_surfaces:
         cmd.append("--skip-surfaces")
-    if config.s9_no_textures:
+    if not config.s9_convert_textures:
         cmd.append("--skip-textures")
 
     # Refine tags
@@ -113,7 +257,7 @@ def run(config: PipelineConfig) -> None:
     if not os.path.isdir(walls_result):
         walls_result = os.path.dirname(config.walls_json)  # fallback
     walls_json = os.path.join(walls_result, "walls.json")
-    if config.s9_no_walls:
+    if not config.s9_import_walls:
         cmd.append("--skip-walls")
         logger.info("Walls import disabled (s9_no_walls)")
     elif os.path.isfile(walls_json):
@@ -125,7 +269,7 @@ def run(config: PipelineConfig) -> None:
     if not os.path.isdir(go_result):
         go_result = os.path.dirname(config.game_objects_json)  # fallback
     go_json = os.path.join(go_result, "game_objects.json")
-    if config.s9_no_game_objects:
+    if not config.s9_import_game_objects:
         cmd.append("--skip-game-objects")
         logger.info("Game objects import disabled (s9_no_game_objects)")
     elif os.path.isfile(go_json):

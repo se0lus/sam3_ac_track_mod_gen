@@ -334,9 +334,9 @@ async function showStageInfo(stage) {
   // Build per-stage config section
   let stageConfigHtml = "";
   let cfg = {};
-  if (stage.id === "mask_full_map" || stage.id === "blender_polygons" || stage.id === "blender_automate" || stage.id === "model_export" || stage.id === "track_packaging" || stage.id === "merge_segments") {
+  if (stage.id === "mask_full_map" || stage.id === "blender_polygons" || stage.id === "blender_automate" || stage.id === "model_export" || stage.id === "track_packaging" || stage.id === "merge_segments" || stage.id === "blender_tiles") {
     try {
-      const resp = await fetch("/api/pipeline/config");
+      const resp = await fetch(`/api/pipeline/config?_t=${Date.now()}`);
       cfg = await resp.json();
     } catch { cfg = {}; }
   }
@@ -456,32 +456,17 @@ async function showStageInfo(stage) {
           <button class="btn btn--primary" id="btnSaveStageConfig">保存</button>
         </div>
       </div>`;
-  } else if (stage.id === "blender_automate") {
-    const baseLevel = cfg.s9_base_level || 17;
-    const targetLevel = cfg.s9_target_level || 22;
+  } else if (stage.id === "blender_tiles") {
+    const baseLevel = cfg.base_level !== undefined ? cfg.base_level : 17;
+    const targetLevel = cfg.target_fine_level !== undefined ? cfg.target_fine_level : 22;
     const tilePadding = cfg.s9_tile_padding !== undefined ? cfg.s9_tile_padding : 0;
-    const edgeSimplify = cfg.s9_edge_simplify || 0;
-    const meshWeldDist = cfg.s9_mesh_weld_distance || 0.01;
-    const meshDecimateRatio = cfg.s9_mesh_decimate_ratio || 0.5;
-    const densityRoad = cfg.s9_density_road || 0.1;
-    const densityKerb = cfg.s9_density_kerb || 0.1;
-    const densityGrass = cfg.s9_density_grass || 2.0;
-    const densitySand = cfg.s9_density_sand || 2.0;
-    const densityRoad2 = cfg.s9_density_road2 || 2.0;
-    const roadKerbMethod = cfg.s9_road_kerb_method || "copy";
     const refineTags = cfg.s9_refine_tags || ["road"];
     const allTags = ["road", "grass", "sand", "kerb", "road2"];
     const tagPills = allTags.map(tag =>
       `<div class="s9-tag-pill${refineTags.includes(tag) ? " active" : ""}" data-tag="${tag}">${tag}</div>`
     ).join("");
     const toggles = [
-      { key: "s9_import_walls",       label: "导入围墙",        desc: "从 Stage 7 导入虚拟碰撞墙", def: true },
-      { key: "s9_import_game_objects", label: "导入游戏对象",    desc: "从 Stage 8 导入发车格、计时点等", def: true },
-      { key: "s9_extract_surfaces",   label: "生成碰撞表面",    desc: "从 mask 多边形提取驾驶表面网格", def: true },
-      { key: "s9_mesh_simplify",      label: "网格简化",        desc: "对 road/kerb 地形网格执行焊接 + Decimate 简化", def: false },
-      { key: "s9_convert_textures",   label: "转换纹理",        desc: "解包纹理并转换为 PNG + BSDF 材质", def: true },
-      { key: "s9_background",         label: "Blender 后台运行", desc: "以 --background 无界面模式执行", def: true },
-      { key: "s9_debug_boolean",      label: "Bool Debug",       desc: "保存布尔网格各阶段的中间 .blend 文件到 debug_boolean/", def: false },
+      { key: "s9_background", label: "Blender 后台运行", desc: "以 --background 无界面模式执行", def: true },
     ];
     const toggleHtml = toggles.map(t => {
       const on = cfg[t.key] !== undefined ? cfg[t.key] : t.def;
@@ -500,17 +485,62 @@ async function showStageInfo(stage) {
         <div class="s9-level-row">
           <div class="config-field">
             <label>基础层级 (Base Level)</label>
-            <input type="number" id="s9BaseLevel" value="${baseLevel}" min="10" max="25" />
+            <input type="number" id="s85BaseLevel" value="${baseLevel}" min="10" max="25" />
           </div>
           <div class="config-field">
             <label>目标层级 (Target Level)</label>
-            <input type="number" id="s9TargetLevel" value="${targetLevel}" min="15" max="25" />
+            <input type="number" id="s85TargetLevel" value="${targetLevel}" min="15" max="25" />
           </div>
           <div class="config-field">
             <label>瓦片外扩 (米)</label>
-            <input type="number" id="s9TilePadding" value="${tilePadding}" min="0" max="10" step="0.5" />
+            <input type="number" id="s85TilePadding" value="${tilePadding}" min="0" max="10" step="0.5" />
           </div>
         </div>
+        <div class="config-field">
+          <label>精炼标签 (Refine Tags)</label>
+          <div class="s9-tag-pills" id="s85TagPills">${tagPills}</div>
+        </div>
+        <div class="config-field">
+          <label>开关选项</label>
+          <div id="s85Toggles">${toggleHtml}</div>
+        </div>
+        <div class="config-actions">
+          <button class="btn btn--primary" id="btnSaveStageConfig">保存</button>
+        </div>
+      </div>`;
+  } else if (stage.id === "blender_automate") {
+    const edgeSimplify = cfg.s9_edge_simplify || 0;
+    const meshWeldDist = cfg.s9_mesh_weld_distance || 0.01;
+    const meshDecimateRatio = cfg.s9_mesh_decimate_ratio || 0.5;
+    const densityRoad = cfg.s9_density_road || 0.1;
+    const densityKerb = cfg.s9_density_kerb || 0.1;
+    const densityGrass = cfg.s9_density_grass || 2.0;
+    const densitySand = cfg.s9_density_sand || 2.0;
+    const densityRoad2 = cfg.s9_density_road2 || 2.0;
+    const roadKerbMethod = cfg.s9_road_kerb_method || "copy";
+    const toggles = [
+      { key: "s9_import_walls",       label: "导入围墙",        desc: "从 Stage 6 导入虚拟碰撞墙", def: true },
+      { key: "s9_import_game_objects", label: "导入游戏对象",    desc: "从 Stage 7 导入发车格、计时点等", def: true },
+      { key: "s9_extract_surfaces",   label: "生成碰撞表面",    desc: "从 mask 多边形提取驾驶表面网格", def: true },
+      { key: "s9_mesh_simplify",      label: "网格简化",        desc: "对 road/kerb 碰撞网格执行焊接 + Decimate 简化", def: false },
+      { key: "s9_parallel_surfaces",  label: "并行碰撞提取",    desc: "使用多进程并行处理 tiles（需要更多内存）", def: false },
+      { key: "s9_convert_textures",   label: "转换纹理",        desc: "解包纹理并转换为 PNG + BSDF 材质", def: true },
+      { key: "s9_debug_boolean",      label: "Bool Debug",       desc: "保存布尔网格各阶段的中间 .blend 文件到 debug_boolean/", def: false },
+    ];
+    const toggleHtml = toggles.map(t => {
+      const on = cfg[t.key] !== undefined ? cfg[t.key] : t.def;
+      return `
+        <div class="s9-toggle" data-key="${t.key}">
+          <div>
+            <div class="s9-toggle__label">${t.label}</div>
+            <div class="s9-toggle__desc">${t.desc}</div>
+          </div>
+          <div class="s9-toggle__track${on ? " active" : ""}"><div class="s9-toggle__thumb"></div></div>
+        </div>`;
+    }).join("");
+    stageConfigHtml = `
+      <div class="db-config db-config--stage">
+        <h4>阶段配置</h4>
         <div class="config-field">
           <label>Road/Kerb 提取方式</label>
           <div class="s9-tag-pills" id="s9RoadKerbMethod">
@@ -543,11 +573,9 @@ async function showStageInfo(stage) {
             </div>
           </div>
         </div>
-        <div class="s9-level-row">
-          <div class="config-field">
-            <label>碰撞表面边缘简化 (米, 0=不简化)</label>
-            <input type="number" id="s9EdgeSimplify" value="${edgeSimplify}" min="0" max="5.0" step="0.1" />
-          </div>
+        <div class="config-field">
+          <label>碰撞表面边缘简化 (米, 0=不简化)</label>
+          <input type="number" id="s9EdgeSimplify" value="${edgeSimplify}" min="0" max="5.0" step="0.1" />
         </div>
         <div class="s9-level-row">
           <div class="config-field">
@@ -555,13 +583,9 @@ async function showStageInfo(stage) {
             <input type="number" id="s9MeshWeldDist" value="${meshWeldDist}" min="0.001" max="1.0" step="0.001" />
           </div>
           <div class="config-field">
-            <label>网格简化率 (0-1, 越小面数越少)</label>
-            <input type="number" id="s9MeshDecimateRatio" value="${meshDecimateRatio}" min="0.05" max="1.0" step="0.05" />
+            <label>网格简化率 (0-1)</label>
+            <input type="number" id="s9MeshDecimateRatio" value="${meshDecimateRatio}" min="0.1" max="1.0" step="0.05" />
           </div>
-        </div>
-        <div class="config-field">
-          <label>精细化 Mask 范围</label>
-          <div class="s9-tag-pills" id="s9TagPills">${tagPills}</div>
         </div>
         <div class="config-field">
           <label>执行选项</label>
@@ -802,6 +826,47 @@ async function showStageInfo(stage) {
         alert("保存失败: " + e.message);
       }
     });
+  } else if (stage.id === "blender_tiles") {
+    // Wire tag pill toggles
+    document.querySelectorAll("#s85TagPills .s9-tag-pill").forEach(pill => {
+      pill.addEventListener("click", () => pill.classList.toggle("active"));
+    });
+    // Wire toggle switches
+    document.querySelectorAll("#s85Toggles .s9-toggle").forEach(row => {
+      row.addEventListener("click", () => {
+        const track = row.querySelector(".s9-toggle__track");
+        track.classList.toggle("active");
+      });
+    });
+    // Save handler
+    $("btnSaveStageConfig").addEventListener("click", async () => {
+      const tags = Array.from(document.querySelectorAll("#s85TagPills .s9-tag-pill.active")).map(p => p.dataset.tag);
+      const updated = { ...cfg };
+      const baseVal = parseInt($("s85BaseLevel").value);
+      const targetVal = parseInt($("s85TargetLevel").value);
+      const paddingVal = parseFloat($("s85TilePadding").value);
+
+      updated.base_level = !isNaN(baseVal) ? baseVal : 17;
+      updated.target_fine_level = !isNaN(targetVal) ? targetVal : 22;
+      updated.s9_tile_padding = !isNaN(paddingVal) ? paddingVal : 0;
+      updated.s9_refine_tags = tags.length > 0 ? tags : ["road"];
+      document.querySelectorAll("#s85Toggles .s9-toggle").forEach(row => {
+        const key = row.dataset.key;
+        const on = row.querySelector(".s9-toggle__track").classList.contains("active");
+        updated[key] = on;
+      });
+      try {
+        await fetch("/api/pipeline/config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(updated),
+        });
+        $("btnSaveStageConfig").textContent = "已保存";
+        setTimeout(() => { $("btnSaveStageConfig").textContent = "保存"; }, 1500);
+      } catch (e) {
+        alert("保存失败: " + e.message);
+      }
+    });
   } else if (stage.id === "blender_automate") {
     // Wire tag pill toggles (refine tags — multi-select)
     document.querySelectorAll("#s9TagPills .s9-tag-pill").forEach(pill => {
@@ -823,13 +888,9 @@ async function showStageInfo(stage) {
     });
     // Save handler
     $("btnSaveStageConfig").addEventListener("click", async () => {
-      const tags = Array.from(document.querySelectorAll("#s9TagPills .s9-tag-pill.active")).map(p => p.dataset.tag);
       const methodPill = document.querySelector("#s9RoadKerbMethod .s9-tag-pill.active");
       const updated = { ...cfg };
       updated.s9_road_kerb_method = methodPill ? methodPill.dataset.method : "copy";
-      updated.s9_base_level = parseInt($("s9BaseLevel").value) || 17;
-      updated.s9_target_level = parseInt($("s9TargetLevel").value) || 22;
-      updated.s9_tile_padding = parseFloat($("s9TilePadding").value) || 0;
       updated.s9_edge_simplify = parseFloat($("s9EdgeSimplify").value) || 0;
       updated.s9_mesh_weld_distance = parseFloat($("s9MeshWeldDist").value) || 0.01;
       updated.s9_mesh_decimate_ratio = parseFloat($("s9MeshDecimateRatio").value) || 0.5;
@@ -838,7 +899,6 @@ async function showStageInfo(stage) {
       updated.s9_density_grass = parseFloat($("s9DensityGrass").value) || 2.0;
       updated.s9_density_sand = parseFloat($("s9DensitySand").value) || 2.0;
       updated.s9_density_road2 = parseFloat($("s9DensityRoad2").value) || 2.0;
-      updated.s9_refine_tags = tags.length > 0 ? tags : ["road"];
       document.querySelectorAll(".s9-toggle").forEach(row => {
         const key = row.dataset.key;
         const on = row.querySelector(".s9-toggle__track").classList.contains("active");

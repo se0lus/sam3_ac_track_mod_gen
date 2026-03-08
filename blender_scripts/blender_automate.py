@@ -73,7 +73,7 @@ def _emit_progress(pct, msg=""):
 
 # Step time-weights (seconds, from real profiling).
 # Step 4 (tile import) dominates; Step 5 (surface extraction) is second.
-_STEP_WEIGHT = {1: 2, 2: 2, 3: 5, 4: 120, 5: 40, 6: 2, 7: 3, 8: 20}
+_STEP_WEIGHT = {1: 2, 2: 2, 3: 5, 4: 120, 5: 40, 6: 5, 7: 5, 8: 25}
 _TOTAL_WEIGHT = sum(_STEP_WEIGHT.values())  # 194
 
 # Cumulative weight at the *start* of each step (0-based fraction).
@@ -84,12 +84,33 @@ for _sn in sorted(_STEP_WEIGHT):
     _cum += _STEP_WEIGHT[_sn]
 del _cum, _sn
 
+# Global mode for progress calculation (set in main())
+_CURRENT_MODE = "full"
+
+
+def _get_progress_range(mode: str) -> tuple:
+    """Return (min_step, max_step) for given mode."""
+    if mode == "tiles":
+        return (1, 4)
+    elif mode == "surfaces":
+        return (5, 8)
+    return (1, 8)
+
+
+def _step_pct_for_mode(step: int, sub_frac: float, mode: str) -> int:
+    """Map step progress to 0-100% based on mode."""
+    min_step, max_step = _get_progress_range(mode)
+    mode_weight = sum(_STEP_WEIGHT[s] for s in range(min_step, max_step + 1))
+    cum = sum(_STEP_WEIGHT[s] for s in range(min_step, step))
+    step_weight = _STEP_WEIGHT.get(step, 0)
+    start_frac = cum / mode_weight
+    weight_frac = step_weight / mode_weight
+    return int((start_frac + sub_frac * weight_frac) * 100)
+
 
 def _step_pct(step: int, sub_frac: float = 0.0) -> int:
     """Map step number + intra-step fraction (0-1) to global 0-100 pct."""
-    start = _STEP_START.get(step, 0)
-    weight = _STEP_WEIGHT.get(step, 10) / _TOTAL_WEIGHT
-    return int((start + weight * min(max(sub_frac, 0.0), 1.0)) * 100)
+    return _step_pct_for_mode(step, sub_frac, _CURRENT_MODE)
 
 
 # ---------------------------------------------------------------------------
@@ -627,8 +648,14 @@ def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Blender headless automation -- full track pipeline",
     )
+    p.add_argument("--mode",
+                    choices=["full", "tiles", "surfaces"],
+                    default="full",
+                    help="Execution mode: full (all steps), tiles (1-4), surfaces (5-8)")
     p.add_argument("--blend-input", required=True,
                     help="Input .blend from polygon generation stage")
+    p.add_argument("--tiles-blend-input", default="",
+                    help="Pre-loaded tiles blend file (for surfaces mode)")
     p.add_argument("--glb-dir", required=True,
                     help="Directory containing converted GLB tiles")
     p.add_argument("--tiles-dir", required=True,
@@ -683,6 +710,10 @@ def _parse_args() -> argparse.Namespace:
                     help="Weld distance in metres (default: 0.01)")
     p.add_argument("--mesh-decimate-ratio", type=float, default=0.5,
                     help="Decimate ratio 0-1 (default: 0.5)")
+    p.add_argument("--tile-mode", action="store_true",
+                    help="Process single tile (requires --tile-spec)")
+    p.add_argument("--tile-spec", default="",
+                    help="Tile specification: tag:tx:tz:min_x:max_x:min_z:max_z:y_value")
     return p.parse_args(_get_script_argv())
 
 
@@ -747,7 +778,15 @@ def _simplify_terrain_meshes(weld_distance: float, decimate_ratio: float) -> Non
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    global _CURRENT_MODE
     args = _parse_args()
+    mode = args.mode
+    _CURRENT_MODE = mode
+    min_step, max_step = _get_progress_range(mode)
+
+    # Debug: log parsed arguments
+    log.info("Parsed args: mode=%s, skip_surfaces=%s, skip_walls=%s, skip_game_objects=%s, skip_textures=%s, road_kerb_bool=%s",
+             mode, args.skip_surfaces, args.skip_walls, args.skip_game_objects, args.skip_textures, args.road_kerb_bool)
 
     # Force line-buffered stdout/stderr so that log output from Blender's
     # embedded Python appears immediately in the pipeline log file, instead
@@ -762,6 +801,7 @@ def main() -> None:
 
     # Resolve all paths to absolute
     blend_input = os.path.abspath(args.blend_input)
+    tiles_blend_input = os.path.abspath(args.tiles_blend_input) if args.tiles_blend_input else ""
     glb_dir = os.path.abspath(args.glb_dir)
     tiles_dir = os.path.abspath(args.tiles_dir)
     clips_dir = os.path.abspath(args.consolidated_clips_dir)
@@ -801,15 +841,25 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Step 1: Open the input .blend file
     # ------------------------------------------------------------------
-    _emit_progress(_step_pct(1), "Opening blend file...")
-    log.info("Step 1/8: Opening blend file: %s", blend_input)
-    bpy.ops.wm.open_mainfile(filepath=blend_input)
+    if mode in ["full", "tiles"]:
+        _emit_progress(_step_pct_for_mode(1, 0.0, mode), "Opening blend file...")
+        log.info("Step 1/%d: Opening blend file: %s", max_step, blend_input)
+        bpy.ops.wm.open_mainfile(filepath=blend_input)
+    else:  # surfaces mode
+        input_file = tiles_blend_input or blend_input
+        _emit_progress(_step_pct_for_mode(5, 0.0, mode), "Opening tiles blend file...")
+        log.info("Step 5/%d: Opening tiles blend file: %s", max_step, input_file)
+        bpy.ops.wm.open_mainfile(filepath=input_file)
 
     # ------------------------------------------------------------------
     # Step 2: Register all SAM3 operators
     # ------------------------------------------------------------------
-    _emit_progress(_step_pct(2), "Registering operators...")
-    log.info("Step 2/8: Registering SAM3 operators...")
+    if mode in ["full", "tiles"]:
+        _emit_progress(_step_pct_for_mode(2, 0.0, mode), "Registering operators...")
+        log.info("Step 2/%d: Registering SAM3 operators...", max_step)
+    else:  # surfaces mode - operators still needed but different step numbering
+        _emit_progress(_step_pct_for_mode(5, 0.1, mode), "Registering operators...")
+        log.info("Registering SAM3 operators...")
     import blender_helpers
     blender_helpers.register()
 
@@ -831,101 +881,104 @@ def main() -> None:
 
         # --------------------------------------------------------------
         # Step 3+4: Pre-compute tile load plan, then load all at once
+        # (Only in tiles/full mode)
         # --------------------------------------------------------------
-        import time as _time
-        from sam3_actions.load_base_tiles import load_glb_tiles_by_dic_level_array
-
         polygon_dir = os.path.abspath(args.polygon_dir) if args.polygon_dir else ""
         refine_tags = [t.strip() for t in args.refine_tags.split(",") if t.strip()]
 
-        if polygon_dir and os.path.isdir(polygon_dir):
-            # New plan-based approach: pre-compute which tiles to load
-            _emit_progress(_step_pct(3), "Computing tile load plan...")
-            log.info("Step 3/8: Computing tile load plan (base=%d, target=%d)...",
-                     args.base_level, args.target_level)
-            log.info("  polygon_dir: %s", polygon_dir)
-            log.info("  refine_tags: %s", refine_tags)
-
-            from tile_plan import compute_plan_from_config
-            _t3 = _time.time()
-            plan = compute_plan_from_config(
-                tiles_dir=tiles_dir,
-                polygon_dir=polygon_dir,
-                tags=refine_tags,
-                base_level=args.base_level,
-                target_level=args.target_level,
-                padding_m=args.tile_padding,
-            )
-            plan_time = _time.time() - _t3
-            total_tiles = sum(len(v) for v in plan.values())
-
-            # --- Tile manifest: build text, log it, and save to file ---
-            manifest_lines = []
-            manifest_lines.append("=" * 60)
-            manifest_lines.append("TILE LOAD PLAN  (base={}, target={})".format(
-                args.base_level, args.target_level))
-            manifest_lines.append("  polygon_dir: {}".format(polygon_dir))
-            manifest_lines.append("  refine_tags: {}".format(refine_tags))
-            manifest_lines.append("  padding_m: {}".format(args.tile_padding))
-            manifest_lines.append("=" * 60)
-            for lv in sorted(plan.keys()):
-                tiles_at_lv = plan[lv]
-                manifest_lines.append("  Level {}: {} tiles".format(lv, len(tiles_at_lv)))
-                for t in tiles_at_lv:
-                    content = t.content or "(no content)"
-                    manifest_lines.append("    - {}".format(content))
-            manifest_lines.append("-" * 60)
-            manifest_lines.append("  TOTAL: {} tiles across {} levels".format(
-                total_tiles, len(plan)))
-            manifest_lines.append("  Plan computed in {:.1f}s".format(plan_time))
-            manifest_lines.append("=" * 60)
-
-            for line in manifest_lines:
-                log.info(line)
-
-            # Save manifest to Stage 9 output directory
-            manifest_path = os.path.join(os.path.dirname(output), "tile_load_plan.txt")
-            with open(manifest_path, "w", encoding="utf-8") as _mf:
-                _mf.write("\n".join(manifest_lines) + "\n")
-            log.info("Tile load plan saved to %s", manifest_path)
-
-            # Load all tiles in one pass
-            _emit_progress(_step_pct(4), "Loading tiles...")
-            log.info("Step 4/8: Loading %d planned tiles...", total_tiles)
-            # Emit "need to load" lines for Dashboard progress parser
-            # (load_glb_tiles_by_dic_level_array doesn't print these;
-            #  they're normally emitted by import_fullscene_with_ctile)
-            for lv in sorted(plan.keys()):
-                print("need to load level {}:{} tiles".format(lv, len(plan[lv])))
-            _tiles_loaded_count = [0]
-
-            def _tile_progress_cb():
-                _tile_redraw()
-                _tiles_loaded_count[0] += 1
-                if total_tiles > 0 and _tiles_loaded_count[0] % 5 == 0:
-                    # Quadratic mapping: per-tile import time grows linearly
-                    # with scene size, so elapsed time T(i) ∝ i².
-                    # Use sub = (i/N)² so progress advances at constant speed.
-                    sub = (_tiles_loaded_count[0] / total_tiles) ** 2
-                    _emit_progress(_step_pct(4, sub),
-                                   f"Tiles {_tiles_loaded_count[0]}/{total_tiles}")
-
-            _t4 = _time.time()
-            load_glb_tiles_by_dic_level_array(glb_dir, plan, on_tile_loaded=_tile_progress_cb)
-            log.info("All tiles loaded in %.1fs.", _time.time() - _t4)
-        else:
-            # Fallback: no polygon dir → load all base tiles (old Step 3 only)
-            _emit_progress(_step_pct(3), "Loading base tiles...")
-            log.info("Step 3/8: Loading base tiles (level=%d, no polygon plan)...",
-                     args.base_level)
+        if mode in ["full", "tiles"]:
+            import time as _time
             from sam3_actions.c_tiles import CTile
-            from sam3_actions.load_base_tiles import import_fullscene_with_ctile
+            from sam3_actions.load_base_tiles import load_glb_tiles_by_dic_level_array
 
-            _t3 = _time.time()
-            root_tile = _load_tileset_tree(tiles_dir, CTile)
-            import_fullscene_with_ctile(root_tile, glb_dir, min_level=args.base_level,
-                                        on_tile_loaded=_tile_redraw)
-            log.info("Base tiles loaded in %.1fs.", _time.time() - _t3)
+            if polygon_dir and os.path.isdir(polygon_dir):
+                # New plan-based approach: pre-compute which tiles to load
+                _emit_progress(_step_pct(3), "Computing tile load plan...")
+                log.info("Step 3/8: Computing tile load plan (base=%d, target=%d)...",
+                         args.base_level, args.target_level)
+                log.info("  polygon_dir: %s", polygon_dir)
+                log.info("  refine_tags: %s", refine_tags)
+
+                from tile_plan import compute_plan_from_config
+                _t3 = _time.time()
+                plan = compute_plan_from_config(
+                    tiles_dir=tiles_dir,
+                    polygon_dir=polygon_dir,
+                    tags=refine_tags,
+                    base_level=args.base_level,
+                    target_level=args.target_level,
+                    padding_m=args.tile_padding,
+                )
+                plan_time = _time.time() - _t3
+                total_tiles = sum(len(v) for v in plan.values())
+
+                # --- Tile manifest: build text, log it, and save to file ---
+                manifest_lines = []
+                manifest_lines.append("=" * 60)
+                manifest_lines.append("TILE LOAD PLAN  (base={}, target={})".format(
+                    args.base_level, args.target_level))
+                manifest_lines.append("  polygon_dir: {}".format(polygon_dir))
+                manifest_lines.append("  refine_tags: {}".format(refine_tags))
+                manifest_lines.append("  padding_m: {}".format(args.tile_padding))
+                manifest_lines.append("=" * 60)
+                for lv in sorted(plan.keys()):
+                    tiles_at_lv = plan[lv]
+                    manifest_lines.append("  Level {}: {} tiles".format(lv, len(tiles_at_lv)))
+                    for t in tiles_at_lv:
+                        content = t.content or "(no content)"
+                        manifest_lines.append("    - {}".format(content))
+                manifest_lines.append("-" * 60)
+                manifest_lines.append("  TOTAL: {} tiles across {} levels".format(
+                    total_tiles, len(plan)))
+                manifest_lines.append("  Plan computed in {:.1f}s".format(plan_time))
+                manifest_lines.append("=" * 60)
+
+                for line in manifest_lines:
+                    log.info(line)
+
+                # Save manifest to Stage 9 output directory
+                manifest_path = os.path.join(os.path.dirname(output), "tile_load_plan.txt")
+                with open(manifest_path, "w", encoding="utf-8") as _mf:
+                    _mf.write("\n".join(manifest_lines) + "\n")
+                log.info("Tile load plan saved to %s", manifest_path)
+
+                # Load all tiles in one pass
+                _emit_progress(_step_pct(4), "Loading tiles...")
+                log.info("Step 4/8: Loading %d planned tiles...", total_tiles)
+                # Emit "need to load" lines for Dashboard progress parser
+                # (load_glb_tiles_by_dic_level_array doesn't print these;
+                #  they're normally emitted by import_fullscene_with_ctile)
+                for lv in sorted(plan.keys()):
+                    print("need to load level {}:{} tiles".format(lv, len(plan[lv])))
+                _tiles_loaded_count = [0]
+
+                def _tile_progress_cb():
+                    _tile_redraw()
+                    _tiles_loaded_count[0] += 1
+                    if total_tiles > 0 and _tiles_loaded_count[0] % 5 == 0:
+                        # Quadratic mapping: per-tile import time grows linearly
+                        # with scene size, so elapsed time T(i) ∝ i².
+                        # Use sub = (i/N)² so progress advances at constant speed.
+                        sub = (_tiles_loaded_count[0] / total_tiles) ** 2
+                        _emit_progress(_step_pct(4, sub),
+                                       f"Tiles {_tiles_loaded_count[0]}/{total_tiles}")
+
+                _t4 = _time.time()
+                load_glb_tiles_by_dic_level_array(glb_dir, plan, on_tile_loaded=_tile_progress_cb)
+                log.info("All tiles loaded in %.1fs.", _time.time() - _t4)
+            else:
+                # Fallback: no polygon dir → load all base tiles (old Step 3 only)
+                _emit_progress(_step_pct(3), "Loading base tiles...")
+                log.info("Step 3/8: Loading base tiles (level=%d, no polygon plan)...",
+                         args.base_level)
+                from sam3_actions.c_tiles import CTile
+                from sam3_actions.load_base_tiles import import_fullscene_with_ctile
+
+                _t3 = _time.time()
+                root_tile = _load_tileset_tree(tiles_dir, CTile)
+                import_fullscene_with_ctile(root_tile, glb_dir, min_level=args.base_level,
+                                            on_tile_loaded=_tile_redraw)
+                log.info("Base tiles loaded in %.1fs.", _time.time() - _t3)
 
             # Old Step 4: iterative refinement (fallback when no polygon dir)
             _emit_progress(_step_pct(4), "Refining tiles by mask...")
@@ -967,57 +1020,137 @@ def main() -> None:
             _force_redraw()
 
         # --------------------------------------------------------------
-        # Prepare geo-transform and terrain bounds
+        # Tiles mode: Save and exit after step 4
         # --------------------------------------------------------------
-        if geo_meta is not None:
-            from geo_sam3_blender_utils import get_tileset_transform
-            bounds = geo_meta.get("bounds", {})
-            center_lon = (bounds.get("west", 0) + bounds.get("east", 0)) / 2
-            center_lat = (bounds.get("north", 0) + bounds.get("south", 0)) / 2
-            tf_info = get_tileset_transform(tiles_dir, sample_geo_xy=(center_lon, center_lat))
-            log.info("Tileset transform: mode=%s, source=%s",
-                     tf_info.effective_mode, tf_info.tf_source)
-
-        terrain_min_y, terrain_max_y = _get_terrain_y_bounds()
-        log.info("Terrain Y bounds: min=%.2f, max=%.2f", terrain_min_y, terrain_max_y)
+        if mode == "tiles":
+            _emit_progress(100, "Tiles loaded, saving...")
+            log.info("Tiles mode: Saving blend file and exiting...")
+            os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
+            bpy.ops.wm.save_as_mainfile(filepath=output)
+            _emit_progress(100, "Tiles loaded")
+            log.info("Tiles loaded successfully: %s", output)
+            return
 
         # --------------------------------------------------------------
-        # Step 5: Extract collision surfaces
+        # Steps 5-8: Surfaces and objects (surfaces/full mode only)
         # --------------------------------------------------------------
-        if not args.skip_surfaces:
-            _emit_progress(_step_pct(5), "Extracting collision surfaces...")
-            log.info("Step 5/8: Extracting collision surfaces...")
+        if mode in ["full", "surfaces"]:
+            # Prepare geo-transform and terrain bounds
+            if geo_meta is not None:
+                from geo_sam3_blender_utils import get_tileset_transform
+                bounds = geo_meta.get("bounds", {})
+                center_lon = (bounds.get("west", 0) + bounds.get("east", 0)) / 2
+                center_lat = (bounds.get("north", 0) + bounds.get("south", 0)) / 2
+                tf_info = get_tileset_transform(tiles_dir, sample_geo_xy=(center_lon, center_lat))
+                log.info("Tileset transform: mode=%s, source=%s",
+                         tf_info.effective_mode, tf_info.tf_source)
 
-            if args.road_kerb_bool:
-                # All tags use boolean method
-                log.info("  Step 5: Boolean surfaces (all tags)...")
-                import sam3_actions.boolean_mesh_generator as _bmg
-                _bmg.PROGRESS_RANGE = (_step_pct(5, 0.0), _step_pct(5, 1.0))
-                _bmg.BOOLEAN_TAGS = ["road", "kerb", "grass", "sand", "road2"]
-                if args.debug_boolean:
-                    _bmg.DEBUG_SAVE_DIR = os.path.join(os.path.dirname(output), "debug_boolean")
-                result = bpy.ops.sam3.generate_boolean_surfaces()
-                log.info("  Boolean surfaces result: %s", result)
-            else:
-                # Default: road/kerb copy + grass/sand/road2 boolean
-                import sam3_actions.terrain_mesh_extractor as _tme
-                _tme.PROGRESS_RANGE = (_step_pct(5, 0.0), _step_pct(5, 0.45))
-                import sam3_actions.boolean_mesh_generator as _bmg
-                _bmg.PROGRESS_RANGE = (_step_pct(5, 0.5), _step_pct(5, 1.0))
-                if args.debug_boolean:
-                    _bmg.DEBUG_SAVE_DIR = os.path.join(os.path.dirname(output), "debug_boolean")
+            terrain_min_y, terrain_max_y = _get_terrain_y_bounds()
+            log.info("Terrain Y bounds: min=%.2f, max=%.2f", terrain_min_y, terrain_max_y)
 
-                log.info("  Step 5a: Terrain extraction (road + kerb)...")
-                result_a = bpy.ops.sam3.extract_terrain_surfaces()
-                log.info("  Terrain extraction result: %s", result_a)
+            # --------------------------------------------------------------
+            # Step 5: Extract collision surfaces
+            # --------------------------------------------------------------
+            if not args.skip_surfaces:
+                _emit_progress(_step_pct(5), "Extracting collision surfaces...")
+                log.info("Step 5/%d: Extracting collision surfaces...", max_step)
 
-                if args.mesh_simplify:
-                    log.info("  Step 5a+: Simplifying terrain meshes...")
-                    _simplify_terrain_meshes(args.mesh_weld_distance, args.mesh_decimate_ratio)
+                # Tile mode: process single tile and exit
+                if args.tile_mode and args.tile_spec:
+                    log.info("  Tile mode: processing single tile...")
+                    parts = args.tile_spec.split(":")
+                    if len(parts) != 8:
+                        raise ValueError(f"Invalid tile_spec format: {args.tile_spec}")
 
-                log.info("  Step 5b: Boolean surfaces (grass/sand/road2)...")
-                result_b = bpy.ops.sam3.generate_boolean_surfaces()
-                log.info("  Boolean surfaces result: %s", result_b)
+                    tag = parts[0]
+                    tx, tz = int(parts[1]), int(parts[2])
+                    min_x, max_x = float(parts[3]), float(parts[4])
+                    min_z, max_z = float(parts[5]), float(parts[6])
+                    y_value = float(parts[7])
+
+                    log.info("  Processing tile: tag=%s, tx=%d, tz=%d", tag, tx, tz)
+
+                    import sam3_actions.boolean_mesh_generator as _bmg
+                    from surface_extraction import COLLISION_COLLECTION_MAP
+
+                    # Get density for this tag
+                    density = _bmg._get_density(tag)
+
+                    # Get mask object
+                    mask_col_name = f"mask_polygon_{tag}"
+                    mask_col = bpy.data.collections.get(mask_col_name)
+                    if not mask_col or not mask_col.objects:
+                        log.warning("No mask objects found for tag %s", tag)
+                        bpy.ops.wm.save_as_mainfile(filepath=output)
+                        return
+
+                    mask_obj = mask_col.objects[0]
+                    scene = bpy.context.scene
+                    depsgraph = bpy.context.evaluated_depsgraph_get()
+
+                    # Build excluded set
+                    excluded = _bmg._build_excluded_set()
+                    ray_origin_y = terrain_max_y + 50.0
+
+                    # Process single tile
+                    result_obj = _bmg._process_tile(
+                        mask_obj, tag, density, scene, depsgraph,
+                        min_x, max_x, min_z, max_z,
+                        y_value, ray_origin_y, excluded, tx, tz
+                    )
+
+                    if result_obj:
+                        # Place in collision collection
+                        col_name = COLLISION_COLLECTION_MAP.get(tag, "collision")
+                        col = _bmg._get_or_create_collection(col_name)
+                        _bmg._link_to_collection(result_obj, col)
+                        log.info("  Tile result: %d verts, %d faces",
+                                len(result_obj.data.vertices),
+                                len(result_obj.data.polygons))
+                    else:
+                        log.info("  Tile result: empty")
+
+                    # Save tile output
+                    tile_output = args.output
+                    log.info("  Saving tile output: %s", tile_output)
+                    bpy.ops.wm.save_as_mainfile(filepath=tile_output)
+                    log.info("Tile mode complete")
+                    return
+
+                if args.road_kerb_bool:
+                    # All tags use boolean method
+                    log.info("  Step 5: Boolean surfaces (all tags)...")
+                    import sam3_actions.boolean_mesh_generator as _bmg
+                    _bmg.PROGRESS_RANGE = (_step_pct(5, 0.0), _step_pct(5, 1.0))
+                    _bmg.BOOLEAN_TAGS = ["road", "kerb", "grass", "sand", "road2"]
+                    if args.debug_boolean:
+                        _bmg.DEBUG_SAVE_DIR = os.path.join(os.path.dirname(output), "debug_boolean")
+                    result = bpy.ops.sam3.generate_boolean_surfaces()
+                    log.info("  Boolean surfaces result: %s", result)
+
+                    if args.mesh_simplify:
+                        log.info("  Step 5+: Simplifying collision meshes...")
+                        _simplify_terrain_meshes(args.mesh_weld_distance, args.mesh_decimate_ratio)
+                else:
+                    # Default: road/kerb copy + grass/sand/road2 boolean
+                    import sam3_actions.terrain_mesh_extractor as _tme
+                    _tme.PROGRESS_RANGE = (_step_pct(5, 0.0), _step_pct(5, 0.45))
+                    import sam3_actions.boolean_mesh_generator as _bmg
+                    _bmg.PROGRESS_RANGE = (_step_pct(5, 0.5), _step_pct(5, 1.0))
+                    if args.debug_boolean:
+                        _bmg.DEBUG_SAVE_DIR = os.path.join(os.path.dirname(output), "debug_boolean")
+
+                    log.info("  Step 5a: Terrain extraction (road + kerb)...")
+                    result_a = bpy.ops.sam3.extract_terrain_surfaces()
+                    log.info("  Terrain extraction result: %s", result_a)
+
+                    if args.mesh_simplify:
+                        log.info("  Step 5a+: Simplifying terrain meshes...")
+                        _simplify_terrain_meshes(args.mesh_weld_distance, args.mesh_decimate_ratio)
+
+                    log.info("  Step 5b: Boolean surfaces (grass/sand/road2)...")
+                    result_b = bpy.ops.sam3.generate_boolean_surfaces()
+                    log.info("  Boolean surfaces result: %s", result_b)
         else:
             _emit_progress(_step_pct(5), "Skipped surfaces")
             log.info("Step 5/8: Skipped (--skip-surfaces)")

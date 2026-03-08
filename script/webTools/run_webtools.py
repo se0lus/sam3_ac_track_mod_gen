@@ -15,6 +15,7 @@ import webbrowser
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
+import psutil
 from dotenv import load_dotenv
 
 
@@ -487,10 +488,12 @@ PIPELINE_STAGE_META = [
     {"id": "manual_game_objects","num": "7a", "name": "对象编辑",   "type": "manual",
      "desc": "手动编辑游戏对象位置/朝向（可选）", "output_dir": "07a_manual_game_objects",
      "editor": "gameobjects_editor.html"},
-    {"id": "blender_polygons",   "num": "8",  "name": "多边形生成", "type": "auto",
+    {"id": "blender_polygons",   "num": "8",   "name": "多边形生成", "type": "auto",
      "desc": "Blender 批处理生成 2D Curve + Mesh", "output_dir": "08_blender_polygons"},
-    {"id": "blender_automate",   "num": "9",  "name": "Blender集成", "type": "auto",
-     "desc": "Blender 无头自动化（加载瓦片 → 精炼 → 表面提取 → 导入 → 保存）",
+    {"id": "blender_tiles",      "num": "8.5", "name": "瓦片装载",   "type": "auto",
+     "desc": "加载地形瓦片 → 按 mask 精炼 → 网格简化", "output_dir": "08_5_blender_tiles"},
+    {"id": "blender_automate",   "num": "9",   "name": "碰撞网格",   "type": "auto",
+     "desc": "提取碰撞表面 → 导入围墙/物体 → 纹理处理",
      "output_dir": "09_blender_automate"},
     {"id": "manual_blender",    "num": "9a", "name": "Blender编辑", "type": "manual",
      "desc": "手动编辑 Blender 文件（在 Blender 中直接打开编辑）",
@@ -515,6 +518,7 @@ _STAGE_ID_TO_PIPELINE = {
     "mask_on_clips": "mask_on_clips",
     "merge_segments": "merge_segments",
     "blender_polygons": "blender_polygons",
+    "blender_tiles": "blender_tiles",
     "ai_walls": "ai_walls",
     "ai_game_objects": "ai_game_objects",
     "blender_automate": "blender_automate",
@@ -970,11 +974,23 @@ class PipelineRunner:
         self._stop_event.set()
         proc = self.process
         if proc and proc.poll() is None:
-            proc.terminate()
             try:
-                proc.wait(timeout=5)
+                # Kill entire process tree (including Blender grandchild processes)
+                parent = psutil.Process(proc.pid)
+                children = parent.children(recursive=True)
+                for child in children:
+                    child.terminate()
+                parent.terminate()
+                gone, alive = psutil.wait_procs(children + [parent], timeout=5)
+                for p in alive:
+                    p.kill()
             except Exception:
-                proc.kill()
+                # Fallback to simple terminate/kill
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    proc.kill()
             self._safe_broadcast("pipeline_stop", {})
         # Close log file handle
         try:
@@ -1225,7 +1241,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
             self._serve_pipeline_stages()
         elif self.path == "/api/pipeline/status":
             self._serve_pipeline_status()
-        elif self.path == "/api/pipeline/config":
+        elif self.path.startswith("/api/pipeline/config"):
             self._serve_pipeline_config()
         elif self.path.startswith("/api/files/list"):
             self._serve_file_list()
@@ -2520,8 +2536,11 @@ class ApiHandler(SimpleHTTPRequestHandler):
     def _handle_pipeline_config_save(self):
         try:
             body = self._read_body()
-            cfg = json.loads(body)
-            _save_webtools_config(cfg)
+            new_cfg = json.loads(body)
+            # Merge with existing config to avoid losing other fields
+            existing = _load_webtools_config()
+            existing.update(new_cfg)
+            _save_webtools_config(existing)
             self._send_json_ok()
         except Exception as e:
             self.send_error(500, str(e))

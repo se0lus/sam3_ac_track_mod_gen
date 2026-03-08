@@ -41,6 +41,7 @@ STAGE_ORDER: Dict[str, int] = {
     "ai_walls": 6,
     "ai_game_objects": 7,
     "blender_polygons": 8,
+    "blender_tiles": 8.5,
     "blender_automate": 9,
     "model_export": 10,
     "track_packaging": 11,
@@ -55,6 +56,7 @@ PIPELINE_STAGES: List[str] = [
     "ai_walls",
     "ai_game_objects",
     "blender_polygons",
+    "blender_tiles",
     "blender_automate",
     "model_export",
     "track_packaging",
@@ -296,11 +298,11 @@ class PipelineConfig:
     s8_min_width_m: float = 0.5  # Minimum width in metres (strips narrower than this are removed)
 
     # --- Stage 9 options ---
-    s9_no_walls: bool = False
-    s9_no_game_objects: bool = False
-    s9_no_surfaces: bool = False
-    s9_no_textures: bool = False
-    s9_no_background: bool = False
+    s9_import_walls: bool = True
+    s9_import_game_objects: bool = True
+    s9_extract_surfaces: bool = True
+    s9_convert_textures: bool = True
+    s9_background: bool = True
     s9_refine_tags: List[str] = field(default_factory=lambda: ["road"])
     s9_tile_padding: float = 0.0            # Padding around polygon AABBs for tile plan (metres)
     s9_mesh_simplify: bool = False          # Enable post-processing simplification for terrain meshes
@@ -308,6 +310,7 @@ class PipelineConfig:
     s9_mesh_decimate_ratio: float = 0.5     # Decimate ratio 0-1 (default 0.5)
     s9_road_kerb_method: str = "bool"       # "copy" (terrain copy) or "bool" (boolean mesh)
     s9_debug_boolean: bool = False          # Save intermediate .blend files for boolean mesh debugging
+    s9_parallel_surfaces: bool = False      # Enable parallel tile processing (requires more memory)
 
     # --- Stage 10 options ---
     s10_max_vertices: int = 21000           # Max vertices per MESH object
@@ -371,6 +374,8 @@ class PipelineConfig:
         if stage_name == "manual_track_info":
             return os.path.join(self.output_dir, "11a_manual_track_info")
         idx = STAGE_ORDER.get(stage_name, 0)
+        if isinstance(idx, float):
+            return os.path.join(self.output_dir, f"{idx:04.1f}_{stage_name}".replace(".", "_"))
         return os.path.join(self.output_dir, f"{idx:02d}_{stage_name}")
 
     def result_dir(self, auto_stage: str) -> str:

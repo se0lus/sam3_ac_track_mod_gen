@@ -43,6 +43,7 @@ from stages import (
     s06_ai_walls,
     s07_ai_game_objects,
     s08_blender_polygons,
+    s08_5_blender_tiles,
     s09_blender_automate,
     s10_model_export,
     s11_track_packaging,
@@ -70,6 +71,7 @@ STAGE_FUNCTIONS: Dict[str, Callable[[PipelineConfig], None]] = {
     "ai_walls": s06_ai_walls.run,
     "ai_game_objects": s07_ai_game_objects.run,
     "blender_polygons": s08_blender_polygons.run,
+    "blender_tiles": s08_5_blender_tiles.run,
     "blender_automate": s09_blender_automate.run,
     "model_export": s10_model_export.run,
     "track_packaging": s11_track_packaging.run,
@@ -93,6 +95,26 @@ def _load_manual_stages_config(config: PipelineConfig) -> Dict[str, bool]:
     return {}
 
 
+def _apply_webtools_config(config: PipelineConfig) -> None:
+    """Apply settings from webtools_config.json to config object."""
+    config_json = os.path.join(config.output_dir, "webtools_config.json")
+    if not os.path.isfile(config_json):
+        return
+    try:
+        import json
+        with open(config_json, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        # Apply config fields (skip manual_stages and _valid)
+        for key, value in data.items():
+            if key in ("manual_stages", "_valid"):
+                continue
+            if hasattr(config, key):
+                setattr(config, key, value)
+    except Exception as e:
+        logger.warning("Failed to load webtools config: %s", e)
+
+
 def _clean_stage_output(config: PipelineConfig, stage_name: str) -> None:
     """Remove and recreate a stage's output directory to avoid stale files.
 
@@ -111,6 +133,9 @@ def run_pipeline(config: PipelineConfig, stages: Optional[List[str]] = None) -> 
     """Run the pipeline, either all stages or a subset."""
     if stages is None:
         stages = list(PIPELINE_STAGES)
+
+    # Apply webtools config before running stages
+    _apply_webtools_config(config)
 
     # Set up result directory junctions before running any stage
     manual_cfg = _load_manual_stages_config(config)
