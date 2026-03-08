@@ -416,61 +416,108 @@ def _boolean_intersect(
 ) -> bpy.types.Object | None:
     """Boolean INTERSECT *grid_obj* with *solid_mask_obj*.
 
-    Tries the FLOAT solver first; falls back to EXACT if FLOAT fails or
-    produces empty geometry.  Returns a new object with the result, or
-    None if both solvers produce empty geometry.
-    Caller is responsible for cleanup of inputs.
+    Tries FLOAT solver first, validates result, falls back to EXACT if needed.
+    Returns a new object with the result, or None if both solvers fail.
     """
-    for solver in ("FLOAT", "EXACT"):
-        # Clear any previous boolean modifier before (re-)trying
-        for m in list(grid_obj.modifiers):
-            if m.type == "BOOLEAN":
-                grid_obj.modifiers.remove(m)
+    grid_verts = len(grid_obj.data.vertices)
+    float_result = None
+    exact_result = None
 
-        mod = grid_obj.modifiers.new("bool_intersect", "BOOLEAN")
-        mod.operation = "INTERSECT"
-        mod.object = solid_mask_obj
-        mod.solver = solver
+    # Try FLOAT solver
+    for m in list(grid_obj.modifiers):
+        if m.type == "BOOLEAN":
+            grid_obj.modifiers.remove(m)
 
-        depsgraph.update()
+    mod = grid_obj.modifiers.new("bool_intersect", "BOOLEAN")
+    mod.operation = "INTERSECT"
+    mod.object = solid_mask_obj
+    mod.solver = "FLOAT"
 
-        # Read the evaluated (post-boolean) geometry
-        bm = bmesh.new()
-        try:
-            grid_eval = grid_obj.evaluated_get(depsgraph)
-            bm.from_object(grid_eval, depsgraph)
-        except Exception as exc:
-            bm.free()
-            if solver == "FLOAT":
-                _log(f"  Boolean FLOAT failed: {exc}, retrying EXACT")
-                continue
-            _log(f"  Boolean evaluation failed: {exc}")
-            return None
+    depsgraph.update()
 
+    bm = bmesh.new()
+    try:
+        grid_eval = grid_obj.evaluated_get(depsgraph)
+        bm.from_object(grid_eval, depsgraph)
+    except Exception as exc:
+        bm.free()
+        _log(f"  Boolean FLOAT failed: {exc}, trying EXACT")
+    else:
         n_verts = len(bm.verts)
         n_faces = len(bm.faces)
         if n_verts >= 3 and n_faces > 0:
-            result_mesh = bpy.data.meshes.new("_bool_result_tmp")
+            # FLOAT succeeded, save result
+            result_mesh = bpy.data.meshes.new("_bool_float_tmp")
             bm.to_mesh(result_mesh)
-            bm.free()
             result_mesh.update()
-
-            result_obj = bpy.data.objects.new("_bool_result_tmp", result_mesh)
-            bpy.context.scene.collection.objects.link(result_obj)
-
-            if solver != "FLOAT":
-                _log(f"  Boolean: EXACT fallback succeeded")
-            _log(f"  Boolean result: {n_verts:,} verts, {n_faces:,} faces "
-                 f"(solver={solver})")
-            return result_obj
-
+            float_result = (n_verts, n_faces, result_mesh)
+            _log(f"  Boolean FLOAT: {n_verts:,} verts, {n_faces:,} faces")
         bm.free()
-        if solver == "FLOAT":
-            _log(f"  Boolean FLOAT empty, retrying EXACT")
-            continue
 
-    # Both solvers produced empty — grid truly doesn't overlap mask
-    return None
+    # Try EXACT solver
+    for m in list(grid_obj.modifiers):
+        if m.type == "BOOLEAN":
+            grid_obj.modifiers.remove(m)
+
+    mod = grid_obj.modifiers.new("bool_intersect", "BOOLEAN")
+    mod.operation = "INTERSECT"
+    mod.object = solid_mask_obj
+    mod.solver = "EXACT"
+
+    depsgraph.update()
+
+    bm = bmesh.new()
+    try:
+        grid_eval = grid_obj.evaluated_get(depsgraph)
+        bm.from_object(grid_eval, depsgraph)
+    except Exception as exc:
+        bm.free()
+        _log(f"  Boolean EXACT failed: {exc}")
+    else:
+        n_verts = len(bm.verts)
+        n_faces = len(bm.faces)
+        if n_verts >= 3 and n_faces > 0:
+            result_mesh = bpy.data.meshes.new("_bool_exact_tmp")
+            bm.to_mesh(result_mesh)
+            result_mesh.update()
+            exact_result = (n_verts, n_faces, result_mesh)
+            _log(f"  Boolean EXACT: {n_verts:,} verts, {n_faces:,} faces")
+        bm.free()
+
+    # Choose best result
+    if float_result is None and exact_result is None:
+        return None
+
+    if float_result is None:
+        _log(f"  Using EXACT (FLOAT failed)")
+        result_obj = bpy.data.objects.new("_bool_result_tmp", exact_result[2])
+        bpy.context.scene.collection.objects.link(result_obj)
+        return result_obj
+
+    if exact_result is None:
+        _log(f"  Using FLOAT (EXACT failed)")
+        result_obj = bpy.data.objects.new("_bool_result_tmp", float_result[2])
+        bpy.context.scene.collection.objects.link(result_obj)
+        return result_obj
+
+    # Both succeeded, compare results
+    float_verts, float_faces, float_mesh = float_result
+    exact_verts, exact_faces, exact_mesh = exact_result
+
+    # Heuristic: if FLOAT has significantly fewer verts (< 70% of EXACT), prefer EXACT
+    if float_verts < exact_verts * 0.7:
+        _log(f"  Using EXACT (FLOAT verts {float_verts:,} < 70% of EXACT {exact_verts:,})")
+        bpy.data.meshes.remove(float_mesh)
+        result_obj = bpy.data.objects.new("_bool_result_tmp", exact_mesh)
+        bpy.context.scene.collection.objects.link(result_obj)
+        return result_obj
+
+    # Otherwise prefer FLOAT (faster)
+    _log(f"  Using FLOAT (validated)")
+    bpy.data.meshes.remove(exact_mesh)
+    result_obj = bpy.data.objects.new("_bool_result_tmp", float_mesh)
+    bpy.context.scene.collection.objects.link(result_obj)
+    return result_obj
 
 
 # ---------------------------------------------------------------------------
@@ -669,7 +716,7 @@ def generate_boolean_surface(
     _log(f"--- {label}: boolean grid (density={density}m) ---")
 
     # 1. Mask XZ bounds
-    bounds = _mask_xz_bounds(mask_obj, depsgraph, margin=density)
+    bounds = _mask_xz_bounds(mask_obj, depsgraph, margin=max(density * 3, 5.0))
     if bounds is None:
         _log(f"  {label}: cannot read mask bounds, skipping")
         return []
@@ -682,17 +729,27 @@ def generate_boolean_surface(
     if tiles_x > 1 or tiles_z > 1:
         _log(f"  Tiling: {tiles_x}x{tiles_z} tiles ({width_x:.1f}x{width_z:.1f}m)")
 
-    # 3. 分片处理
+    # 3. 分片处理（确保 tile 边界对齐到 density grid）
     results = []
-    tile_w = width_x / tiles_x
-    tile_h = width_z / tiles_z
+
+    # 计算每个 tile 的 grid 单元数（确保整数）
+    cells_x = math.ceil(width_x / density)
+    cells_z = math.ceil(width_z / density)
+    cells_per_tile_x = math.ceil(cells_x / tiles_x)
+    cells_per_tile_z = math.ceil(cells_z / tiles_z)
 
     for tz in range(tiles_z):
         for tx in range(tiles_x):
-            tile_min_x = min_x + tx * tile_w
-            tile_max_x = min_x + (tx + 1) * tile_w
-            tile_min_z = min_z + tz * tile_h
-            tile_max_z = min_z + (tz + 1) * tile_h
+            # 基于 grid 单元计算 tile 边界（确保对齐）
+            start_cell_x = tx * cells_per_tile_x
+            end_cell_x = min((tx + 1) * cells_per_tile_x, cells_x)
+            start_cell_z = tz * cells_per_tile_z
+            end_cell_z = min((tz + 1) * cells_per_tile_z, cells_z)
+
+            tile_min_x = min_x + start_cell_x * density
+            tile_max_x = min_x + end_cell_x * density
+            tile_min_z = min_z + start_cell_z * density
+            tile_max_z = min_z + end_cell_z * density
 
             result = _process_tile(
                 mask_obj, tag, density, scene, depsgraph,
