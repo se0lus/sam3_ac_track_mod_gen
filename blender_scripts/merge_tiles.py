@@ -16,6 +16,13 @@ import sys
 import bpy  # type: ignore[import-not-found]
 import bmesh  # type: ignore[import-not-found]
 
+# Add script directory to path for imports
+_script_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "script")
+if _script_dir not in sys.path:
+    sys.path.insert(0, _script_dir)
+
+from surface_extraction import generate_collision_name
+
 
 def _get_script_argv():
     """Extract arguments after '--' in sys.argv."""
@@ -34,6 +41,21 @@ def merge_tile_results(
     """Merge all tile blend files into base blend."""
     print(f"Opening base blend: {base_blend}")
     bpy.ops.wm.open_mainfile(filepath=base_blend)
+
+    # Clean up existing collision objects to ensure clean merge
+    print("Cleaning existing collision objects...")
+    removed_objs = 0
+    for obj in list(bpy.data.objects):
+        if obj.type == "MESH" and (obj.name.startswith("1ROAD_") or
+                                    obj.name.startswith("1KERB_") or
+                                    obj.name.startswith("1GRASS_") or
+                                    obj.name.startswith("1SAND_") or
+                                    obj.name.startswith("2ROAD_") or
+                                    obj.name.startswith("1WALL_")):
+            bpy.data.objects.remove(obj, do_unlink=True)
+            removed_objs += 1
+    if removed_objs > 0:
+        print(f"  Removed {removed_objs} existing collision object(s)")
 
     # Append all collision collections from tiles
     for tile_blend in tile_blends:
@@ -89,7 +111,9 @@ def merge_tile_results(
             bpy.ops.object.join()
 
             merged = bpy.context.active_object
-            merged.name = base_name.replace("collision_", "1").upper() + "_merged"
+            # Use AC collision naming convention
+            tag = base_name.replace("collision_", "")
+            merged.name = generate_collision_name(tag, 0)
 
             print(f"    => {len(merged.data.vertices)} verts, {len(merged.data.polygons)} faces")
 
