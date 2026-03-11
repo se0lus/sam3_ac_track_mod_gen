@@ -937,11 +937,15 @@ def extract_contours_and_triangulate(
                 total_matches = 0
                 total_rebuilt = 0
                 if boundaries_for_tag:
+                    # Get tolerance from config (default 0.05m)
+                    from pipeline_config import PipelineConfig
+                    tolerance = getattr(PipelineConfig(), 's8_boundary_match_tolerance_m', 0.05)
+
                     for i in list(geo_contours.keys()):
                         geo_pts_tuples = [(pt[0], pt[1]) for pt in geo_contours[i]]
                         matches = match_contour_segments(
                             geo_pts_tuples, boundaries_for_tag,
-                            tolerance_m=0.05,
+                            tolerance_m=tolerance,
                             logger=logger
                         )
                         if matches:

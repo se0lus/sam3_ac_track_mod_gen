@@ -500,7 +500,7 @@ def _write_tag_blender_json(
 
     groups = extract_contours_and_triangulate(
         binary, tag_name, bounds, canvas_w, canvas_h,
-        simplify_epsilon=2.0,
+        simplify_epsilon=config.s8_shared_boundary_epsilon,  # Use same epsilon as boundaries
         min_contour_area=100,
         shared_boundaries=boundary_lib,
     )

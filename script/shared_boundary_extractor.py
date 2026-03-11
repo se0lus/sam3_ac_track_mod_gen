@@ -459,9 +459,9 @@ def match_contour_segments(
                 best_match_score = match_count
                 best_start_idx = i
 
-        # Accept if >60% of boundary points match
+        # Accept if >40% of boundary points match (lowered from 60%)
         match_ratio = best_match_score / n_boundary if n_boundary > 0 else 0
-        if best_match_score >= n_boundary * 0.6:
+        if best_match_score >= n_boundary * 0.4:
             end_idx = (best_start_idx + n_boundary - 1) % n_contour
             matches.append((best_start_idx, end_idx, boundary))
             logger.debug("      Boundary %d: matched at contour[%d:%d], ratio=%.1f%%",
