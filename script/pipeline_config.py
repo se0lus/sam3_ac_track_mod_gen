@@ -296,6 +296,9 @@ class PipelineConfig:
     s8_gap_fill_default_tag: str = "road2"  # Default fill tag for remaining voids
     s8_filter_narrow_strips: bool = True  # Remove narrow strips/fragments before gap-fill
     s8_min_width_m: float = 0.5  # Minimum width in metres (strips narrower than this are removed)
+    s8_use_shared_boundaries: bool = False  # Use shared boundary extraction to eliminate gaps
+    s8_shared_boundary_epsilon: float = 1.0  # Boundary simplification threshold (pixels)
+    s8_boundary_match_tolerance_m: float = 0.05  # Boundary matching tolerance (meters)
 
     # --- Stage 9 options ---
     s9_import_walls: bool = True

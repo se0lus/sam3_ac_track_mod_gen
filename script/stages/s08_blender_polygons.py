@@ -343,6 +343,18 @@ def _run_gap_fill(
     # ---- 7. Save preview (before gap-fill vs after narrow filter) ----
     _save_gap_fill_preview(composite_before_filter, composite, out_dir)
 
+    # ---- 7.5. Extract shared boundaries (if enabled) ----
+    boundary_lib = None
+    if config.s8_use_shared_boundaries:
+        logger.info("[7.5/8] Extracting shared boundaries...")
+        from shared_boundary_extractor import extract_all_shared_boundaries
+        boundary_lib = extract_all_shared_boundaries(
+            composite, bounds_wgs84, canvas_w, canvas_h,
+            simplify_epsilon=config.s8_shared_boundary_epsilon,
+            min_chain_length=3,
+        )
+        logger.info("  Extracted %d shared boundaries", len(boundary_lib.boundaries))
+
     # ---- 8. Re-extract contours + triangulate → Blender coords ----
     logger.info("[8/8] Re-extracting contours and converting to Blender coordinates...")
     gap_filled_dir = os.path.join(out_dir, "gap_filled")
@@ -369,7 +381,7 @@ def _run_gap_fill(
             return (tag_name, 0)
         _write_tag_blender_json(
             binary, tag_name, bounds_wgs84, canvas_w, canvas_h,
-            tf_info, gap_filled_dir,
+            tf_info, gap_filled_dir, boundary_lib,
         )
         return (tag_name, n_pixels)
 
@@ -464,6 +476,7 @@ def _write_tag_blender_json(
     canvas_h: int,
     tf_info,
     gap_filled_dir: str,
+    boundary_lib=None,
 ) -> None:
     """Extract contours from binary mask, triangulate, convert to Blender
     coords, and write *_merged_blender.json."""
@@ -474,6 +487,7 @@ def _write_tag_blender_json(
         binary, tag_name, bounds, canvas_w, canvas_h,
         simplify_epsilon=2.0,
         min_contour_area=100,
+        shared_boundaries=boundary_lib,
     )
 
     mesh_groups = []

@@ -886,6 +886,7 @@ def extract_contours_and_triangulate(
     canvas_w: int, canvas_h: int,
     simplify_epsilon: float,
     min_contour_area: int,
+    shared_boundaries=None,
 ) -> List[Dict[str, Any]]:
     """Extract contours from a binary mask and triangulate each group.
 
@@ -919,6 +920,30 @@ def extract_contours_and_triangulate(
                 lon, lat = _canvas_to_geo(cx, cy, bounds, canvas_w, canvas_h)
                 geo_pts.append([lon, lat])
             geo_contours[i] = geo_pts
+
+        # Apply shared boundary matching if enabled
+        if shared_boundaries is not None:
+            from shared_boundary_extractor import match_contour_segments, rebuild_contour_with_shared_boundaries
+            from pipeline_config import PipelineConfig
+
+            # Get tag ID for boundary lookup
+            tag_id_map = {"road": 1, "kerb": 2, "grass": 3, "sand": 4, "road2": 5}
+            tag_id = tag_id_map.get(tag)
+
+            if tag_id:
+                boundaries_for_tag = shared_boundaries.get_boundaries_for_tag(tag_id)
+                if boundaries_for_tag:
+                    for i in list(geo_contours.keys()):
+                        geo_pts_tuples = [(pt[0], pt[1]) for pt in geo_contours[i]]
+                        matches = match_contour_segments(
+                            geo_pts_tuples, boundaries_for_tag,
+                            tolerance_m=0.05
+                        )
+                        if matches:
+                            rebuilt = rebuild_contour_with_shared_boundaries(
+                                geo_pts_tuples, matches, tag_id
+                            )
+                            geo_contours[i] = [[pt[0], pt[1]] for pt in rebuilt]
 
         # Second pass: build groups from outer contours
         for i in geo_contours:
