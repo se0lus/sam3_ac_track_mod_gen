@@ -924,7 +924,6 @@ def extract_contours_and_triangulate(
         # Apply shared boundary matching if enabled
         if shared_boundaries is not None:
             from shared_boundary_extractor import match_contour_segments, rebuild_contour_with_shared_boundaries
-            from pipeline_config import PipelineConfig
 
             # Get tag ID for boundary lookup
             tag_id_map = {"road": 1, "kerb": 2, "grass": 3, "sand": 4, "road2": 5}
@@ -942,7 +941,8 @@ def extract_contours_and_triangulate(
                         geo_pts_tuples = [(pt[0], pt[1]) for pt in geo_contours[i]]
                         matches = match_contour_segments(
                             geo_pts_tuples, boundaries_for_tag,
-                            tolerance_m=0.05
+                            tolerance_m=0.05,
+                            logger=logger
                         )
                         if matches:
                             total_matches += len(matches)
@@ -951,7 +951,7 @@ def extract_contours_and_triangulate(
                             )
                             geo_contours[i] = [[pt[0], pt[1]] for pt in rebuilt]
                             total_rebuilt += 1
-                            logger.debug("    Contour %d: matched %d boundary segments", i, len(matches))
+                            logger.info("    Contour %d: matched %d boundary segments", i, len(matches))
 
                 logger.info("  Tag '%s': rebuilt %d/%d contours with %d boundary matches",
                            tag, total_rebuilt, len(geo_contours), total_matches)

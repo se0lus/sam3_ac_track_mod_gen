@@ -414,7 +414,8 @@ def _geo_distance(p1: Tuple[float, float], p2: Tuple[float, float]) -> float:
 def match_contour_segments(
     contour_geo: List[Tuple[float, float]],
     shared_boundaries: List[SharedBoundary],
-    tolerance_m: float = 0.05
+    tolerance_m: float = 0.05,
+    logger=None
 ) -> List[Tuple[int, int, SharedBoundary]]:
     """
     Match contour segments to shared boundaries.
@@ -423,14 +424,19 @@ def match_contour_segments(
         contour_geo: Contour in geographic coordinates
         shared_boundaries: Candidate boundaries for this tag
         tolerance_m: Matching tolerance in meters
+        logger: Optional logger
 
     Returns:
         List of (start_idx, end_idx, boundary) for matched segments
     """
+    import logging
+    if logger is None:
+        logger = logging.getLogger(__name__)
+
     matches = []
     n_contour = len(contour_geo)
 
-    for boundary in shared_boundaries:
+    for boundary_idx, boundary in enumerate(shared_boundaries):
         boundary_coords = boundary.geo_coords
         n_boundary = len(boundary_coords)
 
@@ -454,9 +460,15 @@ def match_contour_segments(
                 best_start_idx = i
 
         # Accept if >60% of boundary points match
+        match_ratio = best_match_score / n_boundary if n_boundary > 0 else 0
         if best_match_score >= n_boundary * 0.6:
             end_idx = (best_start_idx + n_boundary - 1) % n_contour
             matches.append((best_start_idx, end_idx, boundary))
+            logger.debug("      Boundary %d: matched at contour[%d:%d], ratio=%.1f%%",
+                        boundary_idx, best_start_idx, end_idx, match_ratio * 100)
+        else:
+            logger.debug("      Boundary %d: no match (best ratio=%.1f%%)",
+                        boundary_idx, match_ratio * 100)
 
     return matches
 
