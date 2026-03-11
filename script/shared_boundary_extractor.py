@@ -146,8 +146,13 @@ def _canvas_to_geo(
     canvas_h: int
 ) -> Tuple[float, float]:
     """Convert canvas pixel coordinates to geographic coordinates."""
-    lon = bounds["min_lon"] + (x / canvas_w) * (bounds["max_lon"] - bounds["min_lon"])
-    lat = bounds["max_lat"] - (y / canvas_h) * (bounds["max_lat"] - bounds["min_lat"])
+    left = bounds["left"]
+    right = bounds["right"]
+    top = bounds["top"]
+    bottom = bounds["bottom"]
+
+    lon = left + (x / canvas_w) * (right - left)
+    lat = top - (y / canvas_h) * (top - bottom)
     return (lon, lat)
 
 
