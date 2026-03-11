@@ -39,6 +39,7 @@ MATERIAL_PREFIXES: Dict[str, str] = {
     "sand": "1SAND",
     "kerb": "1KERB",
     "grass": "1GRASS",
+    "pit": "1PIT",
 }
 
 #: Each surface tag → its own collision collection name.
@@ -50,6 +51,7 @@ COLLISION_COLLECTION_MAP: Dict[str, str] = {
     "sand": "collision_sand",
     "kerb": "collision_kerb",
     "wall": "collision_walls",
+    "pit": "collision_pit",
 }
 
 

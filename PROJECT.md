@@ -322,23 +322,51 @@ if __name__ == "__main__":
 | **输入** | `05_result/` 合并后的 JSON，`06_result/` 围墙 |
 | **输出** | `output/08_blender_polygons/polygons.blend` |
 
+### 阶段 8.5: Blender 瓦片预加载
+
+**文件:** `script/stages/s08_5_blender_tiles.py`
+
+预加载和精炼 3D 瓦片，为 Stage 9 准备：
+
+1. 加载基础 3D 瓦片（base_level 级别）
+2. 按 mask 自动精炼到 target_fine_level
+3. 保存包含所有瓦片的 .blend 文件
+
+| | |
+|---|---|
+| **输入** | 阶段 1, 8 的输出 |
+| **输出** | `output/08_5_blender_tiles/tiles_loaded.blend` |
+
 ### 阶段 9: Blender 无头自动化
 
 **文件:** `script/stages/s09_blender_automate.py`
 
-Blender 无头模式的主编排脚本：
+Blender 无头模式的主编排脚本。支持**串行**和**并行**两种模式：
 
-1. 加载基础 3D 瓦片（base_level 级别）
-2. 按 road mask 自动精炼到 target_fine_level
-3. 提取赛道表面（per-tag 采样密度：road 0.1m, grass 2.0m, kerb 0.1m, sand 2.0m）
-4. 从 `06_result/` 导入围墙
-5. 从 `07_result/` 导入游戏对象
-6. 纹理处理（解包、转 PNG、材质转 BSDF）
-7. 保存最终 .blend 文件
+**串行模式（默认）：**
+1. 打开 tiles_loaded.blend
+2. 提取碰撞表面（per-tag 采样密度：road 0.1m, grass 2.0m, kerb 0.1m, sand 2.0m）
+3. 从 `06_result/` 导入围墙
+4. 从 `07_result/` 导入游戏对象
+5. 纹理处理（解包、转 PNG、材质转 BSDF）
+6. 保存最终 .blend 文件
+
+**并行模式（`s9_parallel_surfaces=True`）：**
+1. 计算 tile 分片方案（`tile_planner.py`）
+2. 并行处理每个 tile（`parallel_surface_extractor.py`，使用 ProcessPoolExecutor）
+3. 合并所有 tile 结果（`merge_tiles.py`）
+4. 导入围墙、游戏对象、纹理处理
+5. 保存最终 .blend 文件
+
+**并行加速：** 3-6× 取决于 CPU 核心数和 tile 数量（受 `max_workers` 限制）
+
+**碰撞提取方法：**
+- `s9_road_kerb_method="copy"`（默认）：road/kerb 使用地形复制，grass/sand/road2 使用 boolean
+- `s9_road_kerb_method="bool"`：所有 tag 使用 boolean 方法
 
 | | |
 |---|---|
-| **输入** | 阶段 1, 5, 6, 7, 8 的输出（通过 junction） |
+| **输入** | 阶段 1, 5, 6, 7, 8, 8.5 的输出（通过 junction） |
 | **输出** | `output/09_blender_automate/final_track.blend` + `texture/` |
 
 ### 阶段 9a: 手动 Blender 编辑（手动）
@@ -644,14 +672,19 @@ sam3_prompts = [
 
 | 字段 | 默认值 | 说明 |
 |------|--------|------|
-| `s9_no_walls` | `False` | 跳过围墙导入 |
-| `s9_no_game_objects` | `False` | 跳过游戏对象导入 |
-| `s9_no_surfaces` | `False` | 跳过表面提取 |
-| `s9_no_textures` | `False` | 跳过纹理处理 |
-| `s9_no_background` | `False` | 跳过背景生成 |
+| `s9_import_walls` | `True` | 导入围墙 |
+| `s9_import_game_objects` | `True` | 导入游戏对象 |
+| `s9_extract_surfaces` | `True` | 提取碰撞表面 |
+| `s9_convert_textures` | `True` | 纹理处理 |
+| `s9_background` | `True` | Blender 后台模式 |
+| `s9_parallel_surfaces` | `False` | 并行碰撞提取（需要更多内存） |
+| `s9_road_kerb_method` | `"bool"` | road/kerb 提取方法：`"copy"` 或 `"bool"` |
 | `s9_refine_tags` | `["road"]` | 用于瓦片精炼的标签 |
 | `s9_tile_padding` | `0.0` | 多边形 AABB 周围填充（米） |
 | `s9_mesh_simplify` | `False` | 地形网格后处理简化 |
+| `s9_mesh_weld_distance` | `0.01` | 焊接距离（米） |
+| `s9_mesh_decimate_ratio` | `0.5` | 简化比例 0-1 |
+| `s9_debug_boolean` | `False` | 保存 boolean 中间文件用于调试 |
 
 </details>
 

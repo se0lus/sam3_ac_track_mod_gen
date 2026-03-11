@@ -84,7 +84,8 @@ _MASK_COLLECTIONS = ["mask_polygon_collection", "mask_curve2D_collection"]
 # Known game-relevant collection names (besides L{N} tile collections)
 _GAME_COLLECTIONS: Set[str] = {
     "collision", "collision_road", "collision_kerb", "collision_grass",
-    "collision_sand", "collision_road2", "collision_walls", "game_objects",
+    "collision_sand", "collision_road2", "collision_walls", "collision_pit",
+    "game_objects",
 }
 
 
@@ -735,13 +736,16 @@ def step4_batch_organise(max_batch_mb: int) -> List[str]:
     if g2:
         groups.append(("collision_other", g2))
 
+    # Track collision objects to avoid duplicates in terrain
+    collision_objs: Set[str] = {o.name for o in g1} | {o.name for o in g2}
+
     # Group 3: Fine terrain tiles (everything above base level)
     fine_levels = [lv for lv in tile_levels if lv != base_level] if base_level is not None else []
     g3: List[bpy.types.Object] = []
     for lv in fine_levels:
         col = _find_collection(f"L{lv}")
         if col:
-            g3.extend(o for o in col.objects if o.type == "MESH")
+            g3.extend(o for o in col.objects if o.type == "MESH" and o.name not in collision_objs)
     if g3:
         fine_label = f"L{min(fine_levels)}-L{max(fine_levels)}" if len(fine_levels) > 1 else f"L{fine_levels[0]}"
         groups.append((fine_label, g3))
@@ -751,7 +755,7 @@ def step4_batch_organise(max_batch_mb: int) -> List[str]:
         base_col = _find_collection(f"L{base_level}")
         g4: List[bpy.types.Object] = []
         if base_col:
-            g4.extend(o for o in base_col.objects if o.type == "MESH")
+            g4.extend(o for o in base_col.objects if o.type == "MESH" and o.name not in collision_objs)
         if g4:
             groups.append((f"L{base_level}", g4))
 
