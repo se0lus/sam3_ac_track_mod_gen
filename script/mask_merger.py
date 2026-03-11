@@ -932,6 +932,11 @@ def extract_contours_and_triangulate(
 
             if tag_id:
                 boundaries_for_tag = shared_boundaries.get_boundaries_for_tag(tag_id)
+                logger.info("  Tag '%s' (id=%d): %d available shared boundaries",
+                           tag, tag_id, len(boundaries_for_tag))
+
+                total_matches = 0
+                total_rebuilt = 0
                 if boundaries_for_tag:
                     for i in list(geo_contours.keys()):
                         geo_pts_tuples = [(pt[0], pt[1]) for pt in geo_contours[i]]
@@ -940,10 +945,18 @@ def extract_contours_and_triangulate(
                             tolerance_m=0.05
                         )
                         if matches:
+                            total_matches += len(matches)
                             rebuilt = rebuild_contour_with_shared_boundaries(
                                 geo_pts_tuples, matches, tag_id
                             )
                             geo_contours[i] = [[pt[0], pt[1]] for pt in rebuilt]
+                            total_rebuilt += 1
+                            logger.debug("    Contour %d: matched %d boundary segments", i, len(matches))
+
+                logger.info("  Tag '%s': rebuilt %d/%d contours with %d boundary matches",
+                           tag, total_rebuilt, len(geo_contours), total_matches)
+            else:
+                logger.warning("  Tag '%s' not found in tag_id_map, skipping boundary matching", tag)
 
         # Second pass: build groups from outer contours
         for i in geo_contours:

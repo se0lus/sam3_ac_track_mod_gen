@@ -347,13 +347,28 @@ def _run_gap_fill(
     boundary_lib = None
     if config.s8_use_shared_boundaries:
         logger.info("[7.5/8] Extracting shared boundaries...")
-        from shared_boundary_extractor import extract_all_shared_boundaries
+        from shared_boundary_extractor import (
+            extract_all_shared_boundaries,
+            visualize_shared_boundaries,
+            generate_boundary_report
+        )
         boundary_lib = extract_all_shared_boundaries(
             composite, bounds_wgs84, canvas_w, canvas_h,
             simplify_epsilon=config.s8_shared_boundary_epsilon,
             min_chain_length=3,
+            logger=logger,
         )
         logger.info("  Extracted %d shared boundaries", len(boundary_lib.boundaries))
+
+        # Visualize and report boundaries
+        if debug_dir:
+            vis_path = os.path.join(debug_dir, "08_shared_boundaries.png")
+            visualize_shared_boundaries(composite, boundary_lib, vis_path)
+            logger.info("  Saved boundary visualization: %s", vis_path)
+
+            report_path = os.path.join(debug_dir, "08_shared_boundaries_report.txt")
+            generate_boundary_report(boundary_lib, report_path)
+            logger.info("  Saved boundary report: %s", report_path)
 
     # ---- 8. Re-extract contours + triangulate → Blender coords ----
     logger.info("[8/8] Re-extracting contours and converting to Blender coordinates...")

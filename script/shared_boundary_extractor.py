@@ -193,7 +193,8 @@ def extract_all_shared_boundaries(
     canvas_w: int,
     canvas_h: int,
     simplify_epsilon: float = 1.0,
-    min_chain_length: int = 3
+    min_chain_length: int = 3,
+    logger=None
 ) -> SharedBoundaryLibrary:
     """
     Extract all shared boundaries from a composite label map.
@@ -204,20 +205,34 @@ def extract_all_shared_boundaries(
         canvas_w, canvas_h: Canvas dimensions
         simplify_epsilon: Boundary simplification threshold (pixels)
         min_chain_length: Minimum chain length to keep
+        logger: Optional logger for detailed output
 
     Returns:
         SharedBoundaryLibrary containing all extracted boundaries
     """
+    import logging
+    if logger is None:
+        logger = logging.getLogger(__name__)
+
     library = SharedBoundaryLibrary()
 
     # Step 1: Detect boundary pixels
+    logger.info("  Step 1: Detecting boundary pixels...")
     boundary_pixel_map = detect_boundary_pixels(composite)
+    logger.info("    Found %d tag pairs with boundaries", len(boundary_pixel_map))
+
+    for tag_pair, pixels in boundary_pixel_map.items():
+        logger.info("    Tag pair %s: %d boundary pixels", tag_pair, len(pixels))
 
     # Step 2: Trace and vectorize each tag pair's boundaries
+    logger.info("  Step 2: Tracing boundary chains...")
+    total_chains = 0
     for tag_pair, pixels in boundary_pixel_map.items():
         chains = trace_boundary_chains(pixels, min_chain_length)
+        logger.info("    Tag pair %s: %d chains", tag_pair, len(chains))
+        total_chains += len(chains)
 
-        for chain in chains:
+        for chain_idx, chain in enumerate(chains):
             # Simplify and convert to geo coordinates
             geo_coords = simplify_and_vectorize_boundary(
                 chain, bounds, canvas_w, canvas_h, simplify_epsilon
@@ -232,8 +247,156 @@ def extract_all_shared_boundaries(
                     length_pixels=float(length)
                 )
                 library.add(boundary)
+                logger.debug("      Chain %d: %d pixels -> %d geo points",
+                           chain_idx, len(chain), len(geo_coords))
 
+    logger.info("  Total: %d boundaries from %d chains", len(library.boundaries), total_chains)
     return library
+
+
+def visualize_shared_boundaries(
+    composite: np.ndarray,
+    library: SharedBoundaryLibrary,
+    output_path: str
+) -> None:
+    """
+    Visualize shared boundaries on the composite image.
+
+    Args:
+        composite: Label map with tag IDs
+        library: Extracted boundaries
+        output_path: Path to save visualization image
+    """
+    import cv2
+
+    # Create RGB visualization
+    h, w = composite.shape
+    vis = np.zeros((h, w, 3), dtype=np.uint8)
+
+    # Color map for tags
+    tag_colors = {
+        1: (100, 100, 255),  # road - blue
+        2: (255, 200, 100),  # kerb - orange
+        3: (100, 255, 100),  # grass - green
+        4: (255, 255, 150),  # sand - yellow
+        5: (150, 150, 255),  # road2 - light blue
+    }
+
+    # Draw composite with colors
+    for tag_id, color in tag_colors.items():
+        mask = (composite == tag_id)
+        vis[mask] = color
+
+    # Draw boundaries in bright red
+    for boundary in library.boundaries:
+        for x, y in boundary.pixel_chain:
+            if 0 <= x < w and 0 <= y < h:
+                vis[y, x] = (0, 0, 255)  # Red
+
+    cv2.imwrite(output_path, vis)
+
+
+def visualize_boundary_matches(
+    composite: np.ndarray,
+    tag_id: int,
+    contour_geo: List[Tuple[float, float]],
+    matches: List[Tuple[int, int, SharedBoundary]],
+    bounds: Dict[str, float],
+    canvas_w: int,
+    canvas_h: int,
+    output_path: str
+) -> None:
+    """
+    Visualize which contour segments matched shared boundaries.
+
+    Args:
+        composite: Label map
+        tag_id: Current tag ID
+        contour_geo: Contour in geographic coordinates
+        matches: Matched segments
+        bounds: Geographic bounds
+        canvas_w, canvas_h: Canvas dimensions
+        output_path: Path to save visualization
+    """
+    import cv2
+
+    # Create visualization
+    h, w = composite.shape
+    vis = np.zeros((h, w, 3), dtype=np.uint8)
+
+    # Draw current tag in gray
+    mask = (composite == tag_id)
+    vis[mask] = (100, 100, 100)
+
+    # Convert contour back to canvas coordinates and draw
+    def geo_to_canvas(lon: float, lat: float) -> Tuple[int, int]:
+        left, right = bounds["left"], bounds["right"]
+        top, bottom = bounds["top"], bounds["bottom"]
+        x = int((lon - left) / (right - left) * canvas_w)
+        y = int((top - lat) / (top - bottom) * canvas_h)
+        return (x, y)
+
+    # Draw original contour in blue
+    contour_canvas = [geo_to_canvas(lon, lat) for lon, lat in contour_geo]
+    for i in range(len(contour_canvas)):
+        p1 = contour_canvas[i]
+        p2 = contour_canvas[(i + 1) % len(contour_canvas)]
+        cv2.line(vis, p1, p2, (255, 0, 0), 1)  # Blue
+
+    # Draw matched segments in green
+    for start_idx, end_idx, boundary in matches:
+        for i in range(start_idx, end_idx + 1):
+            idx = i % len(contour_canvas)
+            next_idx = (i + 1) % len(contour_canvas)
+            p1 = contour_canvas[idx]
+            p2 = contour_canvas[next_idx]
+            cv2.line(vis, p1, p2, (0, 255, 0), 2)  # Green (thicker)
+
+    cv2.imwrite(output_path, vis)
+
+
+def generate_boundary_report(
+    library: SharedBoundaryLibrary,
+    output_path: str
+) -> None:
+    """
+    Generate a text report of all extracted boundaries.
+
+    Args:
+        library: Boundary library
+        output_path: Path to save report
+    """
+    tag_names = {1: "road", 2: "kerb", 3: "grass", 4: "sand", 5: "road2"}
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write("# Shared Boundary Extraction Report\n\n")
+        f.write(f"Total boundaries: {len(library.boundaries)}\n\n")
+
+        # Group by tag pair
+        pair_groups = {}
+        for boundary in library.boundaries:
+            pair = boundary.tag_pair
+            if pair not in pair_groups:
+                pair_groups[pair] = []
+            pair_groups[pair].append(boundary)
+
+        for pair, boundaries in sorted(pair_groups.items()):
+            tag1_name = tag_names.get(pair[0], f"tag{pair[0]}")
+            tag2_name = tag_names.get(pair[1], f"tag{pair[1]}")
+            f.write(f"## {tag1_name} <-> {tag2_name} (tags {pair[0]}, {pair[1]})\n\n")
+            f.write(f"Boundaries: {len(boundaries)}\n\n")
+
+            for idx, boundary in enumerate(boundaries):
+                f.write(f"### Boundary {idx + 1}\n")
+                f.write(f"- Pixel chain length: {len(boundary.pixel_chain)}\n")
+                f.write(f"- Simplified geo points: {len(boundary.geo_coords)}\n")
+                f.write(f"- Length (pixels): {boundary.length_pixels:.1f}\n\n")
+
+        f.write("\n## Per-Tag Summary\n\n")
+        for tag_id in range(1, 6):
+            tag_name = tag_names.get(tag_id, f"tag{tag_id}")
+            boundaries = library.get_boundaries_for_tag(tag_id)
+            f.write(f"- {tag_name} (tag {tag_id}): {len(boundaries)} boundaries\n")
 
 
 def _geo_distance(p1: Tuple[float, float], p2: Tuple[float, float]) -> float:
