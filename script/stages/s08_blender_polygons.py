@@ -397,6 +397,7 @@ def _run_gap_fill(
         _write_tag_blender_json(
             binary, tag_name, bounds_wgs84, canvas_w, canvas_h,
             tf_info, gap_filled_dir, boundary_lib,
+            simplify_epsilon=config.s8_shared_boundary_epsilon,
         )
         return (tag_name, n_pixels)
 
@@ -492,6 +493,7 @@ def _write_tag_blender_json(
     tf_info,
     gap_filled_dir: str,
     boundary_lib=None,
+    simplify_epsilon: float = 2.0,
 ) -> None:
     """Extract contours from binary mask, triangulate, convert to Blender
     coords, and write *_merged_blender.json."""
@@ -500,7 +502,7 @@ def _write_tag_blender_json(
 
     groups = extract_contours_and_triangulate(
         binary, tag_name, bounds, canvas_w, canvas_h,
-        simplify_epsilon=config.s8_shared_boundary_epsilon,  # Use same epsilon as boundaries
+        simplify_epsilon=simplify_epsilon,
         min_contour_area=100,
         shared_boundaries=boundary_lib,
     )
