@@ -500,43 +500,22 @@ def _boolean_intersect(
         bpy.context.scene.collection.objects.link(result_obj)
         return result_obj
 
-    # Both succeeded, compare results
+    # Both succeeded, use whichever has more vertices
     float_verts, float_faces, float_mesh = float_result
     exact_verts, exact_faces, exact_mesh = exact_result
 
-    # Compute quality metrics
-    vert_ratio = float_verts / exact_verts if exact_verts > 0 else 1.0
-    max_faces = max(float_faces, exact_faces)
-    face_diff_pct = abs(float_faces - exact_faces) / max_faces if max_faces > 0 else 0.0
-
-    # Heuristic: detect both under-tessellation and over-tessellation
-    if vert_ratio < 0.7:
-        _log(f"  Using EXACT (FLOAT verts {float_verts:,} < 70% of EXACT {exact_verts:,})")
+    if exact_verts > float_verts:
+        _log(f"  Using EXACT ({exact_verts:,} verts > FLOAT {float_verts:,} verts)")
         bpy.data.meshes.remove(float_mesh)
         result_obj = bpy.data.objects.new("_bool_result_tmp", exact_mesh)
         bpy.context.scene.collection.objects.link(result_obj)
         return result_obj
-
-    if vert_ratio > 1.5:
-        _log(f"  Using EXACT (FLOAT verts {float_verts:,} > 150% of EXACT {exact_verts:,})")
-        bpy.data.meshes.remove(float_mesh)
-        result_obj = bpy.data.objects.new("_bool_result_tmp", exact_mesh)
+    else:
+        _log(f"  Using FLOAT ({float_verts:,} verts >= EXACT {exact_verts:,} verts)")
+        bpy.data.meshes.remove(exact_mesh)
+        result_obj = bpy.data.objects.new("_bool_result_tmp", float_mesh)
         bpy.context.scene.collection.objects.link(result_obj)
         return result_obj
-
-    if face_diff_pct > 0.3:
-        _log(f"  Using EXACT (face diff {face_diff_pct:.1%}: FLOAT={float_faces:,}, EXACT={exact_faces:,})")
-        bpy.data.meshes.remove(float_mesh)
-        result_obj = bpy.data.objects.new("_bool_result_tmp", exact_mesh)
-        bpy.context.scene.collection.objects.link(result_obj)
-        return result_obj
-
-    # Otherwise prefer FLOAT (faster)
-    _log(f"  Using FLOAT (validated: verts={float_verts:,}, faces={float_faces:,})")
-    bpy.data.meshes.remove(exact_mesh)
-    result_obj = bpy.data.objects.new("_bool_result_tmp", float_mesh)
-    bpy.context.scene.collection.objects.link(result_obj)
-    return result_obj
 
 
 # ---------------------------------------------------------------------------
