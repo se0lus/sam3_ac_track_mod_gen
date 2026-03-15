@@ -105,6 +105,13 @@ function updateManualToggles() {
       if (card) {
         card.classList.toggle("stage-card--disabled", !info.enabled);
       }
+      // Update indicator (圆点)
+      const indicator = document.getElementById(`indicator-${sid}`);
+      if (indicator) {
+        indicator.className = info.enabled
+          ? "stage-card__indicator completed"
+          : "stage-card__indicator not_started";
+      }
     }
   }
 }
@@ -347,9 +354,8 @@ async function showStageInfo(stage) {
     const defaultTag = cfg.s8_gap_fill_default_tag || "road2";
     const filterNarrowOn = cfg.s8_filter_narrow_strips !== false;
     const minWidth = cfg.s8_min_width_m || 0.5;
-    const sharedBoundaryOn = !!cfg.s8_use_shared_boundaries;
-    const boundaryEpsilon = cfg.s8_shared_boundary_epsilon || 1.0;
-    const boundaryTolerance = cfg.s8_boundary_match_tolerance_m || 0.05;
+    const topologyOn = cfg.s8_use_topology_contours !== false;
+    const boundaryEpsilon = cfg.s8_shared_boundary_epsilon !== undefined ? cfg.s8_shared_boundary_epsilon : 1.0;
     const allFillTags = ["sand", "grass", "road2", "road", "kerb"];
     stageConfigHtml = `
       <div class="db-config db-config--stage">
@@ -378,12 +384,19 @@ async function showStageInfo(stage) {
               </div>
               <div class="s9-toggle__track${curvesOn ? " active" : ""}"><div class="s9-toggle__thumb"></div></div>
             </div>
-            <div class="s9-toggle" data-key="s8_use_shared_boundaries">
+            <div class="s9-toggle" data-key="s8_use_topology_contours">
               <div>
-                <div class="s9-toggle__label">共享边界提取</div>
-                <div class="s9-toggle__desc">消除相邻 mask 之间的缝隙，确保边界完全重合（实验性）</div>
+                <div class="s9-toggle__label">统一轮廓提取</div>
+                <div class="s9-toggle__desc">从composite一次性提取所有轮廓，共享边界使用完全相同的坐标，零缝隙</div>
               </div>
-              <div class="s9-toggle__track${sharedBoundaryOn ? " active" : ""}"><div class="s9-toggle__thumb"></div></div>
+              <div class="s9-toggle__track${topologyOn ? " active" : ""}"><div class="s9-toggle__thumb"></div></div>
+            </div>
+            <div class="s9-toggle" data-key="s8_debug_save_intermediate">
+              <div>
+                <div class="s9-toggle__label">保存中间 .blend 文件</div>
+                <div class="s9-toggle__desc">保存每个 tag 的中间 Blender 文件，用于调试构网问题</div>
+              </div>
+              <div class="s9-toggle__track${cfg.s8_debug_save_intermediate ? " active" : ""}"><div class="s9-toggle__thumb"></div></div>
             </div>
           </div>
         </div>
@@ -406,13 +419,11 @@ async function showStageInfo(stage) {
         <div class="s9-level-row">
           <div class="config-field">
             <label>边界简化阈值 (像素)</label>
-            <input type="number" id="s8BoundaryEpsilon" value="${boundaryEpsilon}" min="0.5" max="5.0" step="0.1" />
+            <input type="number" id="s8BoundaryEpsilon" value="${boundaryEpsilon}" min="0" max="5.0" step="0.1" />
+            <small style="color: #94a3b8; display: block; margin-top: 4px;">
+              控制共享边界和非共享轮廓的简化程度 (approxPolyDP epsilon)。0=不简化，1.0=默认平衡，2.0=较大简化
+            </small>
           </div>
-          <div class="config-field">
-            <label>边界匹配容差 (米)</label>
-            <input type="number" id="s8BoundaryTolerance" value="${boundaryTolerance}" min="0.01" max="0.5" step="0.01" />
-          </div>
-          <div class="config-field"></div>
         </div>
         <div class="config-actions">
           <button class="btn btn--primary" id="btnSaveStageConfig">保存</button>
@@ -801,8 +812,10 @@ async function showStageInfo(stage) {
       updated.s8_min_width_m = parseFloat($("s8MinWidth").value) || 0.5;
       updated.s8_gap_fill_threshold_m = parseFloat($("s8GapThreshold").value) || 0.20;
       updated.s8_gap_fill_default_tag = $("s8DefaultTag").value || "road2";
-      updated.s8_shared_boundary_epsilon = parseFloat($("s8BoundaryEpsilon").value) || 1.0;
-      updated.s8_boundary_match_tolerance_m = parseFloat($("s8BoundaryTolerance").value) || 0.05;
+      updated.s8_shared_boundary_epsilon = parseFloat($("s8BoundaryEpsilon").value);
+      if (isNaN(updated.s8_shared_boundary_epsilon)) {
+        updated.s8_shared_boundary_epsilon = 1.0;
+      }
       try {
         await fetch("/api/pipeline/config", {
           method: "POST",
@@ -903,7 +916,7 @@ async function showStageInfo(stage) {
       });
     });
     // Wire toggle switches
-    document.querySelectorAll(".s9-toggle").forEach(row => {
+    document.querySelectorAll("#s9Toggles .s9-toggle").forEach(row => {
       row.addEventListener("click", () => {
         const track = row.querySelector(".s9-toggle__track");
         track.classList.toggle("active");
@@ -922,7 +935,7 @@ async function showStageInfo(stage) {
       updated.s9_density_grass = parseFloat($("s9DensityGrass").value) || 2.0;
       updated.s9_density_sand = parseFloat($("s9DensitySand").value) || 2.0;
       updated.s9_density_road2 = parseFloat($("s9DensityRoad2").value) || 2.0;
-      document.querySelectorAll(".s9-toggle").forEach(row => {
+      document.querySelectorAll("#s9Toggles .s9-toggle").forEach(row => {
         const key = row.dataset.key;
         const on = row.querySelector(".s9-toggle__track").classList.contains("active");
         updated[key] = on;

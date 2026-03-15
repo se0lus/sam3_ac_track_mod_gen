@@ -582,6 +582,20 @@ def _create_pretriangulated_mesh(
     verts = [(float(p[0]), float(p[1]), float(p[2])) for p in points_xyz if len(p) >= 3]
     mesh.from_pydata(verts, [], faces)
     mesh.update()
+
+    # Auto-fix triangle winding if normals point wrong direction
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    bm.faces.ensure_lookup_table()
+
+    # Check normal directions (Y-axis in Blender: negative = down/into ground)
+    y_sum = sum(f.normal.y for f in bm.faces)
+    if y_sum < 0:  # Most normals point down = wrong winding
+        bmesh.ops.reverse_faces(bm, faces=bm.faces[:])
+        bm.to_mesh(mesh)
+        print(f"[generate_polygons] Fixed reversed normals for {name}")
+
+    bm.free()
     obj = bpy.data.objects.new(name, mesh)
     return obj
 
@@ -628,6 +642,7 @@ def generate_polygons_from_blender_clips(
     output_file: str,
     *,
     generate_curves: bool = False,
+    debug_save: bool = False,
 ) -> None:
     """
     Read ``*_blender.json`` from *blender_input_path* and generate polygon meshes.
@@ -659,7 +674,7 @@ def generate_polygons_from_blender_clips(
     pretri_groups = _load_pretriangulated_json_files(blender_input_path)
 
     if pretri_groups:
-        _generate_from_pretriangulated(pretri_groups, output_file, generate_curves=generate_curves)
+        _generate_from_pretriangulated(pretri_groups, output_file, generate_curves=generate_curves, debug_save=debug_save)
         return
 
     # Fallback: legacy path (include/exclude polygons with 2D curve fill)
@@ -671,6 +686,7 @@ def _generate_from_pretriangulated(
     output_file: str,
     *,
     generate_curves: bool = False,
+    debug_save: bool = False,
 ) -> None:
     """Generate meshes from pre-triangulated data (earcut output)."""
 
@@ -712,6 +728,12 @@ def _generate_from_pretriangulated(
             curve_name = _sanitize_name(f"mask_curve2D_{tag}_outline", max_len=63)
             curve_obj = _create_curve_object(curve_name, all_outlines)
             _link_object_to_collection(curve_obj, tag_curve_col)
+
+        # Save intermediate .blend file for debugging (if enabled)
+        if debug_save:
+            debug_path = output_file.replace('.blend', f'_debug_{tag}_raw.blend')
+            bpy.ops.wm.save_as_mainfile(filepath=debug_path)
+            print(f"[generate_polygons] DEBUG: Saved intermediate file: {debug_path}")
 
     print(f"[generate_polygons] Pre-triangulated: {created} mesh objects created")
 
@@ -850,6 +872,7 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
     p.add_argument("--no-clean", action="store_true", help="不清空场景（默认会清空以保证可复现）")
     p.add_argument("--generate-curves", action="store_true",
                     help="Generate diagnostic 2D curves (default: skip)")
+    p.add_argument("--debug-save", action="store_true", help="保存每个 tag 的中间 .blend 文件用于调试")
     p.add_argument("--debugpy", action="store_true", help="启用 debugpy 远程断点调试")
     p.add_argument("--debugpy-port", type=int, default=5678, help="debugpy 监听端口")
     p.add_argument("--wait-client", action="store_true", help="启动后等待调试器连接")
@@ -874,6 +897,7 @@ if __name__ == "__main__":
 
     generate_polygons_from_blender_clips(
         args.input, args.output, generate_curves=args.generate_curves,
+        debug_save=args.debug_save,
     )
 
 r"""

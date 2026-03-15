@@ -108,6 +108,9 @@ def _run_parallel(config: PipelineConfig) -> None:
     if config.s9_road_kerb_method == "bool":
         cmd.append("--road-kerb-bool")
 
+    if config.s9_debug_boolean:
+        cmd.append("--debug-boolean")
+
     if not config.s9_convert_textures:
         cmd.append("--skip-textures")
 

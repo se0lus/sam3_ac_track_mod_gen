@@ -1073,6 +1073,10 @@ def main() -> None:
                     import sam3_actions.boolean_mesh_generator as _bmg
                     from surface_extraction import COLLISION_COLLECTION_MAP
 
+                    # Set debug save directory if enabled
+                    if args.debug_boolean:
+                        _bmg.DEBUG_SAVE_DIR = os.path.join(os.path.dirname(output), "debug_boolean")
+
                     # Get density for this tag
                     density = _bmg._get_density(tag)
 

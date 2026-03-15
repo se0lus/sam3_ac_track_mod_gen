@@ -293,20 +293,74 @@ def _poly_geo_to_canvas(
     geo_xy: List[List[float]],
     bounds: Dict[str, float],
     canvas_w: int, canvas_h: int,
+    debug: bool = False,
 ) -> np.ndarray:
     """Convert a polygon's geo_xy to canvas pixel coords (int32 for fillPoly)."""
     pts = []
+    max_rounding_error = 0.0
     for pt in geo_xy:
         if len(pt) < 2:
             continue
         cx, cy = _geo_to_canvas(pt[0], pt[1], bounds, canvas_w, canvas_h)
-        pts.append([int(round(cx)), int(round(cy))])
+        rounded_cx, rounded_cy = int(round(cx)), int(round(cy))
+
+        if debug:
+            error = max(abs(cx - rounded_cx), abs(cy - rounded_cy))
+            max_rounding_error = max(max_rounding_error, error)
+
+        pts.append([rounded_cx, rounded_cy])
+
+    if debug and max_rounding_error > 0.3:
+        print(f"  取整误差: 最大 {max_rounding_error:.3f} 像素")
+
     return np.array(pts, dtype=np.int32)
 
 
 # ---------------------------------------------------------------------------
 # Earcut triangulation
 # ---------------------------------------------------------------------------
+
+def _check_self_intersection(contour: List[List[float]]) -> bool:
+    """Check if a 2D contour has self-intersections.
+
+    Args:
+        contour: List of [x, y] points.
+
+    Returns:
+        True if self-intersecting, False otherwise.
+    """
+    n = len(contour)
+    if n < 4:
+        return False
+
+    for i in range(n):
+        p1 = np.array(contour[i][:2])
+        p2 = np.array(contour[(i + 1) % n][:2])
+
+        for j in range(i + 2, n):
+            if j == (i + n - 1) % n:  # Skip adjacent segments
+                continue
+
+            p3 = np.array(contour[j][:2])
+            p4 = np.array(contour[(j + 1) % n][:2])
+
+            # Check segment intersection
+            d1 = p2 - p1
+            d2 = p4 - p3
+            d3 = p3 - p1
+
+            cross = d1[0] * d2[1] - d1[1] * d2[0]
+            if abs(cross) < 1e-10:
+                continue
+
+            t1 = (d3[0] * d2[1] - d3[1] * d2[0]) / cross
+            t2 = (d3[0] * d1[1] - d3[1] * d1[0]) / cross
+
+            if 0 < t1 < 1 and 0 < t2 < 1:
+                return True
+
+    return False
+
 
 def _triangulate_group_earcut(
     outer_geo: List[List[float]],
@@ -350,9 +404,10 @@ def _triangulate_group_earcut(
     if len(tri_indices) == 0:
         return None
 
+    # Reverse triangle winding order to ensure CCW orientation (correct normals in Blender)
     faces = []
     for i in range(0, len(tri_indices), 3):
-        faces.append([int(tri_indices[i]), int(tri_indices[i + 1]), int(tri_indices[i + 2])])
+        faces.append([int(tri_indices[i]), int(tri_indices[i + 2]), int(tri_indices[i + 1])])
     return faces
 
 
@@ -905,62 +960,50 @@ def extract_contours_and_triangulate(
     if contours and hierarchy is not None:
         hier = hierarchy[0]
 
-        # First pass: simplify all contours and convert to geo_xy
-        geo_contours: Dict[int, List[List[float]]] = {}
+        # First pass: extract raw contours (no simplification yet)
+        raw_pixel_contours: Dict[int, np.ndarray] = {}
         for i, contour in enumerate(contours):
             area = cv2.contourArea(contour)
             if area < min_contour_area:
                 continue
-            approx = cv2.approxPolyDP(contour, simplify_epsilon, closed=True)
-            if len(approx) < 3:
-                continue
-            geo_pts: List[List[float]] = []
-            for pt in approx:
-                cx, cy = float(pt[0][0]), float(pt[0][1])
-                lon, lat = _canvas_to_geo(cx, cy, bounds, canvas_w, canvas_h)
-                geo_pts.append([lon, lat])
-            geo_contours[i] = geo_pts
+            raw_pixel_contours[i] = contour.squeeze()
 
-        # Apply shared boundary matching if enabled
+        # Simplify contours with shared boundary awareness
+        geo_contours: Dict[int, List[List[float]]] = {}
+
         if shared_boundaries is not None:
-            from shared_boundary_extractor import match_contour_segments, rebuild_contour_with_shared_boundaries
-
-            # Get tag ID for boundary lookup
+            from shared_boundary_extractor import simplify_with_shared_boundaries
             tag_id_map = {"road": 1, "kerb": 2, "grass": 3, "sand": 4, "road2": 5}
             tag_id = tag_id_map.get(tag)
 
             if tag_id:
-                boundaries_for_tag = shared_boundaries.get_boundaries_for_tag(tag_id)
-                logger.info("  Tag '%s' (id=%d): %d available shared boundaries",
-                           tag, tag_id, len(boundaries_for_tag))
-
-                total_matches = 0
-                total_rebuilt = 0
-                if boundaries_for_tag:
-                    # Get tolerance from config (default 0.05m)
-                    from pipeline_config import PipelineConfig
-                    tolerance = getattr(PipelineConfig(), 's8_boundary_match_tolerance_m', 0.05)
-
-                    for i in list(geo_contours.keys()):
-                        geo_pts_tuples = [(pt[0], pt[1]) for pt in geo_contours[i]]
-                        matches = match_contour_segments(
-                            geo_pts_tuples, boundaries_for_tag,
-                            tolerance_m=tolerance,
-                            logger=logger
-                        )
-                        if matches:
-                            total_matches += len(matches)
-                            rebuilt = rebuild_contour_with_shared_boundaries(
-                                geo_pts_tuples, matches, tag_id
-                            )
-                            geo_contours[i] = [[pt[0], pt[1]] for pt in rebuilt]
-                            total_rebuilt += 1
-                            logger.info("    Contour %d: matched %d boundary segments", i, len(matches))
-
-                logger.info("  Tag '%s': rebuilt %d/%d contours with %d boundary matches",
-                           tag, total_rebuilt, len(geo_contours), total_matches)
+                geo_contours = simplify_with_shared_boundaries(
+                    raw_pixel_contours, shared_boundaries, tag_id,
+                    bounds, canvas_w, canvas_h, simplify_epsilon, logger
+                )
             else:
-                logger.warning("  Tag '%s' not found in tag_id_map, skipping boundary matching", tag)
+                logger.warning("  Tag '%s' not in tag_id_map, using standard simplification", tag)
+
+        # Fallback: standard simplification for contours without shared boundaries
+        if not geo_contours:
+            for i, contour in raw_pixel_contours.items():
+                epsilon = simplify_epsilon
+                for attempt in range(3):
+                    approx = cv2.approxPolyDP(contour.reshape(-1, 1, 2), epsilon, closed=True)
+                    if len(approx) < 3:
+                        break
+
+                    geo_pts = []
+                    for pt in approx:
+                        cx, cy = float(pt[0][0]), float(pt[0][1])
+                        lon, lat = _canvas_to_geo(cx, cy, bounds, canvas_w, canvas_h)
+                        geo_pts.append([lon, lat])
+
+                    if not _check_self_intersection(geo_pts):
+                        geo_contours[i] = geo_pts
+                        break
+
+                    epsilon = epsilon / 2
 
         # Second pass: build groups from outer contours
         for i in geo_contours:

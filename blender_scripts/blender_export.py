@@ -1147,6 +1147,19 @@ def step6_save_and_export(
             log.info("  '%s': empty, skipping", batch_name)
             continue
 
+        # Merge materials for collision batches to avoid multi-material FBX sub-objects
+        batch_type = _classify_batch(batch_name)
+        if batch_type == "collision":
+            for obj in col.objects:
+                if obj.type == "MESH" and obj.data and len(obj.data.materials) > 1:
+                    # Keep only first material slot, assign all faces to it
+                    first_mat = obj.data.materials[0]
+                    obj.data.materials.clear()
+                    obj.data.materials.append(first_mat)
+                    # Assign all faces to material index 0
+                    for poly in obj.data.polygons:
+                        poly.material_index = 0
+
         # Strip layout prefix before FBX export for game objects batches.
         # "go_" prefix = per-layout batch, "game_objects" = single-layout batch.
         is_go_batch = batch_name.split("_", 3)[-1].startswith("go_") or \

@@ -75,6 +75,8 @@ def run(config: PipelineConfig) -> None:
     ]
     if config.s8_generate_curves:
         cmd.append("--generate-curves")
+    if config.s8_debug_save_intermediate:
+        cmd.append("--debug-save")
     logger.info("Running Blender: %s", " ".join(cmd))
     subprocess.run(cmd, check=True)
     logger.info("Blender polygon generation complete: %s", config.blend_file)
@@ -343,33 +345,6 @@ def _run_gap_fill(
     # ---- 7. Save preview (before gap-fill vs after narrow filter) ----
     _save_gap_fill_preview(composite_before_filter, composite, out_dir)
 
-    # ---- 7.5. Extract shared boundaries (if enabled) ----
-    boundary_lib = None
-    if config.s8_use_shared_boundaries:
-        logger.info("[7.5/8] Extracting shared boundaries...")
-        from shared_boundary_extractor import (
-            extract_all_shared_boundaries,
-            visualize_shared_boundaries,
-            generate_boundary_report
-        )
-        boundary_lib = extract_all_shared_boundaries(
-            composite, bounds_wgs84, canvas_w, canvas_h,
-            simplify_epsilon=config.s8_shared_boundary_epsilon,
-            min_chain_length=3,
-            logger=logger,
-        )
-        logger.info("  Extracted %d shared boundaries", len(boundary_lib.boundaries))
-
-        # Visualize and report boundaries
-        if debug_dir:
-            vis_path = os.path.join(debug_dir, "08_shared_boundaries.png")
-            visualize_shared_boundaries(composite, boundary_lib, vis_path)
-            logger.info("  Saved boundary visualization: %s", vis_path)
-
-            report_path = os.path.join(debug_dir, "08_shared_boundaries_report.txt")
-            generate_boundary_report(boundary_lib, report_path)
-            logger.info("  Saved boundary report: %s", report_path)
-
     # ---- 8. Re-extract contours + triangulate → Blender coords ----
     logger.info("[8/8] Re-extracting contours and converting to Blender coordinates...")
     gap_filled_dir = os.path.join(out_dir, "gap_filled")
@@ -387,28 +362,93 @@ def _run_gap_fill(
         config.tiles_dir, sample_geo_xy=sample_geo, frame_mode="auto"
     )
 
-    # Re-extract surface tags from filled composite
-    def extract_tag(tag_name):
-        tag_id = TAG_NAME_TO_ID[tag_name]
-        binary = (composite == tag_id).astype(np.uint8) * 255
-        n_pixels = int(np.count_nonzero(binary))
-        if n_pixels == 0:
-            return (tag_name, 0)
-        _write_tag_blender_json(
-            binary, tag_name, bounds_wgs84, canvas_w, canvas_h,
-            tf_info, gap_filled_dir, boundary_lib,
-            simplify_epsilon=config.s8_shared_boundary_epsilon,
+    TAG_ID_TO_NAME = {v: k for k, v in TAG_NAME_TO_ID.items()}
+
+    # Use config setting for extraction mode
+    use_pixel_corner = config.s8_use_pixel_corner_contours
+    use_topology = config.s8_use_topology_contours
+    logger.info(f"  Pixel-corner contour extraction: {use_pixel_corner}")
+    logger.info(f"  Unified contour extraction: {use_topology}")
+
+    if use_pixel_corner:
+        # Pixel-corner boundary graph (zero-gap, shared boundaries)
+        logger.info("  Using pixel-corner boundary graph extraction...")
+        from pixel_corner_contour_extractor import extract_all_tag_polygons
+
+        boundary_debug_dir = os.path.join(out_dir, "gap_fill_debug") if config.s8_debug_save_intermediate else None
+        all_tag_groups = extract_all_tag_polygons(
+            composite, bounds_wgs84, canvas_w, canvas_h,
+            epsilon=config.s8_shared_boundary_epsilon,
+            debug_dir=boundary_debug_dir,
         )
-        return (tag_name, n_pixels)
+        for tag_id, groups in all_tag_groups.items():
+            tag_name = TAG_ID_TO_NAME[tag_id]
+            _write_tag_blender_json_from_groups(
+                groups, tag_name, tf_info, gap_filled_dir,
+            )
+            logger.info("  Tag '%s': %d groups extracted", tag_name, len(groups))
 
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        results = list(executor.map(extract_tag, SURFACE_TAGS))
+        # Log tags with no pixels
+        for tag_name in SURFACE_TAGS:
+            tag_id = TAG_NAME_TO_ID[tag_name]
+            if tag_id not in all_tag_groups:
+                n_pixels = int(np.count_nonzero(composite == tag_id))
+                if n_pixels == 0:
+                    logger.info("  Tag '%s': no pixels, skipping", tag_name)
 
-    for tag_name, n_pixels in results:
-        if n_pixels == 0:
-            logger.info("  Tag '%s': no pixels, skipping", tag_name)
-        else:
-            logger.info("  Tag '%s': extracted %d pixels", tag_name, n_pixels)
+    elif use_topology:
+        # Unified contour extraction (all tags at once, zero gaps)
+        logger.info("  Using unified contour extraction...")
+        from unified_contour_extractor import extract_all_contours_unified, set_debug_dir
+
+        # Enable debug output
+        unified_debug_dir = os.path.join(gap_filled_dir, "..", "unified_debug")
+        set_debug_dir(unified_debug_dir)
+
+        all_tag_groups = extract_all_contours_unified(
+            composite, bounds_wgs84, canvas_w, canvas_h,
+            simplify_epsilon=config.s8_shared_boundary_epsilon,
+            min_contour_area=100,
+        )
+        for tag_id, groups in all_tag_groups.items():
+            tag_name = TAG_ID_TO_NAME[tag_id]
+            _write_tag_blender_json_from_groups(
+                groups, tag_name, tf_info, gap_filled_dir,
+            )
+            logger.info("  Tag '%s': %d groups extracted", tag_name, len(groups))
+
+        # Log tags with no pixels
+        for tag_name in SURFACE_TAGS:
+            tag_id = TAG_NAME_TO_ID[tag_name]
+            if tag_id not in all_tag_groups:
+                n_pixels = int(np.count_nonzero(composite == tag_id))
+                if n_pixels == 0:
+                    logger.info("  Tag '%s': no pixels, skipping", tag_name)
+    else:
+        # Fallback: per-tag independent extraction
+        logger.info("  Using per-tag independent contour extraction...")
+
+        def extract_tag(tag_name):
+            tag_id = TAG_NAME_TO_ID[tag_name]
+            binary = (composite == tag_id).astype(np.uint8) * 255
+            n_pixels = int(np.count_nonzero(binary))
+            if n_pixels == 0:
+                return (tag_name, 0)
+            _write_tag_blender_json(
+                binary, tag_name, bounds_wgs84, canvas_w, canvas_h,
+                tf_info, gap_filled_dir,
+                simplify_epsilon=config.s8_shared_boundary_epsilon,
+            )
+            return (tag_name, n_pixels)
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            results = list(executor.map(extract_tag, SURFACE_TAGS))
+
+        for tag_name, n_pixels in results:
+            if n_pixels == 0:
+                logger.info("  Tag '%s': no pixels, skipping", tag_name)
+            else:
+                logger.info("  Tag '%s': extracted %d pixels", tag_name, n_pixels)
 
     # Copy independent tag JSONs from Stage 5 as-is
     for entry in os.listdir(stage5_dir):
@@ -484,6 +524,71 @@ def _rasterize_blender_json(
     return mask
 
 
+def _write_tag_blender_json_from_groups(
+    groups: list,
+    tag_name: str,
+    tf_info,
+    gap_filled_dir: str,
+) -> None:
+    """Write blender JSON from pre-extracted topology-aware groups.
+
+    Each group has 'vertices' (geo coords) and 'faces' (triangle indices).
+    """
+    from geo_sam3_blender_utils import geo_points_to_blender_xyz
+
+    mesh_groups = []
+    total_verts = 0
+    total_faces = 0
+
+    for group_idx, group in enumerate(groups):
+        verts_geo = group.get("vertices")
+        faces = group.get("faces")
+        if verts_geo is None or faces is None:
+            continue
+
+        points_xyz = geo_points_to_blender_xyz(
+            verts_geo, tf_info, z_mode="zero"
+        )
+        if len(points_xyz) < 3:
+            continue
+
+        mesh_groups.append({
+            "group_index": group_idx,
+            "tag": tag_name,
+            "points_xyz": points_xyz,
+            "faces": faces,
+            "geo_xy": verts_geo,
+        })
+        total_verts += len(points_xyz)
+        total_faces += len(faces)
+
+    result = {
+        "origin": {
+            "ecef": list(tf_info.origin_ecef),
+            "lonlat": [tf_info.origin_lon, tf_info.origin_lat],
+            "h": tf_info.origin_h,
+            "source": tf_info.origin_src,
+        },
+        "frame": {
+            "mode": tf_info.effective_mode,
+            "tileset_transform_source": tf_info.tf_source,
+        },
+        "source_tag": tag_name,
+        "mesh_groups": mesh_groups,
+    }
+
+    tag_dir = os.path.join(gap_filled_dir, tag_name)
+    os.makedirs(tag_dir, exist_ok=True)
+    out_path = os.path.join(tag_dir, f"{tag_name}_merged_blender.json")
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(result, f, indent=2, ensure_ascii=False)
+
+    logger.info(
+        "  Gap-filled %s: %d groups, %d verts, %d faces",
+        tag_name, len(mesh_groups), total_verts, total_faces,
+    )
+
+
 def _write_tag_blender_json(
     binary: np.ndarray,
     tag_name: str,
@@ -492,11 +597,10 @@ def _write_tag_blender_json(
     canvas_h: int,
     tf_info,
     gap_filled_dir: str,
-    boundary_lib=None,
     simplify_epsilon: float = 2.0,
 ) -> None:
     """Extract contours from binary mask, triangulate, convert to Blender
-    coords, and write *_merged_blender.json."""
+    coords, and write *_merged_blender.json (fallback, per-tag independent)."""
     from mask_merger import extract_contours_and_triangulate
     from geo_sam3_blender_utils import geo_points_to_blender_xyz
 
@@ -504,7 +608,6 @@ def _write_tag_blender_json(
         binary, tag_name, bounds, canvas_w, canvas_h,
         simplify_epsilon=simplify_epsilon,
         min_contour_area=100,
-        shared_boundaries=boundary_lib,
     )
 
     mesh_groups = []

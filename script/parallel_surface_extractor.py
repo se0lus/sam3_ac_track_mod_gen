@@ -64,7 +64,12 @@ def _process_tile_worker(
     if args_dict.get("road_kerb_bool"):
         cmd.append("--road-kerb-bool")
 
+    # Add debug-boolean flag
+    if args_dict.get("debug_boolean"):
+        cmd.append("--debug-boolean")
+
     logger.info(f"Processing tile {tag}_{tx}_{tz}...")
+    logger.debug(f"Blender command: {' '.join(cmd)}")
     subprocess.run(cmd, check=True, capture_output=True)
 
     return tile_output
@@ -119,6 +124,7 @@ def extract_surfaces_parallel(
         "density_sand": config.surface_density_sand,
         "density_road2": config.surface_density_road2,
         "road_kerb_bool": config.s9_road_kerb_method == "bool",
+        "debug_boolean": config.s9_debug_boolean,
     }
 
     # Execute in parallel with progress tracking

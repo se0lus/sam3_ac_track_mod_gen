@@ -17,7 +17,8 @@ class SharedBoundary:
     """Represents a shared boundary between two adjacent tags."""
     tag_pair: Tuple[int, int]  # (tag1, tag2), tag1 < tag2
     pixel_chain: List[Tuple[int, int]]  # Original pixel coordinates
-    geo_coords: List[Tuple[float, float]]  # Geographic coordinates
+    simplified_pixels: List[Tuple[int, int]]  # Simplified pixel coordinates
+    geo_coords: List[Tuple[float, float]]  # Geographic coordinates (from simplified)
     length_pixels: float  # Boundary length in pixels
 
     def get_for_tag(self, tag: int) -> List[Tuple[float, float]]:
@@ -26,6 +27,13 @@ class SharedBoundary:
             return self.geo_coords
         else:
             return list(reversed(self.geo_coords))
+
+    def get_pixels_for_tag(self, tag: int) -> List[Tuple[int, int]]:
+        """Get simplified pixel coordinates for a specific tag (may reverse)."""
+        if tag == self.tag_pair[0]:
+            return self.simplified_pixels
+        else:
+            return list(reversed(self.simplified_pixels))
 
 
 class SharedBoundaryLibrary:
@@ -162,7 +170,7 @@ def simplify_and_vectorize_boundary(
     canvas_w: int,
     canvas_h: int,
     epsilon: float = 1.0
-) -> List[Tuple[float, float]]:
+) -> Tuple[List[Tuple[int, int]], List[Tuple[float, float]]]:
     """
     Simplify boundary chain using Douglas-Peucker and convert to geo coordinates.
 
@@ -173,18 +181,20 @@ def simplify_and_vectorize_boundary(
         epsilon: Simplification threshold in pixels
 
     Returns:
-        List of geographic coordinates
+        Tuple of (simplified_pixels, geo_coords)
     """
     chain_array = np.array(chain, dtype=np.float32).reshape(-1, 1, 2)
     simplified = cv2.approxPolyDP(chain_array, epsilon, closed=False)
 
+    simplified_pixels = []
     geo_coords = []
     for pt in simplified:
         x, y = float(pt[0][0]), float(pt[0][1])
+        simplified_pixels.append((int(round(x)), int(round(y))))
         lon, lat = _canvas_to_geo(x, y, bounds, canvas_w, canvas_h)
         geo_coords.append((lon, lat))
 
-    return geo_coords
+    return simplified_pixels, geo_coords
 
 
 def extract_all_shared_boundaries(
@@ -234,7 +244,7 @@ def extract_all_shared_boundaries(
 
         for chain_idx, chain in enumerate(chains):
             # Simplify and convert to geo coordinates
-            geo_coords = simplify_and_vectorize_boundary(
+            simplified_pixels, geo_coords = simplify_and_vectorize_boundary(
                 chain, bounds, canvas_w, canvas_h, simplify_epsilon
             )
 
@@ -243,6 +253,7 @@ def extract_all_shared_boundaries(
                 boundary = SharedBoundary(
                     tag_pair=tag_pair,
                     pixel_chain=chain,
+                    simplified_pixels=simplified_pixels,
                     geo_coords=geo_coords,
                     length_pixels=float(length)
                 )
@@ -411,6 +422,77 @@ def _geo_distance(p1: Tuple[float, float], p2: Tuple[float, float]) -> float:
     return np.sqrt(dlat**2 + dlon**2)
 
 
+def _point_to_segment_distance(
+    point: Tuple[float, float],
+    seg_start: Tuple[float, float],
+    seg_end: Tuple[float, float]
+) -> float:
+    """Calculate minimum distance from point to line segment in meters."""
+    px, py = point[0], point[1]
+    ax, ay = seg_start[0], seg_start[1]
+    bx, by = seg_end[0], seg_end[1]
+
+    # Vector from A to B
+    abx, aby = bx - ax, by - ay
+    # Vector from A to P
+    apx, apy = px - ax, py - ay
+
+    # Project P onto AB
+    ab_len_sq = abx * abx + aby * aby
+    if ab_len_sq < 1e-12:
+        # Degenerate segment, return distance to point A
+        return _geo_distance(point, seg_start)
+
+    t = max(0, min(1, (apx * abx + apy * aby) / ab_len_sq))
+
+    # Closest point on segment
+    closest = (ax + t * abx, ay + t * aby)
+    return _geo_distance(point, closest)
+
+
+def _point_to_polyline_distance(
+    point: Tuple[float, float],
+    polyline: List[Tuple[float, float]]
+) -> float:
+    """Calculate minimum distance from point to polyline in meters."""
+    if len(polyline) < 2:
+        return _geo_distance(point, polyline[0]) if polyline else float('inf')
+
+    min_dist = float('inf')
+    for i in range(len(polyline) - 1):
+        dist = _point_to_segment_distance(point, polyline[i], polyline[i+1])
+        min_dist = min(min_dist, dist)
+    return min_dist
+
+
+def _get_bbox(coords: List[Tuple[float, float]]) -> Tuple[float, float, float, float]:
+    """Get bounding box (min_lon, min_lat, max_lon, max_lat) for coordinates."""
+    lons = [c[0] for c in coords]
+    lats = [c[1] for c in coords]
+    return (min(lons), min(lats), max(lons), max(lats))
+
+
+def _bbox_overlaps(bbox1: Tuple[float, float, float, float],
+                   bbox2: Tuple[float, float, float, float],
+                   margin_m: float = 10.0) -> bool:
+    """Check if two bounding boxes overlap with margin in meters."""
+    # Convert margin to approximate degrees (rough approximation)
+    margin_deg = margin_m / 111320.0
+
+    min_lon1, min_lat1, max_lon1, max_lat1 = bbox1
+    min_lon2, min_lat2, max_lon2, max_lat2 = bbox2
+
+    # Expand bbox1 by margin
+    min_lon1 -= margin_deg
+    min_lat1 -= margin_deg
+    max_lon1 += margin_deg
+    max_lat1 += margin_deg
+
+    # Check overlap
+    return not (max_lon1 < min_lon2 or max_lon2 < min_lon1 or
+                max_lat1 < min_lat2 or max_lat2 < min_lat1)
+
+
 def match_contour_segments(
     contour_geo: List[Tuple[float, float]],
     shared_boundaries: List[SharedBoundary],
@@ -436,7 +518,23 @@ def match_contour_segments(
     matches = []
     n_contour = len(contour_geo)
 
-    for boundary_idx, boundary in enumerate(shared_boundaries):
+    # Spatial filtering: compute contour bbox and filter boundaries
+    contour_bbox = _get_bbox(contour_geo)
+    candidate_boundaries = []
+    for boundary in shared_boundaries:
+        boundary_bbox = _get_bbox(boundary.geo_coords)
+        if _bbox_overlaps(contour_bbox, boundary_bbox, margin_m=tolerance_m * 5):
+            candidate_boundaries.append(boundary)
+
+    if len(candidate_boundaries) < len(shared_boundaries):
+        logger.debug("    Spatial filter: %d/%d boundaries (saved %d checks)",
+                    len(candidate_boundaries), len(shared_boundaries),
+                    len(shared_boundaries) - len(candidate_boundaries))
+
+    for boundary_idx, boundary in enumerate(candidate_boundaries):
+        if boundary_idx > 0 and boundary_idx % 50 == 0:
+            logger.info("      Processing boundary %d/%d...", boundary_idx, len(candidate_boundaries))
+
         boundary_coords = boundary.geo_coords
         n_boundary = len(boundary_coords)
 
@@ -445,23 +543,33 @@ def match_contour_segments(
 
         best_match_score = 0
         best_start_idx = -1
+        window_size = min(n_boundary, n_contour)
 
-        # Sliding window search
+        # Sliding window search using point-to-polyline distance
         for i in range(n_contour):
+            # Early termination: if remaining positions can't beat best score
+            if n_contour - i + best_match_score < n_boundary * 0.4:
+                break
+
             match_count = 0
-            for j in range(min(n_boundary, n_contour)):
+            for j in range(window_size):
                 contour_idx = (i + j) % n_contour
-                dist = _geo_distance(contour_geo[contour_idx], boundary_coords[j])
+                dist = _point_to_polyline_distance(contour_geo[contour_idx], boundary_coords)
                 if dist < tolerance_m:
                     match_count += 1
+
+                # Early exit if this window can't beat best score
+                remaining = window_size - j - 1
+                if match_count + remaining <= best_match_score:
+                    break
 
             if match_count > best_match_score:
                 best_match_score = match_count
                 best_start_idx = i
 
-        # Accept if >40% of boundary points match (lowered from 60%)
+        # Accept if >30% of boundary points match (balanced threshold)
         match_ratio = best_match_score / n_boundary if n_boundary > 0 else 0
-        if best_match_score >= n_boundary * 0.4:
+        if best_match_score >= n_boundary * 0.30:
             end_idx = (best_start_idx + n_boundary - 1) % n_contour
             matches.append((best_start_idx, end_idx, boundary))
             logger.debug("      Boundary %d: matched at contour[%d:%d], ratio=%.1f%%",
@@ -480,37 +588,123 @@ def rebuild_contour_with_shared_boundaries(
 ) -> List[Tuple[float, float]]:
     """
     Rebuild contour by replacing matched segments with shared boundaries.
-
-    Args:
-        contour_geo: Original contour
-        matches: Matched segments [(start, end, boundary), ...]
-        tag: Current tag ID
-
-    Returns:
-        Rebuilt contour with shared boundaries
+    Correctly handles closed ring contours where indices wrap around.
     """
     if not matches:
         return contour_geo
 
-    # Sort by start index
-    matches = sorted(matches, key=lambda m: m[0])
+    n = len(contour_geo)
+    if n == 0:
+        return contour_geo
+
+    # Sort matches by start index
+    sorted_matches = sorted(matches, key=lambda m: m[0])
 
     rebuilt = []
-    last_end = -1
 
-    for start, end, boundary in matches:
-        # Add original points between last segment and current
-        if last_end + 1 < start:
-            rebuilt.extend(contour_geo[last_end + 1:start])
-
-        # Add shared boundary (possibly reversed)
+    for idx, (start, end, boundary) in enumerate(sorted_matches):
         boundary_coords = boundary.get_for_tag(tag)
+
+        if idx == 0:
+            # First match: add gap from last match's end to this start
+            last_end = sorted_matches[-1][1]
+
+            if last_end < start - 1:
+                # Normal gap: last_end+1 to start-1
+                rebuilt.extend(contour_geo[last_end + 1:start])
+            elif last_end >= start:
+                # Overlapping matches, skip gap
+                pass
+            else:
+                # Wrapped: last_end+1 to n-1, then 0 to start-1
+                if last_end + 1 < n:
+                    rebuilt.extend(contour_geo[last_end + 1:n])
+                if start > 0:
+                    rebuilt.extend(contour_geo[0:start])
+        else:
+            # Subsequent matches: add gap from previous end to this start
+            prev_end = sorted_matches[idx - 1][1]
+            if prev_end < start - 1:
+                rebuilt.extend(contour_geo[prev_end + 1:start])
+
+        # Add boundary
         rebuilt.extend(boundary_coords)
 
-        last_end = end
-
-    # Add remaining points
-    if last_end + 1 < len(contour_geo):
-        rebuilt.extend(contour_geo[last_end + 1:])
-
     return rebuilt
+
+
+def simplify_with_shared_boundaries(
+    raw_pixel_contours: Dict[int, np.ndarray],
+    boundary_lib,
+    tag_id: int,
+    bounds: Dict[str, float],
+    canvas_w: int,
+    canvas_h: int,
+    epsilon: float,
+    logger
+) -> Dict[int, List[List[float]]]:
+    """
+    Simplify contours with shared boundary awareness (fundamental solution).
+
+    Shared edges use pre-simplified boundary coordinates.
+    Non-shared edges are simplified independently.
+
+    Returns: {contour_idx: [[lon, lat], ...]}
+    """
+    import logging
+    if logger is None:
+        logger = logging.getLogger(__name__)
+
+    boundaries_for_tag = boundary_lib.get_boundaries_for_tag(tag_id)
+    logger.info("  Tag (id=%d): %d available shared boundaries", tag_id, len(boundaries_for_tag))
+
+    if not boundaries_for_tag:
+        return {}
+
+    # Build pixel lookup: pixel -> list of boundary indices
+    pixel_to_boundaries = {}
+    for b_idx, boundary in enumerate(boundaries_for_tag):
+        for px, py in boundary.simplified_pixels:
+            key = (px, py)
+            if key not in pixel_to_boundaries:
+                pixel_to_boundaries[key] = []
+            pixel_to_boundaries[key].append(b_idx)
+
+    geo_contours = {}
+    total_matched = 0
+
+    from pipeline_config import PipelineConfig
+    tolerance = getattr(PipelineConfig(), 's8_boundary_match_tolerance_m', 0.15)
+
+    for contour_idx, raw_contour in raw_pixel_contours.items():
+        # Convert to geo for matching
+        raw_geo = []
+        for pt in raw_contour:
+            if len(pt.shape) == 1:
+                px, py = float(pt[0]), float(pt[1])
+            else:
+                px, py = float(pt[0][0]), float(pt[0][1])
+            lon, lat = _canvas_to_geo(px, py, bounds, canvas_w, canvas_h)
+            raw_geo.append((lon, lat))
+
+        # Match segments
+        matches = match_contour_segments(raw_geo, boundaries_for_tag, tolerance_m=tolerance, logger=logger)
+
+        if matches:
+            total_matched += 1
+            logger.info("    Contour %d: matched %d boundary segments", contour_idx, len(matches))
+            rebuilt = rebuild_contour_with_shared_boundaries(raw_geo, matches, tag_id)
+            geo_contours[contour_idx] = [[pt[0], pt[1]] for pt in rebuilt]
+        else:
+            # No match: standard simplification
+            contour_array = raw_contour.reshape(-1, 1, 2) if len(raw_contour.shape) == 2 else raw_contour
+            approx = cv2.approxPolyDP(contour_array, epsilon, closed=True)
+            geo_pts = []
+            for pt in approx:
+                px, py = float(pt[0][0]), float(pt[0][1])
+                lon, lat = _canvas_to_geo(px, py, bounds, canvas_w, canvas_h)
+                geo_pts.append([lon, lat])
+            geo_contours[contour_idx] = geo_pts
+
+    logger.info("  Tag (id=%d): matched %d/%d contours", tag_id, total_matched, len(raw_pixel_contours))
+    return geo_contours

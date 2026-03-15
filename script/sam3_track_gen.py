@@ -83,7 +83,12 @@ STAGE_FUNCTIONS: Dict[str, Callable[[PipelineConfig], None]] = {
 # ---------------------------------------------------------------------------
 def _load_manual_stages_config(config: PipelineConfig) -> Dict[str, bool]:
     """Read manual_stages from webtools_config.json if available."""
-    config_json = os.path.join(config.output_dir, "webtools_config.json")
+    # Try project root first (new location)
+    config_json = os.path.join(_PROJECT_ROOT, "webtools_config.json")
+    if not os.path.isfile(config_json):
+        # Fallback to output_dir (old location)
+        config_json = os.path.join(config.output_dir, "webtools_config.json")
+
     if os.path.isfile(config_json):
         try:
             import json
@@ -97,7 +102,12 @@ def _load_manual_stages_config(config: PipelineConfig) -> Dict[str, bool]:
 
 def _apply_webtools_config(config: PipelineConfig) -> None:
     """Apply settings from webtools_config.json to config object."""
-    config_json = os.path.join(config.output_dir, "webtools_config.json")
+    # Try project root first (new location)
+    config_json = os.path.join(_PROJECT_ROOT, "webtools_config.json")
+    if not os.path.isfile(config_json):
+        # Fallback to output_dir (old location)
+        config_json = os.path.join(config.output_dir, "webtools_config.json")
+
     if not os.path.isfile(config_json):
         return
     try:
@@ -333,11 +343,10 @@ def config_from_args(args: argparse.Namespace) -> PipelineConfig:
         config.blender_exe = args.blender_exe
     if args.gemini_api_key:
         config.gemini_api_key = args.gemini_api_key
-    if args.inpaint_model:
-        if args.inpaint_model == "disabled":
-            config.inpaint_center_holes = False
-        else:
-            config.inpaint_model = args.inpaint_model
+    if args.inpaint_model and args.inpaint_model != "disabled":
+        config.inpaint_model = args.inpaint_model
+    elif args.inpaint_model == "disabled":
+        config.inpaint_center_holes = False
 
     # Concurrency
     if args.max_workers > 0:

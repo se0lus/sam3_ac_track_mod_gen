@@ -296,9 +296,12 @@ class PipelineConfig:
     s8_gap_fill_default_tag: str = "road2"  # Default fill tag for remaining voids
     s8_filter_narrow_strips: bool = True  # Remove narrow strips/fragments before gap-fill
     s8_min_width_m: float = 0.5  # Minimum width in metres (strips narrower than this are removed)
-    s8_use_shared_boundaries: bool = False  # Use shared boundary extraction to eliminate gaps
+    s8_use_topology_contours: bool = True  # Topology-aware contour extraction (zero gaps)
+    s8_use_pixel_corner_contours: bool = True  # Pixel-corner boundary graph (replaces topology contours)
+    s8_use_shared_boundaries: bool = False  # DEPRECATED: replaced by s8_use_topology_contours
     s8_shared_boundary_epsilon: float = 1.0  # Boundary simplification threshold (pixels)
-    s8_boundary_match_tolerance_m: float = 0.05  # Boundary matching tolerance (meters)
+    s8_boundary_match_tolerance_m: float = 0.15  # Boundary matching tolerance (meters)
+    s8_debug_save_intermediate: bool = False  # Save intermediate .blend files for debugging
 
     # --- Stage 9 options ---
     s9_import_walls: bool = True

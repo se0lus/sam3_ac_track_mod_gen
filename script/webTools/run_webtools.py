@@ -28,6 +28,65 @@ def repo_root_from_here() -> str:
 # 加载项目根目录 .env
 load_dotenv(os.path.join(repo_root_from_here(), ".env"))
 
+# 导入配置以获取输出目录
+sys.path.insert(0, os.path.join(repo_root_from_here(), "script"))
+from pipeline_config import PipelineConfig
+
+# webtools_config.json 放在项目根目录（固定位置，避免循环依赖）
+_REPO_ROOT = repo_root_from_here()
+_CONFIG_JSON_PATH = os.path.join(_REPO_ROOT, "webtools_config.json")
+
+# 先尝试从 webtools_config.json 读取输出目录
+def _get_output_dir():
+    if os.path.isfile(_CONFIG_JSON_PATH):
+        try:
+            with open(_CONFIG_JSON_PATH, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+                output_dir = cfg.get("output_dir")
+                if output_dir:
+                    return output_dir
+        except Exception:
+            pass
+    # 否则使用 PipelineConfig 的默认值
+    return PipelineConfig().output_dir
+
+_OUTPUT_DIR = _get_output_dir()
+
+
+def _reinit_paths():
+    """重新初始化所有路径变量（配置更新后调用）"""
+    global _OUTPUT_DIR, _WALLS_JSON, _MANUAL_WALLS_JSON, _MANUAL_WALLS_DIR
+    global _GEO_META_JSON, _GAME_OBJECTS_JSON, _GAME_OBJECTS_GEO_META_JSON
+    global _CENTERLINE_JSON, _LAYOUTS_DIR, _LAYOUTS_JSON, _MASK_FULL_MAP_DIR
+    global _GAME_OBJECTS_DIR, _MANUAL_GAME_OBJECTS_DIR, _MANUAL_SURFACE_MASKS_DIR
+    global _MANUAL_SURFACE_MASKS_EDIT_DIR, _STAGE5_PREVIEW_DIR, _CONFIG_JSON
+    global _PACKAGING_DIR, _MANUAL_TRACK_INFO_DIR, _02_RESULT_DIR
+    global _05_RESULT_DIR, _06_RESULT_DIR, _07_RESULT_DIR
+
+    _OUTPUT_DIR = _get_output_dir()
+    _WALLS_JSON = os.path.join(_OUTPUT_DIR, "06_ai_walls", "walls.json")
+    _MANUAL_WALLS_JSON = os.path.join(_OUTPUT_DIR, "06a_manual_walls", "walls.json")
+    _MANUAL_WALLS_DIR = os.path.join(_OUTPUT_DIR, "06a_manual_walls")
+    _GEO_META_JSON = os.path.join(_OUTPUT_DIR, "06_ai_walls", "geo_metadata.json")
+    _GAME_OBJECTS_JSON = os.path.join(_OUTPUT_DIR, "07_ai_game_objects", "game_objects.json")
+    _GAME_OBJECTS_GEO_META_JSON = os.path.join(_OUTPUT_DIR, "07_ai_game_objects", "geo_metadata.json")
+    _CENTERLINE_JSON = os.path.join(_OUTPUT_DIR, "07_ai_game_objects", "centerline.json")
+    _LAYOUTS_DIR = os.path.join(_OUTPUT_DIR, "02a_track_layouts")
+    _LAYOUTS_JSON = os.path.join(_OUTPUT_DIR, "02a_track_layouts", "layouts.json")
+    _MASK_FULL_MAP_DIR = os.path.join(_OUTPUT_DIR, "02_mask_full_map")
+    _GAME_OBJECTS_DIR = os.path.join(_OUTPUT_DIR, "07_ai_game_objects")
+    _MANUAL_GAME_OBJECTS_DIR = os.path.join(_OUTPUT_DIR, "07a_manual_game_objects")
+    _MANUAL_SURFACE_MASKS_DIR = os.path.join(_OUTPUT_DIR, "05a_manual_surface_masks")
+    _MANUAL_SURFACE_MASKS_EDIT_DIR = os.path.join(_OUTPUT_DIR, "05a_manual_surface_masks", "masks")
+    _STAGE5_PREVIEW_DIR = os.path.join(_OUTPUT_DIR, "05_merge_segments", "merge_preview")
+    _CONFIG_JSON = _CONFIG_JSON_PATH
+    _PACKAGING_DIR = os.path.join(_OUTPUT_DIR, "11_track_packaging")
+    _MANUAL_TRACK_INFO_DIR = os.path.join(_OUTPUT_DIR, "11a_manual_track_info")
+    _02_RESULT_DIR = os.path.join(_OUTPUT_DIR, "02_result")
+    _05_RESULT_DIR = os.path.join(_OUTPUT_DIR, "05_result")
+    _06_RESULT_DIR = os.path.join(_OUTPUT_DIR, "06_result")
+    _07_RESULT_DIR = os.path.join(_OUTPUT_DIR, "07_result")
+
 
 def find_free_port(host: str, start_port: int, max_tries: int) -> int:
     for i in range(max_tries):
@@ -53,31 +112,31 @@ def find_free_port(host: str, start_port: int, max_tries: int) -> int:
 # ---------------------------------------------------------------------------
 _REPO_ROOT = repo_root_from_here()
 # --- Direct stage output directories ---
-_WALLS_JSON = os.path.join(_REPO_ROOT, "output", "06_ai_walls", "walls.json")
-_MANUAL_WALLS_JSON = os.path.join(_REPO_ROOT, "output", "06a_manual_walls", "walls.json")
-_MANUAL_WALLS_DIR = os.path.join(_REPO_ROOT, "output", "06a_manual_walls")
-_GEO_META_JSON = os.path.join(_REPO_ROOT, "output", "06_ai_walls", "geo_metadata.json")
-_GAME_OBJECTS_JSON = os.path.join(_REPO_ROOT, "output", "07_ai_game_objects", "game_objects.json")
-_GAME_OBJECTS_GEO_META_JSON = os.path.join(_REPO_ROOT, "output", "07_ai_game_objects", "geo_metadata.json")
-_CENTERLINE_JSON = os.path.join(_REPO_ROOT, "output", "07_ai_game_objects", "centerline.json")
-_LAYOUTS_DIR = os.path.join(_REPO_ROOT, "output", "02a_track_layouts")
-_LAYOUTS_JSON = os.path.join(_REPO_ROOT, "output", "02a_track_layouts", "layouts.json")
-_MASK_FULL_MAP_DIR = os.path.join(_REPO_ROOT, "output", "02_mask_full_map")
-_GAME_OBJECTS_DIR = os.path.join(_REPO_ROOT, "output", "07_ai_game_objects")
-_MANUAL_GAME_OBJECTS_DIR = os.path.join(_REPO_ROOT, "output", "07a_manual_game_objects")
-_MANUAL_SURFACE_MASKS_DIR = os.path.join(_REPO_ROOT, "output", "05a_manual_surface_masks")
-_MANUAL_SURFACE_MASKS_EDIT_DIR = os.path.join(_REPO_ROOT, "output", "05a_manual_surface_masks", "masks")
-_STAGE5_PREVIEW_DIR = os.path.join(_REPO_ROOT, "output", "05_merge_segments", "merge_preview")
+_WALLS_JSON = os.path.join(_OUTPUT_DIR, "06_ai_walls", "walls.json")
+_MANUAL_WALLS_JSON = os.path.join(_OUTPUT_DIR, "06a_manual_walls", "walls.json")
+_MANUAL_WALLS_DIR = os.path.join(_OUTPUT_DIR, "06a_manual_walls")
+_GEO_META_JSON = os.path.join(_OUTPUT_DIR, "06_ai_walls", "geo_metadata.json")
+_GAME_OBJECTS_JSON = os.path.join(_OUTPUT_DIR, "07_ai_game_objects", "game_objects.json")
+_GAME_OBJECTS_GEO_META_JSON = os.path.join(_OUTPUT_DIR, "07_ai_game_objects", "geo_metadata.json")
+_CENTERLINE_JSON = os.path.join(_OUTPUT_DIR, "07_ai_game_objects", "centerline.json")
+_LAYOUTS_DIR = os.path.join(_OUTPUT_DIR, "02a_track_layouts")
+_LAYOUTS_JSON = os.path.join(_OUTPUT_DIR, "02a_track_layouts", "layouts.json")
+_MASK_FULL_MAP_DIR = os.path.join(_OUTPUT_DIR, "02_mask_full_map")
+_GAME_OBJECTS_DIR = os.path.join(_OUTPUT_DIR, "07_ai_game_objects")
+_MANUAL_GAME_OBJECTS_DIR = os.path.join(_OUTPUT_DIR, "07a_manual_game_objects")
+_MANUAL_SURFACE_MASKS_DIR = os.path.join(_OUTPUT_DIR, "05a_manual_surface_masks")
+_MANUAL_SURFACE_MASKS_EDIT_DIR = os.path.join(_OUTPUT_DIR, "05a_manual_surface_masks", "masks")
+_STAGE5_PREVIEW_DIR = os.path.join(_OUTPUT_DIR, "05_merge_segments", "merge_preview")
 _TILES_DIR = os.path.join(_REPO_ROOT, "test_images_shajing", "map")
-_CONFIG_JSON = os.path.join(_REPO_ROOT, "output", "webtools_config.json")
-_PACKAGING_DIR = os.path.join(_REPO_ROOT, "output", "11_track_packaging")
-_MANUAL_TRACK_INFO_DIR = os.path.join(_REPO_ROOT, "output", "11a_manual_track_info")
+_CONFIG_JSON = _CONFIG_JSON_PATH  # 使用项目根目录的配置文件
+_PACKAGING_DIR = os.path.join(_OUTPUT_DIR, "11_track_packaging")
+_MANUAL_TRACK_INFO_DIR = os.path.join(_OUTPUT_DIR, "11a_manual_track_info")
 
 # --- Result junction directories (downstream stages read from these) ---
-_02_RESULT_DIR = os.path.join(_REPO_ROOT, "output", "02_result")
-_05_RESULT_DIR = os.path.join(_REPO_ROOT, "output", "05_result")
-_06_RESULT_DIR = os.path.join(_REPO_ROOT, "output", "06_result")
-_07_RESULT_DIR = os.path.join(_REPO_ROOT, "output", "07_result")
+_02_RESULT_DIR = os.path.join(_OUTPUT_DIR, "02_result")
+_05_RESULT_DIR = os.path.join(_OUTPUT_DIR, "05_result")
+_06_RESULT_DIR = os.path.join(_OUTPUT_DIR, "06_result")
+_07_RESULT_DIR = os.path.join(_OUTPUT_DIR, "07_result")
 
 
 def _result_or_fallback(result_dir: str, fallback_dir: str) -> str:
@@ -778,9 +837,13 @@ class PipelineRunner:
             wt_cfg = _load_webtools_config()
             saved_manual = wt_cfg.get("manual_stages", {})
             saved_manual.update(manual_cfg)
+            print(f"[pipeline] Setting up result junctions with manual_stages: {saved_manual}")
             pc.setup_result_junctions(saved_manual)
+            print(f"[pipeline] Result junctions set up successfully")
         except Exception as e:
             print(f"[pipeline] WARNING: Failed to set up junctions: {e}")
+            import traceback
+            traceback.print_exc()
 
         # Clean output directories for stages being re-run (best-effort)
         for sid in stage_ids:
@@ -1092,19 +1155,31 @@ class ApiHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
         # --- Existing endpoints ---
         if self.path == "/api/walls":
-            # Read from 07_result junction
-            result_walls = os.path.join(_result_or_fallback(_06_RESULT_DIR, os.path.dirname(_WALLS_JSON)), "walls.json")
-            self._serve_json_file(result_walls)
+            # Read priority: 06a_manual_walls > 06_result > 06_ai_walls
+            manual_walls = os.path.join(_MANUAL_WALLS_DIR, "walls.json")
+            if os.path.isfile(manual_walls):
+                self._serve_json_file(manual_walls)
+            else:
+                result_walls = os.path.join(_result_or_fallback(_06_RESULT_DIR, os.path.dirname(_WALLS_JSON)), "walls.json")
+                self._serve_json_file(result_walls)
         elif self.path == "/api/geo_metadata":
-            # Read from 06_result, fallback to 06_ai_walls, then 02_mask_full_map
-            result_meta = os.path.join(_result_or_fallback(_06_RESULT_DIR, os.path.dirname(_GEO_META_JSON)), "geo_metadata.json")
-            if not os.path.isfile(result_meta):
-                result_meta = os.path.join(_MASK_FULL_MAP_DIR, "geo_metadata.json")
-            self._serve_geo_metadata(result_meta)
+            # Read priority: 06a_manual_walls > 06_result > 06_ai_walls > 02_mask_full_map
+            manual_meta = os.path.join(_MANUAL_WALLS_DIR, "geo_metadata.json")
+            if os.path.isfile(manual_meta):
+                self._serve_geo_metadata(manual_meta)
+            else:
+                result_meta = os.path.join(_result_or_fallback(_06_RESULT_DIR, os.path.dirname(_GEO_META_JSON)), "geo_metadata.json")
+                if not os.path.isfile(result_meta):
+                    result_meta = os.path.join(_MASK_FULL_MAP_DIR, "geo_metadata.json")
+                self._serve_geo_metadata(result_meta)
         elif self.path == "/api/game_objects":
-            # Read from 08_result junction
-            result_go = os.path.join(_result_or_fallback(_07_RESULT_DIR, _GAME_OBJECTS_DIR), "game_objects.json")
-            self._serve_json_file(result_go)
+            # Read priority: 07a_manual_game_objects > 07_result > 07_ai_game_objects
+            manual_go = os.path.join(_MANUAL_GAME_OBJECTS_DIR, "game_objects.json")
+            if os.path.isfile(manual_go):
+                self._serve_json_file(manual_go)
+            else:
+                result_go = os.path.join(_result_or_fallback(_07_RESULT_DIR, _GAME_OBJECTS_DIR), "game_objects.json")
+                self._serve_json_file(result_go)
         elif self.path == "/api/game_objects/geo_metadata":
             # Read from 07_result, then 06_result, then 02
             result_go_dir = _result_or_fallback(_07_RESULT_DIR, _GAME_OBJECTS_DIR)
@@ -2541,6 +2616,8 @@ class ApiHandler(SimpleHTTPRequestHandler):
             existing = _load_webtools_config()
             existing.update(new_cfg)
             _save_webtools_config(existing)
+            # 重新初始化路径变量，使配置立即生效
+            _reinit_paths()
             self._send_json_ok()
         except Exception as e:
             self.send_error(500, str(e))
@@ -2615,7 +2692,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 return
 
             odir = self._MANUAL_STAGE_DIRS[sid]
-            full = os.path.join(_REPO_ROOT, "output", odir)
+            full = os.path.join(_OUTPUT_DIR, odir)
 
             # Reset: remove all files in the manual output directory
             if reset and os.path.isdir(full):
@@ -2655,7 +2732,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
                     sys.path.insert(0, script_dir)
                 from pipeline_config import PipelineConfig
                 pc = PipelineConfig(
-                    output_dir=cfg.get("output_dir", os.path.join(_REPO_ROOT, "output")),
+                    output_dir=cfg.get("output_dir", _OUTPUT_DIR),
                 ).resolve()
                 pc.setup_result_junctions(cfg.get("manual_stages", {}))
             except Exception as e:
@@ -2676,7 +2753,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
             pc = PipelineConfig(
                 geotiff_path=cfg.get("geotiff_path", ""),
                 tiles_dir=cfg.get("tiles_dir", ""),
-                output_dir=cfg.get("output_dir", os.path.join(_REPO_ROOT, "output")),
+                output_dir=cfg.get("output_dir", _OUTPUT_DIR),
             ).resolve()
 
             if sid == "manual_surface_masks":
