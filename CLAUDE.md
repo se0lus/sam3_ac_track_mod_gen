@@ -11,12 +11,15 @@
 | `script/pipeline_config.py` | **统一配置（唯一来源）** |
 | `script/sam3_track_gen.py` | 主入口 CLI |
 | `script/stages/s0N_*.py` | 各阶段（可独立运行） |
+| `script/stages/s08_5_blender_tiles.py` | Stage 8.5 瓦片预加载 |
+| `script/stages/s11a_manual_track_info.py` | Stage 11a 手动赛道信息编辑 |
 | `script/webTools/run_webtools.py` | Dashboard + Web 编辑器 |
 | `blender_scripts/config.py` | Blender 配置（从 pipeline_config 导入） |
 | `blender_scripts/blender_automate.py` | Stage 9 Blender 无头自动化主脚本 |
 | `blender_scripts/merge_tiles.py` | Stage 9 并行模式 tile 合并脚本 |
 | `blender_scripts/sam3_actions/` | Blender 右键菜单 Action 插件 |
 | `script/tile_planner.py` | Stage 9 并行模式 tile 规划器 |
+| `script/tile_plan.py` | 瓦片 LOD 规划（渐进式精炼） |
 | `script/parallel_surface_extractor.py` | Stage 9 并行执行器（多进程） |
 | `script/surface_extraction.py` | 碰撞命名 + 多边形工具（纯 Python，无 bpy） |
 | `output/NN_stage_name/` | 各阶段输出 |

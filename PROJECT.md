@@ -3,7 +3,7 @@
 > 无人机 2D 航拍 / 3D 倾斜摄影 → SAM3 语义分割 → Blender 三维处理 → Assetto Corsa 赛道 Mod
 
 全自动 11 阶段流水线，将无人机影像（GeoTIFF）和 3D Tiles 转化为可游玩的 Assetto Corsa 赛道 Mod。
-内置 Web Dashboard 管理流水线，配备 6 个交互式编辑器，支持在每个关键阶段手动精调 AI 输出。
+内置 Web Dashboard 管理流水线，配备 7 个交互式编辑器，支持在每个关键阶段手动精调 AI 输出。
 
 ## 目录
 
@@ -26,6 +26,7 @@
   - [阶段 9a: 手动 Blender 编辑（手动）](#阶段-9a-手动-blender-编辑手动)
   - [阶段 10: 模型导出（FBX / KN5）](#阶段-10-模型导出fbx--kn5)
   - [阶段 11: 赛道打包](#阶段-11-赛道打包)
+  - [阶段 11a: 手动赛道信息编辑（手动）](#阶段-11a-手动赛道信息编辑手动)
 - [Junction 链接系统](#junction-链接系统)
 - [Web Dashboard 与编辑器](#web-dashboard-与编辑器)
 - [Blender 脚本](#blender-脚本)
@@ -60,6 +61,7 @@ GeoTIFF 影像 + 3D Tiles (b3dm)
  │  S9a  手动 Blender ·········    （手动，Blender 编辑）        │
  │  S10  模型导出                  FBX 拆分 + KN5 转换          │
  │  S11  赛道打包                  AC 文件夹 + UI + 元数据       │
+ │  S11a 手动赛道信息 ·········    （手动，Web 编辑器）           │
  └──────────────────────────────────────────────────────────────┘
     │
     ▼
@@ -119,7 +121,7 @@ python script/stages/s02_mask_full_map.py \
 
 ```bash
 python script/webTools/run_webtools.py
-# 自动打开浏览器 → Dashboard + 6 个交互式编辑器
+# 自动打开浏览器 → Dashboard + 7 个交互式编辑器
 ```
 
 ### Blender 交互模式
@@ -433,6 +435,16 @@ Blender 无头模式的主编排脚本。支持**串行**和**并行**两种模�
 | **输入** | 阶段 10 的 KN5 文件 + 布局/对象元数据 |
 | **输出** | `output/11_track_packaging/{track_name}/` |
 
+### 阶段 11a: 手动赛道信息编辑（手动）
+
+**文件:** `script/stages/s11a_manual_track_info.py`
+
+可选。从阶段 11 打包输出中复制 `cameras.ini`（每布局一份）和 `centerline.json` 到 `11a_manual_track_info/` 供手动编辑。已有编辑不会被覆盖。用户通过 Web 相机编辑器调整 AC 回放摄像机参数。
+
+| | |
+|---|---|
+| **输出** | `output/11a_manual_track_info/{layout}/`（cameras.ini, centerline.json） |
+
 ---
 
 ## Junction 链接系统
@@ -476,6 +488,7 @@ Blender 无头模式的主编排脚本。支持**串行**和**并行**两种模�
 | **对象编辑器** | `objects_editor.html/js/css` | 在地图上定位/调整游戏对象朝向 |
 | **游戏对象编辑器** | `gameobjects_editor.html/js` | 高级游戏对象管理 |
 | **中线编辑器** | `centerline_editor.html/js/css` | 绘制/调整赛道中线 |
+| **相机编辑器** | `camera_editor.html/js/css` | 定义 AC 回放摄像机位置和参数 |
 
 所有编辑器共享：
 - Leaflet.js 地图，统一**右键长按拖动**（一致的交互方式）
@@ -821,11 +834,13 @@ sam3_track_seg/
 │   │   ├── s07_ai_game_objects.py
 │   │   ├── s07a_manual_game_objects.py
 │   │   ├── s08_blender_polygons.py
+│   │   ├── s08_5_blender_tiles.py
 │   │   ├── s09_blender_automate.py
 │   │   ├── s09a_manual_blender.py
 │   │   ├── s10_model_export.py
-│   │   └── s11_track_packaging.py
-│   ├── webTools/                     # Dashboard + 6 个 Web 编辑器
+│   │   ├── s11_track_packaging.py
+│   │   └── s11a_manual_track_info.py
+│   ├── webTools/                     # Dashboard + 7 个 Web 编辑器
 │   │   ├── run_webtools.py           # Flask 服务器
 │   │   ├── dashboard.html/js/css
 │   │   ├── layout_editor.html/js/css
@@ -834,6 +849,7 @@ sam3_track_seg/
 │   │   ├── objects_editor.html/js/css
 │   │   ├── gameobjects_editor.html/js
 │   │   ├── centerline_editor.html/js/css
+│   │   ├── camera_editor.html/js/css
 │   │   └── style.css                # 共享深色主题
 │   ├── geo_tiff_image.py
 │   ├── geo_sam3_image.py
@@ -887,7 +903,8 @@ sam3_track_seg/
 │   ├── 09_result → (junction)
 │   ├── 09a_manual_blender/
 │   ├── 10_model_export/
-│   └── 11_track_packaging/
+│   ├── 11_track_packaging/
+│   └── 11a_manual_track_info/
 ├── requirements.txt
 ├── setup_env.bat
 └── CLAUDE.md                         # 开发规则

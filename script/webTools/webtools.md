@@ -13,7 +13,7 @@
 | `analyzer.html/js` | GPS 走线分析器（原 index.html + app.js） |
 | `style.css` | 全局共享样式 |
 | `map_rightdrag.js` | 右键拖拽共享工具 |
-| `*_editor.html/js/css` | 各编辑器（centerline/layout/wall/objects/surface/gameobjects） |
+| `*_editor.html/js/css` | 各编辑器（centerline/layout/wall/objects/surface/gameobjects/camera） |
 
 ## 启动方式
 
@@ -46,7 +46,7 @@ python script/track_session_anaylzer/run_analyzer.py
 | POST | `/api/centerline/regenerate` | 重新生成中线 |
 | POST | `/api/vlm_objects/regenerate` | 重新生成 VLM 对象 |
 
-### Dashboard API（新增）
+### Dashboard API
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -67,6 +67,6 @@ python script/track_session_anaylzer/run_analyzer.py
 
 ## 配置持久化
 
-Dashboard 配置保存在 `output/webtools_config.json`，包含：
+Dashboard 配置保存在项目根目录 `webtools_config.json`，包含：
 - geotiff_path, tiles_dir, output_dir
 - blender_exe, track_direction, gemini_api_key

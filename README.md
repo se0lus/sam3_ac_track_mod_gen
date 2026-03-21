@@ -10,7 +10,7 @@ Automatically generate playable [Assetto Corsa](https://www.assettocorsa.net/) t
 - **SAM3 Semantic Segmentation** &mdash; 8-class segmentation (road, grass, sand, kerb, trees, building, water, concrete) with fallback prompts
 - **AI + Procedural Hybrid** &mdash; Gemini VLM for high-level decisions (object placement, track descriptions), algorithms for geometric precision (wall generation, centerline extraction)
 - **Web Dashboard** &mdash; Flask-based control panel with real-time SSE logs, progress tracking, and configuration editor
-- **6 Interactive Editors** &mdash; layout, surface mask, wall, game object, centerline editors with Leaflet map integration
+- **7 Interactive Editors** &mdash; layout, surface mask, wall, game object, centerline, camera editors with Leaflet map integration
 - **Human-in-the-Loop** &mdash; every critical stage has a manual editing step; edits are transparently respected by downstream stages via junction links
 - **Multi-Layout Support** &mdash; generate multiple track layouts (clockwise, counterclockwise, etc.) from a single dataset
 - **Blender Automation** &mdash; headless Blender pipeline for polygon generation, surface extraction, tile refinement, and FBX/KN5 export
@@ -100,7 +100,7 @@ python -c "import torch; print(f'PyTorch {torch.__version__}, CUDA available: {t
 
 ### Additional Setup
 
-1. **SAM3 Model Weights** &mdash; place `sam3.pt` in `model/sam3.pt`
+1. **SAM3 Model Weights** &mdash; place `sam3.pt` in `sam3_model/sam3.pt`
 2. **Blender** &mdash; install [Blender 5.0+](https://www.blender.org/download/) and set the path in config
 3. **Gemini API Key** &mdash; copy `.env.example` to `.env` and fill in your key:
    ```bash
@@ -148,7 +148,7 @@ Launch the web dashboard for pipeline management and interactive editing:
 
 ```bash
 python script/webTools/run_webtools.py
-# Opens browser automatically -> Dashboard + 6 interactive editors
+# Opens browser automatically -> Dashboard + 7 interactive editors
 ```
 
 The dashboard provides:
@@ -168,6 +168,7 @@ The dashboard provides:
 | **Object Editor** | Position and orient game objects on the map |
 | **Game Object Editor** | Advanced game object management |
 | **Centerline Editor** | Draw and adjust track centerline |
+| **Camera Editor** | Define AC replay camera positions and parameters |
 
 ### Blender Interactive Mode
 
@@ -244,7 +245,7 @@ sam3_track_seg/
 │   ├── blender_helpers.py          # Right-click menu actions
 │   └── sam3_actions/               # Blender action plugins
 ├── sam3/                           # SAM3 model (git submodule)
-├── model/                          # Model weights (sam3.pt)
+├── sam3_model/                     # Model weights (sam3.pt)
 ├── ac_toolbox/                     # AC tools and resources
 ├── tests/                          # Unit tests
 ├── output/                         # Pipeline output (auto-created)
@@ -252,13 +253,13 @@ sam3_track_seg/
 ├── setup_env.bat                   # One-click Windows setup
 ├── .env.example                    # Environment variable template
 ├── CLAUDE.md                       # Development rules
-└── PROJECT.md                      # Detailed project documentation
+└── project.md                      # Detailed project documentation
 ```
 
 ## Documentation
 
 - **[CLAUDE.md](CLAUDE.md)** &mdash; Development rules and conventions
-- **[PROJECT.md](PROJECT.md)** &mdash; Detailed technical documentation (stages, data formats, configuration reference, in Chinese)
+- **[project.md](project.md)** &mdash; Detailed technical documentation (stages, data formats, configuration reference, in Chinese)
 
 ## License
 
