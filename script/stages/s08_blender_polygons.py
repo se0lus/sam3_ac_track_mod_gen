@@ -701,27 +701,27 @@ def _detect_wall_resolution(config: PipelineConfig):
     Walls are generated from Stage 2 modelscale masks. Returns
     (width, height) of the modelscale image, or None if not found.
     """
-    mask_dir = config.mask_full_map_result
-    if not os.path.isdir(mask_dir):
-        mask_dir = config.mask_full_map_dir
-    if not os.path.isdir(mask_dir):
-        return None
+    # Try result dir first, then fall back to working dir.
+    # Check both directories — result dir may exist but be empty.
+    for mask_dir in (config.mask_full_map_result, config.mask_full_map_dir):
+        if not os.path.isdir(mask_dir):
+            continue
 
-    for f in os.listdir(mask_dir):
-        if f.endswith("_modelscale.png") or f.endswith("_modelscale_original.png"):
-            path = os.path.join(mask_dir, f)
-            img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
-            if img is not None:
-                h, w = img.shape[:2]
-                return (w, h)
+        for f in os.listdir(mask_dir):
+            if f.endswith("_modelscale.png") or f.endswith("_modelscale_original.png"):
+                path = os.path.join(mask_dir, f)
+                img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+                if img is not None:
+                    h, w = img.shape[:2]
+                    return (w, h)
 
-    for f in os.listdir(mask_dir):
-        if f.endswith("_mask.png"):
-            path = os.path.join(mask_dir, f)
-            img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
-            if img is not None:
-                h, w = img.shape[:2]
-                return (w, h)
+        for f in os.listdir(mask_dir):
+            if f.endswith("_mask.png"):
+                path = os.path.join(mask_dir, f)
+                img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+                if img is not None:
+                    h, w = img.shape[:2]
+                    return (w, h)
 
     return None
 
