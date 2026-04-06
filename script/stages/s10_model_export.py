@@ -446,7 +446,7 @@ def run(config: PipelineConfig) -> None:
 
     # Copy NULL.dds for collision materials
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    null_dds_src = os.path.join(project_root, "test_images_shajing", "kn5_example", "texture", "NULL.dds")
+    null_dds_src = os.path.join(project_root, "ac_toolbox", "NULL.dds")
     if os.path.isfile(null_dds_src):
         shutil.copy2(null_dds_src, os.path.join(dst_texture_dir, "NULL.dds"))
         logger.info("Copied NULL.dds to %s", dst_texture_dir)

@@ -207,7 +207,7 @@ def _generate_preview_llm(
 
         client = genai.Client(api_key=config.gemini_api_key)
         response = client.models.generate_content(
-            model=config.inpaint_model,  # gemini-2.5-flash-image
+            model=config.s11_preview_model,
             contents=contents,
             config=types.GenerateContentConfig(
                 response_modalities=["IMAGE"],
@@ -388,11 +388,24 @@ def _generate_models_ini(
 # ---------------------------------------------------------------------------
 def _compute_track_bounds_from_centerline(
     centerline_path: str,
+    geo_metadata_path: str = "",
+    tiles_dir: str = "",
 ) -> Optional[Tuple[float, float, float, float]]:
-    """Compute bounding box (min_x, min_z, max_x, max_z) from centerline points.
+    """Compute bounding box (min_x, min_z, max_x, max_z) in AC coordinates.
 
-    Centerline coords are in Blender space (x, z) where z maps to AC Z axis.
+    When geo_metadata_path and tiles_dir are provided, converts pixel coords
+    to proper AC world coordinates. Otherwise falls back to pixel coords.
     """
+    if geo_metadata_path and tiles_dir:
+        try:
+            from camera_generator import compute_track_bounds_ac
+            bounds = compute_track_bounds_ac(centerline_path, geo_metadata_path, tiles_dir)
+            if bounds is not None:
+                return bounds
+        except Exception as e:
+            logger.warning("AC coordinate bounds failed, falling back to pixel: %s", e)
+
+    # Fallback: pixel coordinates (wrong scale but preserves shape)
     if not os.path.isfile(centerline_path):
         return None
     with open(centerline_path, "r", encoding="utf-8") as f:
@@ -408,9 +421,13 @@ def _compute_track_bounds_from_centerline(
 def _generate_map_ini(
     centerline_path: str,
     margin: int = 20,
+    geo_metadata_path: str = "",
+    tiles_dir: str = "",
 ) -> str:
     """Generate map.ini content with map display parameters."""
-    bounds = _compute_track_bounds_from_centerline(centerline_path)
+    bounds = _compute_track_bounds_from_centerline(
+        centerline_path, geo_metadata_path, tiles_dir,
+    )
     if bounds is None:
         # Fallback defaults
         return (
@@ -444,88 +461,35 @@ def _generate_map_ini(
 
 
 # ---------------------------------------------------------------------------
-# cameras.ini generation (basic default cameras from centerline)
+# cameras.ini generation (via camera_generator module)
 # ---------------------------------------------------------------------------
-def _generate_cameras_ini(centerline_path: str, num_cameras: int = 5) -> str:
-    """Generate a basic cameras.ini with evenly spaced cameras along the track."""
-    bounds = _compute_track_bounds_from_centerline(centerline_path)
-    if bounds is None:
-        # Minimal fallback
+def _generate_cameras_ini(
+    centerline_path: str,
+    geo_metadata_path: str,
+    tiles_dir: str,
+    num_cameras: int = 5,
+    height_range: Tuple[float, float] = (6.0, 12.0),
+    fov_range: Tuple[float, float] = (10.0, 60.0),
+    side_offset: float = 15.0,
+) -> str:
+    """Generate cameras.ini via camera_generator with proper coordinate conversion.
+
+    Falls back to an empty cameras.ini if coordinate conversion is unavailable.
+    """
+    try:
+        from camera_generator import generate_cameras_ini as _gen
+        return _gen(
+            centerline_path=centerline_path,
+            geo_metadata_path=geo_metadata_path,
+            tiles_dir=tiles_dir,
+            num_cameras=num_cameras,
+            height_range=height_range,
+            fov_range=fov_range,
+            side_offset=side_offset,
+        )
+    except Exception as e:
+        logger.warning("Camera generation failed: %s", e)
         return "[HEADER]\nVERSION=3\nCAMERA_COUNT=0\nSET_NAME=TV1\n\n"
-
-    with open(centerline_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    points = data.get("centerline", [])
-    if len(points) < num_cameras:
-        num_cameras = max(1, len(points))
-
-    # Pick evenly spaced points along centerline
-    step = len(points) / num_cameras
-    lines = [
-        "[HEADER]",
-        "VERSION=3",
-        f"CAMERA_COUNT={num_cameras}",
-        "SET_NAME=TV1",
-        "",
-    ]
-
-    total_points = len(points)
-    for i in range(num_cameras):
-        idx = int(i * step) % total_points
-        # Camera position: slightly above and to the side
-        px, pz = points[idx]
-        # Next point for forward direction
-        next_idx = (idx + max(1, total_points // 50)) % total_points
-        nx, nz = points[next_idx]
-        dx, dz = nx - px, nz - pz
-        length = math.sqrt(dx * dx + dz * dz)
-        if length > 0:
-            dx /= length
-            dz /= length
-        else:
-            dx, dz = 1.0, 0.0
-
-        # Camera height offset (elevated view)
-        height = 8.0
-        # Side offset (perpendicular to track direction)
-        side_offset = 15.0
-        cam_x = px + (-dz) * side_offset
-        cam_z = pz + dx * side_offset
-
-        # Distribute camera in_point / out_point along the track
-        in_point = round(i / num_cameras, 2)
-        out_point = round((i + 1) / num_cameras, 2) if i < num_cameras - 1 else 0.1
-
-        # Blender → AC mapping: ac_x = -blender_x, ac_y = -blender_y, ac_z = blender_z
-        # cam_x/cam_z are Blender X/Z; height 8m above ground → Blender Y = -8 → AC Y = 8
-        lines.extend([
-            f"[CAMERA_{i}]",
-            f"NAME={i + 1}",
-            f"POSITION={-cam_x:.3f} ,{height:.3f} ,{cam_z:.3f}",
-            f"FORWARD={-dx:.6f} ,-0.15 ,{dz:.6f}",
-            f"UP=0 ,1 ,0",
-            "MIN_FOV=10",
-            "MAX_FOV=60",
-            f"IN_POINT={in_point}",
-            f"OUT_POINT={out_point}",
-            "SHADOW_SPLIT0=1.8",
-            "SHADOW_SPLIT1=20",
-            "SHADOW_SPLIT2=180",
-            "NEAR_PLANE=0.1",
-            "FAR_PLANE=5000",
-            "MIN_EXPOSURE=0",
-            "MAX_EXPOSURE=10000",
-            "DOF_FACTOR=10",
-            "DOF_RANGE=10000",
-            "DOF_FOCUS=0",
-            "DOF_MANUAL=0",
-            "SPLINE=",
-            "SPLINE_ROTATION=0",
-            "FOV_GAMMA=0",
-            "SPLINE_ANIMATION_LENGTH=15",
-            "IS_FIXED=0",
-            "",
-        ])
 
     return "\n".join(lines) + "\n"
 
@@ -921,6 +885,25 @@ def run(config: PipelineConfig) -> None:
     else:
         logger.warning("pixel_size_m unavailable — track length will be approximate")
 
+    # Locate geo_metadata.json for coordinate conversion (cameras, map bounds)
+    geo_metadata_path = ""
+    for candidate_dir in [
+        config.walls_result_dir,
+        config.game_objects_result_dir,
+        os.path.dirname(config.walls_json),
+        os.path.dirname(config.game_objects_json),
+        config.mask_full_map_result,
+        config.mask_full_map_dir,
+    ]:
+        candidate = os.path.join(candidate_dir, "geo_metadata.json")
+        if os.path.isfile(candidate):
+            geo_metadata_path = candidate
+            break
+    if geo_metadata_path:
+        logger.info("geo_metadata: %s", geo_metadata_path)
+    else:
+        logger.warning("geo_metadata.json not found — camera coordinate conversion may fail")
+
     # Determine track name (folder name must be all lowercase)
     track_name = config.s11_track_name
     if not track_name:
@@ -1028,14 +1011,26 @@ def run(config: PipelineConfig) -> None:
             logger.info("Copied TrackMapGenerator output -> %s/map.png + data/map.ini", short)
         else:
             # Fallback: generate from centerline
-            map_ini = _generate_map_ini(centerline_path)
+            map_ini = _generate_map_ini(
+                centerline_path,
+                geo_metadata_path=geo_metadata_path,
+                tiles_dir=config.tiles_dir,
+            )
             with open(layout_map_ini_path, "w", encoding="utf-8") as f:
                 f.write(map_ini)
             _generate_outline_png(centerline_path, layout_map_path)
             logger.info("Generated fallback %s/map.png + data/map.ini from centerline", short)
 
         # 4b. Generate cameras.ini
-        cameras_ini = _generate_cameras_ini(centerline_path)
+        cameras_ini = _generate_cameras_ini(
+            centerline_path,
+            geo_metadata_path=geo_metadata_path,
+            tiles_dir=config.tiles_dir,
+            num_cameras=config.s11_camera_count,
+            height_range=(config.s11_camera_height_min, config.s11_camera_height_max),
+            fov_range=(config.s11_camera_fov_min, config.s11_camera_fov_max),
+            side_offset=config.s11_camera_side_offset,
+        )
         with open(os.path.join(data_dir, "cameras.ini"), "w", encoding="utf-8") as f:
             f.write(cameras_ini)
         logger.info("Generated %s/data/cameras.ini", short)

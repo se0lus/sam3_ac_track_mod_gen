@@ -65,6 +65,7 @@ const $btnRedo = document.getElementById("btnRedo");
 const $dirtyFlag = document.getElementById("dirtyFlag");
 const $btnAdd = document.getElementById("btnAddCamera");
 const $btnDelete = document.getElementById("btnDeleteCamera");
+const $btnReset = document.getElementById("btnResetCameras");
 const $status = document.getElementById("status");
 
 // Property inputs
@@ -211,6 +212,7 @@ async function init() {
   $btnRedo.addEventListener("click", redo);
   $btnAdd.addEventListener("click", addCamera);
   $btnDelete.addEventListener("click", deleteCamera);
+  $btnReset.addEventListener("click", resetCameras);
 
   // Property change listeners
   const propInputs = [
@@ -1317,6 +1319,51 @@ function deleteCamera() {
   selectCamera(newSel);
   pushHistory();
   markDirty();
+}
+
+async function resetCameras() {
+  if (!currentLayout) return;
+  const params = {
+    num_cameras: parseInt(document.getElementById("resetCount").value) || 5,
+    height_min: parseFloat(document.getElementById("resetHeightMin").value) || 6.0,
+    height_max: parseFloat(document.getElementById("resetHeightMax").value) || 12.0,
+    fov_min: parseFloat(document.getElementById("resetFovMin").value) || 10.0,
+    fov_max: parseFloat(document.getElementById("resetFovMax").value) || 60.0,
+    side_offset: parseFloat(document.getElementById("resetSideOffset").value) || 15.0,
+  };
+
+  $btnReset.disabled = true;
+  setStatus("Regenerating cameras...");
+
+  try {
+    const resp = await fetch(
+      "/api/cameras/" + encodeURIComponent(currentLayout) + "/regenerate",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+      }
+    );
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(text);
+    }
+    const data = await resp.json();
+    camerasData = data;
+    selectedIndex = -1;
+    $propsSection.hidden = true;
+    renderCesiumMarkers();
+    renderCameraList();
+    pushHistory();
+    markDirty();
+    setStatus("Generated " + (data.cameras ? data.cameras.length : 0) + " cameras");
+    showToast("Cameras regenerated", "ok");
+  } catch (e) {
+    setStatus("Reset failed: " + e.message);
+    showToast("Reset failed: " + e.message, "err");
+  } finally {
+    $btnReset.disabled = false;
+  }
 }
 
 /* =========================================================================

@@ -432,6 +432,25 @@ async function showStageInfo(stage) {
   } else if (stage.id === "mask_full_map") {
     const model = cfg.inpaint_model || "gemini-2.5-flash-image";
     const roadOffset = cfg.road_mask_offset_px !== undefined ? cfg.road_mask_offset_px : -2;
+    // Build threshold lookup from sam3_prompts config
+    const defaultPrompts = [
+      { tag: "road", threshold: 0.25 }, { tag: "grass", threshold: 0.4 },
+      { tag: "sand", threshold: 0.4 },  { tag: "kerb", threshold: 0.2 },
+      { tag: "trees", threshold: 0.3 }, { tag: "building", threshold: 0.4 },
+      { tag: "water", threshold: 0.4 }, { tag: "concrete", threshold: 0.4 },
+    ];
+    const tagLabels = { road: "路面 Road", grass: "草地 Grass", sand: "沙地 Sand", kerb: "路肩 Kerb", trees: "树木 Trees", building: "建筑 Building", water: "水域 Water", concrete: "水泥地 Concrete" };
+    const promptsCfg = cfg.sam3_prompts || defaultPrompts;
+    const thresholdMap = {};
+    for (const p of promptsCfg) thresholdMap[p.tag] = p.threshold;
+    const thresholdRows = defaultPrompts.map(d => {
+      const val = thresholdMap[d.tag] !== undefined ? thresholdMap[d.tag] : d.threshold;
+      return `<div class="s2-threshold-row">
+        <label>${tagLabels[d.tag] || d.tag}</label>
+        <input type="range" class="s2-threshold-slider" data-tag="${d.tag}" min="0.05" max="0.95" step="0.05" value="${val}">
+        <span class="s2-threshold-val" data-tag="${d.tag}">${val.toFixed(2)}</span>
+      </div>`;
+    }).join("");
     stageConfigHtml = `
       <div class="db-config db-config--stage">
         <h4>阶段配置</h4>
@@ -447,6 +466,11 @@ async function showStageInfo(stage) {
           <label>路面 Mask 偏移 (px)</label>
           <input type="number" id="cfgRoadMaskOffset" value="${roadOffset}" min="-20" max="20" step="1" style="width:80px">
           <span class="config-hint">负值=内缩，正值=外扩，默认 -2（让精细 mask 补边缘）</span>
+        </div>
+        <div class="config-field">
+          <label>SAM3 分割置信度阈值</label>
+          <span class="config-hint" style="margin-bottom:8px;display:block">值越低检测越敏感（更多区域），值越高越严格（更少区域）</span>
+          <div id="s2ThresholdGrid" class="s2-threshold-grid">${thresholdRows}</div>
         </div>
         <div class="config-actions">
           <button class="btn btn--primary" id="btnSaveStageConfig">保存</button>
@@ -691,6 +715,7 @@ async function showStageInfo(stage) {
     const layoutDisplayNames = cfg.s11_layout_display_names || "";
     const llmDesc = cfg.s11_llm_description !== false;
     const llmPreview = cfg.s11_llm_preview !== false;
+    const previewModel = cfg.s11_preview_model || "gemini-2.5-flash-image";
     stageConfigHtml = `
       <div class="db-config db-config--stage">
         <h4>赛道信息</h4>
@@ -761,6 +786,13 @@ async function showStageInfo(stage) {
               <div class="s9-toggle__track${llmPreview ? " active" : ""}"><div class="s9-toggle__thumb"></div></div>
             </div>
           </div>
+          <div class="config-field" style="margin-top:8px">
+            <label>预览图生成模型</label>
+            <select id="s11PreviewModel">
+              <option value="gemini-2.5-flash-image" ${previewModel === "gemini-2.5-flash-image" ? "selected" : ""}>Gemini 2.5 Flash Image</option>
+              <option value="gemini-3-pro-image-preview" ${previewModel === "gemini-3-pro-image-preview" ? "selected" : ""}>Gemini 3 Pro Image Preview</option>
+            </select>
+          </div>
         </div>
         <div class="config-actions">
           <button class="btn btn--primary" id="btnSaveStageConfig">保存</button>
@@ -829,14 +861,50 @@ async function showStageInfo(stage) {
       }
     });
   } else if (stage.id === "mask_full_map") {
+    // Wire threshold slider real-time display
+    document.querySelectorAll(".s2-threshold-slider").forEach(slider => {
+      slider.addEventListener("input", () => {
+        const tag = slider.dataset.tag;
+        const valSpan = document.querySelector(`.s2-threshold-val[data-tag="${tag}"]`);
+        if (valSpan) valSpan.textContent = parseFloat(slider.value).toFixed(2);
+      });
+    });
     $("btnSaveStageConfig").addEventListener("click", async () => {
       const val = $("cfgInpaintModel").value;
       const offsetVal = parseInt($("cfgRoadMaskOffset").value, 10) || -2;
+      // Collect threshold values and merge into sam3_prompts
+      const defaultPromptsData = [
+        { tag: "road", prompt: "race track surface", threshold: 0.25, fallback_prompts: ["asphalt road", "concrete road"] },
+        { tag: "grass", prompt: "grass", threshold: 0.4 },
+        { tag: "sand", prompt: "sand surface", threshold: 0.4 },
+        { tag: "kerb", prompt: "race track curb", threshold: 0.2 },
+        { tag: "trees", prompt: "forest", threshold: 0.3 },
+        { tag: "building", prompt: "building structure", threshold: 0.4 },
+        { tag: "water", prompt: "water pond", threshold: 0.4 },
+        { tag: "concrete", prompt: "concrete paved ground", threshold: 0.4 },
+      ];
+      const existingPrompts = cfg.sam3_prompts && cfg.sam3_prompts.length > 0 ? cfg.sam3_prompts : defaultPromptsData;
+      const prompts = JSON.parse(JSON.stringify(existingPrompts));
+      const promptMap = {};
+      for (const p of prompts) promptMap[p.tag] = p;
+      document.querySelectorAll(".s2-threshold-slider").forEach(slider => {
+        const tag = slider.dataset.tag;
+        if (promptMap[tag]) {
+          promptMap[tag].threshold = parseFloat(slider.value);
+        } else {
+          // Tag not in existing prompts — find default and add it
+          const def = defaultPromptsData.find(d => d.tag === tag);
+          if (def) {
+            const entry = { ...def, threshold: parseFloat(slider.value) };
+            prompts.push(entry);
+          }
+        }
+      });
       try {
         await fetch("/api/pipeline/config", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...cfg, inpaint_model: val, road_mask_offset_px: offsetVal }),
+          body: JSON.stringify({ ...cfg, inpaint_model: val, road_mask_offset_px: offsetVal, sam3_prompts: prompts }),
         });
         $("btnSaveStageConfig").textContent = "已保存";
         setTimeout(() => { $("btnSaveStageConfig").textContent = "保存"; }, 1500);
@@ -1000,6 +1068,7 @@ async function showStageInfo(stage) {
         const on = row.querySelector(".s9-toggle__track").classList.contains("active");
         updated[key] = on;
       });
+      updated.s11_preview_model = $("s11PreviewModel").value;
       try {
         await fetch("/api/pipeline/config", {
           method: "POST",

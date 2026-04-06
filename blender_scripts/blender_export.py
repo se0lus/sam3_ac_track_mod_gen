@@ -1114,6 +1114,79 @@ def _generate_fbx_ini(
 # Step 6: Save blend + export FBX
 # ===================================================================
 
+
+def _ensure_material_textures(objects: List[bpy.types.Object]) -> int:
+    """Assign NULL.dds to materials that have no texture image.
+
+    ksEditorAt fails on materials without any texture reference.
+    This adds a TEX_IMAGE node pointing to NULL.dds for such materials,
+    connected to the Principled BSDF Base Color input.
+
+    Returns the number of materials patched.
+    """
+    # Find or load NULL.dds image
+    null_img = bpy.data.images.get("NULL.dds")
+    if null_img is None:
+        # Derive project root from blend file path:
+        #   .../output/10_model_export/organized_track.blend -> ...
+        blend_dir = os.path.dirname(bpy.data.filepath) if bpy.data.filepath else ""
+        project_root = os.path.dirname(os.path.dirname(blend_dir)) if blend_dir else ""
+        null_dds_path = os.path.join(project_root, "ac_toolbox", "NULL.dds")
+        if os.path.isfile(null_dds_path):
+            null_img = bpy.data.images.load(null_dds_path)
+            null_img.name = "NULL.dds"
+        else:
+            # Create a 1x1 placeholder if file not found
+            null_img = bpy.data.images.new("NULL.dds", width=1, height=1)
+            log.warning("NULL.dds not found at %s, created 1x1 placeholder", null_dds_path)
+
+    patched = 0
+    seen: set = set()
+    for obj in objects:
+        if obj.type != "MESH" or not obj.data:
+            continue
+        for slot in obj.material_slots:
+            mat = slot.material
+            if mat is None or mat.name in seen:
+                continue
+            seen.add(mat.name)
+
+            # Check if material already has a texture image
+            has_texture = False
+            if mat.use_nodes and mat.node_tree:
+                for node in mat.node_tree.nodes:
+                    if node.type == "TEX_IMAGE" and node.image:
+                        has_texture = True
+                        break
+
+            if has_texture:
+                continue
+
+            # Ensure node tree exists
+            if not mat.use_nodes:
+                mat.use_nodes = True
+
+            tree = mat.node_tree
+            # Create TEX_IMAGE node with NULL.dds
+            tex_node = tree.nodes.new("ShaderNodeTexImage")
+            tex_node.image = null_img
+            tex_node.location = (-300, 300)
+
+            # Connect to Principled BSDF Base Color if available
+            bsdf = None
+            for node in tree.nodes:
+                if node.type == "BSDF_PRINCIPLED":
+                    bsdf = node
+                    break
+            if bsdf:
+                tree.links.new(tex_node.outputs["Color"], bsdf.inputs["Base Color"])
+
+            patched += 1
+            log.info("  Assigned NULL.dds to material '%s'", mat.name)
+
+    return patched
+
+
 def step6_save_and_export(
     batch_names: List[str],
     output_dir: str,
@@ -1181,6 +1254,11 @@ def step6_save_and_export(
         for obj in col.objects:
             if obj.type == "MESH" and obj.data and obj.data.name != obj.name:
                 obj.data.name = obj.name
+
+        # Assign NULL.dds to materials without any texture (ksEditorAt requires it)
+        n_patched = _ensure_material_textures(list(col.objects))
+        if n_patched:
+            log.info("  '%s': patched %d materials with NULL.dds", batch_name, n_patched)
 
         fbx_path = os.path.join(output_dir, f"{batch_name}.fbx")
 

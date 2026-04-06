@@ -36,15 +36,39 @@
         <select id="layoutSelect" class="cam-layout-select"></select>
       </section>
 
-      <!-- Editor tabs -->
-      <section class="panel__section">
-        <div class="cam-tabs" id="editorTabs">
-          <button class="cam-tab cam-tab--active" data-tab="camera">Camera</button>
-        </div>
-      </section>
-
       <!-- Scrollable content -->
       <div class="panel__scroll">
+        <!-- Reset Cameras -->
+        <section class="panel__section" id="resetCamerasSection">
+          <div class="section__title">Generate Cameras</div>
+          <div class="cam-reset-form">
+            <div class="prop-row">
+              <span class="prop-label" style="width:auto;min-width:70px;text-align:left">Count</span>
+              <input id="resetCount" class="prop-input" type="number" min="1" max="50" value="5" style="width:60px;flex:none" />
+            </div>
+            <div class="prop-row">
+              <span class="prop-label" style="width:auto;min-width:70px;text-align:left">Height</span>
+              <input id="resetHeightMin" class="prop-input" type="number" step="0.5" value="6.0" style="width:55px;flex:none" />
+              <span class="prop-label" style="width:auto;text-align:center;color:var(--muted)">~</span>
+              <input id="resetHeightMax" class="prop-input" type="number" step="0.5" value="12.0" style="width:55px;flex:none" />
+              <span class="prop-label" style="width:auto;text-align:left;color:var(--muted);font-size:10px">m</span>
+            </div>
+            <div class="prop-row">
+              <span class="prop-label" style="width:auto;min-width:70px;text-align:left">FOV</span>
+              <input id="resetFovMin" class="prop-input" type="number" step="1" value="10" style="width:55px;flex:none" />
+              <span class="prop-label" style="width:auto;text-align:center;color:var(--muted)">~</span>
+              <input id="resetFovMax" class="prop-input" type="number" step="1" value="60" style="width:55px;flex:none" />
+              <span class="prop-label" style="width:auto;text-align:left;color:var(--muted);font-size:10px">&deg;</span>
+            </div>
+            <div class="prop-row">
+              <span class="prop-label" style="width:auto;min-width:70px;text-align:left">Offset</span>
+              <input id="resetSideOffset" class="prop-input" type="number" step="0.5" value="15.0" style="width:60px;flex:none" />
+              <span class="prop-label" style="width:auto;text-align:left;color:var(--muted);font-size:10px">m</span>
+            </div>
+            <button id="btnResetCameras" class="btn btn--reset" style="width:100%;margin-top:6px">Reset Cameras</button>
+          </div>
+        </section>
+
         <!-- Camera list -->
         <section class="panel__section" id="cameraListSection">
           <div class="section__title">Cameras</div>

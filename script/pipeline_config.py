@@ -337,8 +337,15 @@ class PipelineConfig:
     s11_track_url: str = ""                # Optional URL for track info
     s11_pitboxes: int = 10                 # Number of pit boxes
     s11_layout_display_names: str = ""     # "layoutcw:Clockwise;layoutccw:Counter-clockwise"
+    s11_camera_count: int = 5              # Number of cameras per layout
+    s11_camera_height_min: float = 6.0     # Minimum camera height (m)
+    s11_camera_height_max: float = 12.0    # Maximum camera height (m)
+    s11_camera_fov_min: float = 10.0       # Minimum camera FOV
+    s11_camera_fov_max: float = 60.0       # Maximum camera FOV
+    s11_camera_side_offset: float = 15.0   # Perpendicular offset from track (m)
     s11_llm_description: bool = True       # Use LLM to generate track description when empty
     s11_llm_preview: bool = True           # Use LLM to generate preview image when missing
+    s11_preview_model: str = "gemini-2.5-flash-image"  # Gemini image model for preview generation
 
     # --- Derived paths (populated by resolve()) ---
     glb_dir: str = ""

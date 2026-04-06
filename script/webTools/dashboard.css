@@ -532,6 +532,57 @@
   background: #14142e;
 }
 
+/* ===== Stage 2 — SAM3 threshold grid ===== */
+.s2-threshold-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 16px;
+}
+.s2-threshold-row {
+  display: grid;
+  grid-template-columns: 100px 1fr 40px;
+  align-items: center;
+  gap: 8px;
+}
+.s2-threshold-row label {
+  margin: 0;
+  font-size: 11px;
+  color: #94a3b8;
+  white-space: nowrap;
+}
+.s2-threshold-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  background: #2a2a4a;
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+.s2-threshold-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #60a5fa;
+  cursor: pointer;
+}
+.s2-threshold-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #60a5fa;
+  border: none;
+  cursor: pointer;
+}
+.s2-threshold-val {
+  font-family: "SF Mono", "Cascadia Code", "Fira Code", Consolas, monospace;
+  font-size: 11px;
+  color: #60a5fa;
+  text-align: right;
+}
+
 /* ===== Stage config — inline level pair ===== */
 .s9-level-row {
   display: grid;

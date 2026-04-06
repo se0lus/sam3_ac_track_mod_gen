@@ -1407,6 +1407,11 @@ class ApiHandler(SimpleHTTPRequestHandler):
             self._regenerate_from_start_point()
 
         # --- Camera editor ---
+        elif self.path.startswith("/api/cameras/") and self.path.endswith("/regenerate"):
+            # POST /api/cameras/{layout}/regenerate
+            segment = self.path[len("/api/cameras/"):-len("/regenerate")]
+            self._regenerate_cameras(segment)
+
         elif self.path.startswith("/api/cameras/"):
             layout = self.path[len("/api/cameras/"):]
             self._save_cameras(layout)
@@ -2044,6 +2049,86 @@ class ApiHandler(SimpleHTTPRequestHandler):
             self.send_error(400, f"Invalid JSON: {e}")
         except Exception as e:
             self.send_error(500, str(e))
+
+    def _regenerate_cameras(self, layout: str):
+        """POST /api/cameras/{layout}/regenerate — regenerate cameras from centerline.
+
+        Accepts optional JSON body with parameters:
+            num_cameras, height_min, height_max, fov_min, fov_max, side_offset
+        """
+        try:
+            body = self._read_body()
+            params = json.loads(body) if body else {}
+
+            safe = _safe_layout_name(layout)
+
+            # Find centerline for this layout
+            cl_path = _cameras_centerline_path(safe)
+            if not os.path.isfile(cl_path):
+                self.send_error(404, f"centerline.json not found for layout '{safe}'")
+                return
+
+            # Find geo_metadata.json
+            geo_meta_path = ""
+            for candidate in [
+                os.path.join(_result_or_fallback(_02_RESULT_DIR, _MASK_FULL_MAP_DIR), "geo_metadata.json"),
+                os.path.join(_MASK_FULL_MAP_DIR, "geo_metadata.json"),
+            ]:
+                if os.path.isfile(candidate):
+                    geo_meta_path = candidate
+                    break
+            if not geo_meta_path:
+                self.send_error(500, "geo_metadata.json not found")
+                return
+
+            # Find tiles_dir
+            cfg = _load_webtools_config()
+            tiles_dir = cfg.get("tiles_dir", "")
+            if not tiles_dir or not os.path.isdir(tiles_dir):
+                self.send_error(500, "tiles_dir not configured or not found")
+                return
+
+            from camera_generator import generate_cameras_ini
+
+            num_cameras = int(params.get("num_cameras", 5))
+            height_min = float(params.get("height_min", 6.0))
+            height_max = float(params.get("height_max", 12.0))
+            fov_min = float(params.get("fov_min", 10.0))
+            fov_max = float(params.get("fov_max", 60.0))
+            side_offset = float(params.get("side_offset", 15.0))
+
+            ini_text = generate_cameras_ini(
+                centerline_path=cl_path,
+                geo_metadata_path=geo_meta_path,
+                tiles_dir=tiles_dir,
+                num_cameras=num_cameras,
+                height_range=(height_min, height_max),
+                fov_range=(fov_min, fov_max),
+                side_offset=side_offset,
+            )
+
+            # Write to 11a manual track info
+            ini_path = _cameras_write_path(safe)
+            if os.path.isfile(ini_path):
+                shutil.copy2(ini_path, ini_path + ".bak")
+            with open(ini_path, "w", encoding="utf-8") as f:
+                f.write(ini_text)
+
+            # Return parsed cameras JSON
+            data = _parse_cameras_ini(ini_text)
+            resp = json.dumps(data).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(resp)))
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(resp)
+
+        except json.JSONDecodeError as e:
+            self.send_error(400, f"Invalid JSON: {e}")
+        except Exception as e:
+            logging.getLogger("webtools").error("Camera regeneration failed: %s", e, exc_info=True)
+            self.send_error(500, f"Camera regeneration failed: {e}")
 
     def _regenerate_centerline(self):
         """Recompute bends + timing from an edited centerline (server-side Python)."""

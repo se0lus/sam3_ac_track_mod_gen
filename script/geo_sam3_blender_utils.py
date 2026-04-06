@@ -424,6 +424,7 @@ def geo_points_to_blender_xyz(
     tf_info: TilesetTransformInfo,
     z_mode: Literal["zero", "enu", "const"] = "zero",
     z_value: Optional[float] = None,
+    altitudes: Optional[List[float]] = None,
 ) -> List[List[float]]:
     """Convert WGS84 coordinate list to Blender XYZ coordinates.
 
@@ -437,16 +438,24 @@ def geo_points_to_blender_xyz(
         tf_info: ``TilesetTransformInfo`` from ``get_tileset_transform()``.
         z_mode: ``"zero"`` (force 0), ``"enu"`` (real height), ``"const"`` (fixed).
         z_value: Height value when ``z_mode="const"``.
+        altitudes: Per-point geodetic altitudes (metres above WGS84 ellipsoid).
+            When provided, each point uses its altitude for the ECEF conversion
+            so that the resulting Blender Y reflects real terrain elevation.
+            This is independent of *z_mode*: if both are given, *altitudes*
+            determines the ECEF input while *z_mode* still controls the
+            vertical output override (``"zero"`` / ``"const"``).  Use
+            ``z_mode="enu"`` to keep the altitude-derived height.
 
     Returns:
         List of ``[bx, by, bz]`` in Blender coordinate space.
     """
     points_xyz: List[List[float]] = []
-    for pt in geo_xy:
+    for i, pt in enumerate(geo_xy):
         if len(pt) < 2:
             continue
         lon, lat = float(pt[0]), float(pt[1])
-        x, y, z = geodetic_to_ecef(lon, lat, 0.0)
+        alt = float(altitudes[i]) if altitudes is not None else 0.0
+        x, y, z = geodetic_to_ecef(lon, lat, alt)
 
         if tf_info.effective_mode == "tileset_local" and tf_info.inv_transform is not None:
             lx, ly, lz = _mat4_mul_point(tf_info.inv_transform, (x, y, z))
