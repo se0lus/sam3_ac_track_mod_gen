@@ -1,6 +1,7 @@
 # SAM3 AC Track Mod Generator
 
 Automatically generate playable [Assetto Corsa](https://www.assettocorsa.net/) track mods from drone aerial imagery and 3D photogrammetry data.
+REF：【EP04 - 15分钟速成 AC MOD【GIC Mod下载】】 https://www.bilibili.com/video/BV1xFfrB6Enw/?share_source=copy_web&vd_source=10a68410ad8ecc508ad77043ee4987e2
 
 **Drone 2D Ortho / 3D Tiles &rarr; SAM3 Semantic Segmentation &rarr; Blender 3D Processing &rarr; Assetto Corsa Track Mod**
 
